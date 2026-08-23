@@ -292,6 +292,58 @@ test(
         ),
         { status: "superseded" },
       );
+      assert.equal(
+        await enqueueHistoricalThreadLabelScan(
+          {
+            userId,
+            accountId,
+            labelId: billingLabelId,
+            definitionVersion: 1,
+            enablementVersion: 3,
+            after: new Date(sentAt.getTime() - 1_000),
+          },
+          database,
+        ),
+        0,
+      );
+      const userAssignmentCheckpoint = {
+        ...reEnabledCheckpoint,
+        assignmentVersion: 2,
+      };
+      assert.equal(
+        (
+          await beginHistoricalThreadLabelScan(
+            { userId, accountId, checkpoint: userAssignmentCheckpoint },
+            database,
+          )
+        ).status,
+        "superseded",
+      );
+      assert.deepEqual(
+        await completeHistoricalThreadLabelScan(
+          {
+            userId,
+            accountId,
+            checkpoint: userAssignmentCheckpoint,
+            modelId: "test-model",
+            matched: true,
+            confidence: 95,
+          },
+          database,
+        ),
+        { status: "superseded" },
+      );
+      assert.deepEqual(
+        await database
+          .select({
+            labelId: threadLabelAssignments.labelId,
+            source: threadLabelAssignments.source,
+            assignmentVersion: threadLabelAssignments.assignmentVersion,
+          })
+          .from(threadLabelAssignments)
+          .where(eq(threadLabelAssignments.threadId, threadId)),
+        [{ labelId: importantLabelId, source: "user", assignmentVersion: 2 }],
+      );
       await setUserThreadLabel({ userId, threadId, labelId: billingLabelId }, database);
       const assignments = await database
         .select()

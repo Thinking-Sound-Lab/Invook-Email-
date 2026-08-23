@@ -924,6 +924,7 @@ export async function enqueueHistoricalThreadLabelScan(
       and(
         eq(threads.userId, input.userId),
         eq(threads.accountId, input.accountId),
+        automaticThreadLabelAssignmentAllowed(),
         sql<boolean>`exists (
           select 1 from ${messages} scan_message
           where scan_message.thread_id = ${threads.id}
@@ -974,6 +975,7 @@ export async function beginHistoricalThreadLabelScan(
     .select({
       threadId: threads.id,
       subject: threads.subject,
+      assignmentSource: threadLabelAssignments.source,
       assignmentVersion: threadLabelAssignments.assignmentVersion,
       labelId: labels.id,
       labelName: labels.name,
@@ -1002,6 +1004,7 @@ export async function beginHistoricalThreadLabelScan(
     .limit(1);
   if (!target) return { status: "missing" };
   if (
+    target.assignmentSource === "user" ||
     target.assignmentVersion !== input.checkpoint.assignmentVersion ||
     target.labelId !== input.checkpoint.labelId ||
     target.definitionVersion !== input.checkpoint.definitionVersion ||
@@ -1062,6 +1065,7 @@ export async function completeHistoricalThreadLabelScan(
       .select({
         threadId: threads.id,
         assignmentId: threadLabelAssignments.id,
+        assignmentSource: threadLabelAssignments.source,
         assignmentVersion: threadLabelAssignments.assignmentVersion,
       })
       .from(threads)
@@ -1079,7 +1083,10 @@ export async function completeHistoricalThreadLabelScan(
       .for("update", { of: threads })
       .limit(1);
     if (!target) return { status: "missing" };
+    // Manual assignments stay authoritative. Apply-to-past may replace an AI
+    // row only while the captured assignment version is still current.
     if (
+      target.assignmentSource === "user" ||
       target.assignmentVersion !== input.checkpoint.assignmentVersion ||
       definition.labelId !== input.checkpoint.labelId ||
       definition.definitionVersion !== input.checkpoint.definitionVersion ||
