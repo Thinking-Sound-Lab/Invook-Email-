@@ -3,11 +3,9 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { AccountSyncStatusEvent } from "@invook/contracts";
 import {
   getAccountSyncStateForAccount,
-  getIndexingProgressForAccount,
-  getIndexingProgressForUser,
+  getAccountSyncStateForUser,
   getMailSyncProgressForAccount,
   listenForAccountSyncNotifications,
-  MAIL_INDEX_VERSION,
 } from "@invook/database";
 
 import { requireSession } from "../access";
@@ -30,21 +28,15 @@ function writeEvent(response: EventResponse, progress: AccountSyncStatusEvent) {
 
 export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) => {
   const streams = new Map<string, Set<EventResponse>>();
-  const modelId = process.env.OPENAI_EMBEDDING_MODEL?.trim() || null;
   const getDurableProgress = async (
     accountId: string,
   ): Promise<AccountSyncStatusEvent | null> => {
-    const [mailSync, indexing, syncState] = await Promise.all([
+    const [mailSync, syncState] = await Promise.all([
       getMailSyncProgressForAccount({ accountId }),
-      getIndexingProgressForAccount({
-        accountId,
-        modelId,
-        indexVersion: MAIL_INDEX_VERSION,
-      }),
       getAccountSyncStateForAccount({ accountId }),
     ]);
-    return mailSync && indexing && syncState
-      ? { mailSync, indexing, memory: syncState.memory }
+    return mailSync && syncState
+      ? { mailSync, memory: syncState.memory }
       : null;
   };
   const broadcastDurableProgress = async (accountId: string) => {
@@ -82,18 +74,16 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
-      const indexing = await getIndexingProgressForUser({
+      const account = await getAccountSyncStateForUser({
         userId: session.userId,
-        modelId,
-        indexVersion: MAIL_INDEX_VERSION,
       });
-      if (!indexing) {
+      if (!account) {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
         return;
       }
       const [mailSync, syncState] = await Promise.all([
-        getMailSyncProgressForAccount({ accountId: indexing.accountId }),
-        getAccountSyncStateForAccount({ accountId: indexing.accountId }),
+        getMailSyncProgressForAccount({ accountId: account.accountId }),
+        getAccountSyncStateForAccount({ accountId: account.accountId }),
       ]);
       if (!mailSync || !syncState) {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
@@ -110,18 +100,17 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
       reply.raw.setHeader("x-request-id", request.id);
       reply.raw.flushHeaders();
 
-      const accountStreams = streams.get(indexing.accountId) ?? new Set();
+      const accountStreams = streams.get(account.accountId) ?? new Set();
       accountStreams.add(reply.raw);
-      streams.set(indexing.accountId, accountStreams);
+      streams.set(account.accountId, accountStreams);
       const removeStream = () => {
         accountStreams.delete(reply.raw);
-        if (accountStreams.size === 0) streams.delete(indexing.accountId);
+        if (accountStreams.size === 0) streams.delete(account.accountId);
       };
       request.raw.once("close", removeStream);
       reply.raw.once("close", removeStream);
       writeEvent(reply.raw, {
         mailSync,
-        indexing: indexing.progress,
         memory: syncState.memory,
       });
     },

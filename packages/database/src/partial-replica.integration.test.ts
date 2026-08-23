@@ -24,7 +24,6 @@ import {
   getGmailThreadMutationContext,
 } from "./replica";
 import {
-  createMessageContentHash,
   getMailboxThreadForAgent,
   getReplyDraftContext,
   listMailboxThreadAttachments,
@@ -103,7 +102,6 @@ async function withPartialReplicaFixture(
       memoryAcknowledgedAt: new Date(),
       syncState: {
         mailSync: "running",
-        indexing: "pending",
         memory: "pending",
       },
     });
@@ -155,16 +153,6 @@ async function withPartialReplicaFixture(
       subject: "Partial synchronization keyword",
       snippet: "A stored message is immediately usable.",
       bodyText: "The synchronization keyword is present in committed mail.",
-      embeddingContentHash: createMessageContentHash({
-        direction: "incoming",
-        sender: {
-          raw: "Distinctive Sender <partial-sender@example.com>",
-          email: "partial-sender@example.com",
-        },
-        recipients: ["owner@example.com"],
-        subject: "Partial synchronization keyword",
-        bodyText: "The synchronization keyword is present in committed mail.",
-      }),
       sentAt,
     });
     await database.insert(labels).values([

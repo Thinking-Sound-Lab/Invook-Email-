@@ -61,10 +61,8 @@ test("new mail control work is isolated from live enrichment and bulk history", 
   assert.equal(tenantTaskQueueLaneForStepType("gmail.history.catchup"), "control");
   assert.equal(tenantTaskQueueLaneForStepType("gmail.message.refresh"), "control");
   assert.equal(tenantTaskQueueLaneForStepType("gmail.watch.renew"), "control");
-  assert.equal(tenantTaskQueueLaneForStepType("embedding.incremental"), "live");
   assert.equal(tenantTaskQueueLaneForStepType("memory.incremental"), "live");
   assert.equal(tenantTaskQueueLaneForStepType("gmail.sync.page"), "bulk");
-  assert.equal(tenantTaskQueueLaneForStepType("embedding.backfill"), "bulk");
   assert.equal(tenantTaskQueueLaneForStepType("memory.extract"), "bulk");
 });
 
@@ -204,7 +202,7 @@ test("terminal initial synchronization failure creates an immediate repair trigg
   assert.equal(tenantTaskQueueLaneForStepType(step.stepType), "control");
 });
 
-test("ready-replica derivations fan out to independent Temporal Activity task queues", () => {
+test("ready replicas enqueue only the post-sync Memory derivation", () => {
   const steps = createPostSyncDerivationSteps({
     userId: "11111111-1111-4111-8111-111111111111",
     accountId: "22222222-2222-4222-8222-222222222222",
@@ -213,7 +211,7 @@ test("ready-replica derivations fan out to independent Temporal Activity task qu
 
   assert.deepEqual(
     steps.map((step) => step.stepType),
-    ["embedding.backfill", "memory.extract"],
+    ["memory.extract"],
   );
   assert.deepEqual(
     new Set(steps.map((step) => tenantTaskQueueLaneForStepType(step.stepType))),

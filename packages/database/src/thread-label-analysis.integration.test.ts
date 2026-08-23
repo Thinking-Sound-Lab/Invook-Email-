@@ -111,7 +111,6 @@ test(
         subject: "Please review",
         snippet: "Action requested",
         bodyText: "Please review and reply today.",
-        embeddingContentHash: "c".repeat(64),
         sentAt,
       });
       await database.insert(messageLabels).values({
@@ -448,7 +447,6 @@ test(
           subject: "Updated invoice",
           snippet: "New content needs another label analysis",
           bodyText: "The invoice changed after the first analysis.",
-          embeddingContentHash: "d".repeat(64),
           sentAt,
         },
         {
@@ -468,7 +466,6 @@ test(
           subject: "New thread outside the cohort",
           snippet: "This thread must wait for batch labeling",
           bodyText: "A separate new message.",
-          embeddingContentHash: "e".repeat(64),
           sentAt: new Date(sentAt.getTime() - 1_000),
         },
       ]);
@@ -647,7 +644,6 @@ test(
           subject: "Invoice",
           snippet: "Invoice is ready",
           bodyText: "Your invoice is ready.",
-          embeddingContentHash: "a".repeat(64),
           sentAt,
         },
         {
@@ -664,7 +660,6 @@ test(
           subject: "Spam",
           snippet: "Spam content",
           bodyText: "This must not reach classification.",
-          embeddingContentHash: "b".repeat(64),
           sentAt: new Date(sentAt.getTime() - 1_000),
         },
       ]);
@@ -913,7 +908,6 @@ test(
         subject: "Capacity retry",
         snippet: "Retry this historical label",
         bodyText: "This request should return to pending after provider capacity exhaustion.",
-        embeddingContentHash: "d".repeat(64),
         sentAt,
       });
       await database.insert(messageLabels).values({

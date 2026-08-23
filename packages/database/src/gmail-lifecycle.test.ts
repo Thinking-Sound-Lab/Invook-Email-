@@ -77,7 +77,6 @@ test(
         subject: "Invalid date",
         snippet: "Invalid date",
         bodyText: "Stored provider content",
-        embeddingContentHash: "a".repeat(64),
         sentAt: invalidSentAt,
       });
 
@@ -146,7 +145,7 @@ test(
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
         memoryAcknowledgedAt: new Date(),
-        syncState: { mailSync: "running", indexing: "running", memory: "complete" },
+        syncState: { mailSync: "running", memory: "complete" },
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -277,7 +276,6 @@ test(
       assert.deepEqual(steps.map((step) => step.status), ["failed", "failed"]);
       assert.equal(account?.status, "connected");
       assert.equal(account?.syncState.mailSync, "failed");
-      assert.equal(account?.syncState.indexing, "running");
       assert.equal(account?.syncState.memory, "complete");
       assert.equal(replica?.state, "failed");
       assert.equal(replica?.pendingHistoryCursor, "250");
@@ -322,7 +320,7 @@ test(
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
         memoryAcknowledgedAt: new Date(),
-        syncState: { mailSync: "failed", indexing: "pending", memory: "pending" },
+        syncState: { mailSync: "failed", memory: "pending" },
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -407,7 +405,7 @@ test(
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
         memoryAcknowledgedAt: new Date(),
-        syncState: { mailSync: "complete", indexing: "running", memory: "pending" },
+        syncState: { mailSync: "complete", memory: "pending" },
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -460,7 +458,6 @@ test(
 
       assert.equal(account?.status, "reconnect_required");
       assert.equal(account?.syncState.mailSync, "failed");
-      assert.equal(account?.syncState.indexing, "running");
       assert.equal(replica?.state, "failed");
       assert.equal(replica?.lastError, "provider_authentication_failed");
       assert.deepEqual(steps.map((step) => step.status), ["failed", "failed"]);

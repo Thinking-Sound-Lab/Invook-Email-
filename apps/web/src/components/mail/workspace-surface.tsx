@@ -62,7 +62,7 @@ export function SearchResultsSurface({
           <div className="mx-auto max-w-md px-4 py-16 text-center">
             <p className="text-sm font-medium">No matching mail found</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Search checks message text, mail metadata, attachment filenames, and available embeddings.
+              Search checks message text, mail metadata, and attachment filenames.
             </p>
           </div>
         ) : (

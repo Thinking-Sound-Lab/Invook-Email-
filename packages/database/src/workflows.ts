@@ -21,7 +21,6 @@ import {
 } from "./client";
 import {
   connectedAccounts,
-  embeddingBatchSubmissions,
   threadLabelBatchSubmissions,
   gmailAccountCleanups,
   gmailReplicaStates,
@@ -41,10 +40,7 @@ import {
 import { hasMailSyncProgressAdvanced } from "./mail-sync-progress";
 import { toPostgresTextProjection } from "./text";
 import type { WorkflowStepInput, WorkflowStepJob } from "./types";
-import {
-  MAIL_INDEX_VERSION,
-  MEMORY_SCHEMA_VERSION,
-} from "./versions";
+import { MEMORY_SCHEMA_VERSION } from "./versions";
 
 export type TemporalCommandJob = WorkflowStepJob & {
   userId: string;
@@ -159,14 +155,14 @@ async function terminalizeMailSyncRun(
       updatedAt: input.failedAt,
     })
     .where(eq(connectedAccounts.id, run.accountId))
-    .returning({ syncState: connectedAccounts.syncState });
+    .returning({ id: connectedAccounts.id });
   await database
     .update(gmailReplicaStates)
     .set({ state: "failed", lastError: input.message, updatedAt: input.failedAt })
     .where(eq(gmailReplicaStates.accountId, run.accountId));
   if (account) {
     await database.execute(
-      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: run.accountId, state: account.syncState.indexing })})`,
+      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: run.accountId })})`,
     );
   }
   return { accountId: run.accountId, runType: run.runType };
@@ -254,7 +250,6 @@ async function terminalizeGmailAccountForReconnect(
     )
     .returning({
       id: connectedAccounts.id,
-      syncState: connectedAccounts.syncState,
     });
   if (!account) return false;
   await database
@@ -263,7 +258,7 @@ async function terminalizeGmailAccountForReconnect(
     .where(eq(gmailReplicaStates.accountId, input.accountId));
   if (activeRuns.length === 0) {
     await database.execute(
-      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: input.accountId, state: account.syncState.indexing })})`,
+      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: input.accountId })})`,
     );
   }
   return true;
@@ -292,7 +287,6 @@ export function tenantTaskQueueLaneForStepType(
     case "gmail.sync.finalize":
     case "gmail.account.cleanup":
     case "gmail.objects.delete":
-    case "embedding.backfill":
     case "memory.extract":
     case "memory.batch.retry":
       return "bulk";
@@ -300,8 +294,6 @@ export function tenantTaskQueueLaneForStepType(
     case "gmail.message.refresh":
     case "gmail.watch.renew":
       return "control";
-    case "embedding.batch.event":
-    case "embedding.incremental":
     case "memory.incremental":
     case "memory.batch.event":
     case "memory.feedback":
@@ -439,13 +431,6 @@ export function createPostSyncDerivationSteps(input: {
   historyCursor: string;
 }): WorkflowStepInput[] {
   return [
-    {
-      userId: input.userId,
-      accountId: input.accountId,
-      stepType: "embedding.backfill",
-      payload: { indexVersion: MAIL_INDEX_VERSION },
-      idempotencyKey: `embedding.backfill:${input.accountId}:${MAIL_INDEX_VERSION}:${input.historyCursor}`,
-    },
     {
       userId: input.userId,
       accountId: input.accountId,
@@ -1248,22 +1233,6 @@ export async function failWorkflowStep(
         );
       }
     }
-    if (input.terminal && input.step.stepType === "embedding.backfill") {
-      await transaction
-        .update(embeddingBatchSubmissions)
-        .set({
-          status: "failed",
-          lastError: message,
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(embeddingBatchSubmissions.workflowStepId, input.step.id),
-            eq(embeddingBatchSubmissions.status, "preparing"),
-          ),
-        );
-    }
     if (input.terminal && input.step.stepType === "label.batch.submit") {
       const [submission] = await transaction
         .update(threadLabelBatchSubmissions)
@@ -1316,22 +1285,6 @@ export async function failWorkflowStep(
         })
         .where(eq(connectedAccounts.id, input.step.accountId));
     }
-    if (
-      ["embedding.backfill", "embedding.incremental", "embedding.batch.event"].includes(
-        input.step.stepType,
-      )
-    ) {
-      await transaction
-        .update(connectedAccounts)
-        .set({
-          syncState: sql`jsonb_set(${connectedAccounts.syncState}, '{indexing}', to_jsonb(${"failed"}::text), true)`,
-          updatedAt: new Date(),
-        })
-        .where(eq(connectedAccounts.id, input.step.accountId));
-      await transaction.execute(
-        sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: input.step.accountId, state: "failed" })})`,
-      );
-    }
     return true;
   });
 }
@@ -1368,7 +1321,7 @@ export async function startMailSyncRun(
     await transaction
       .update(connectedAccounts)
       .set({
-        syncState: { mailSync: "running", indexing: "pending", memory: "pending" },
+        syncState: { mailSync: "running", memory: "pending" },
         updatedAt: new Date(),
       })
       .where(
@@ -1853,12 +1806,12 @@ export async function completeMailSyncRun(
       .update(connectedAccounts)
       .set({
         lastSyncedAt: new Date(),
-        syncState: { mailSync: "complete", indexing: "pending", memory: "pending" },
+        syncState: { mailSync: "complete", memory: "pending" },
         updatedAt: new Date(),
       })
       .where(eq(connectedAccounts.id, run.accountId));
     await transaction.execute(
-      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: run.accountId, state: "pending" })})`,
+      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: run.accountId })})`,
     );
 
     await enqueueWorkflowStepsWithExecutor(
@@ -1915,7 +1868,7 @@ export async function completeGmailSynchronizationRecovery(
         ),
       );
     await transaction.execute(
-      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: input.accountId, state: "pending" })})`,
+      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: input.accountId })})`,
     );
     return true;
   });
@@ -1980,7 +1933,6 @@ export async function getWorkflowStepSubmission(
           "memory.extract",
           "memory.incremental",
           "memory.batch.retry",
-          "embedding.backfill",
         ]),
       ),
     )
