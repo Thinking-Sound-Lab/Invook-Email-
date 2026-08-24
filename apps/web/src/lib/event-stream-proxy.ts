@@ -16,7 +16,9 @@ export async function proxyEventStream(request: Request, path: string): Promise<
 
   let upstream: AxiosResponse<Readable>;
   try {
-    upstream = await axios.get<Readable>(`${getApiOrigin()}${path}`, {
+    const upstreamUrl = new URL(path, getApiOrigin());
+    upstreamUrl.search = new URL(request.url).search;
+    upstream = await axios.get<Readable>(upstreamUrl.toString(), {
       headers,
       responseType: "stream",
       signal: request.signal,

@@ -12,7 +12,8 @@ import {
   parseGmailComposeRecipients,
   validateGmailComposeDraftFields,
 } from "@invook/contracts";
-import { type FormEvent, useReducer } from "react";
+import { useSearchParams } from "next/navigation";
+import { type FormEvent, useReducer, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 import { Button } from "@/components/ui/button";
@@ -29,11 +30,22 @@ import {
   updateGmailComposeDraft,
 } from "@/lib/api/compose-drafts";
 import { apiErrorMessage } from "@/lib/http-error";
+import {
+  resolveMailboxAccountSelection,
+  selectedMailboxAccount,
+} from "./mail-account-scope";
 import { useMailShell } from "./mail-shell-provider";
 
 export function ComposeSurface() {
-  const { account } = useMailShell();
-  const gmailAccountId = account.id;
+  const { accounts } = useMailShell();
+  const searchParams = useSearchParams();
+  const accountSelection = resolveMailboxAccountSelection(
+    searchParams.get("account"),
+    accounts,
+  );
+  const scopedAccount = selectedMailboxAccount(accountSelection, accounts);
+  const [gmailAccountId, setGmailAccountId] = useState(scopedAccount?.id ?? "");
+  const account = accounts.find((candidate) => candidate.id === gmailAccountId) ?? null;
   const [state, dispatch] = useReducer(
     composeDraftReducer,
     undefined,
@@ -61,6 +73,10 @@ export function ComposeSurface() {
 
   async function handleSave(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    if (!account) {
+      dispatch({ type: "error", message: "Choose the Gmail account to send from." });
+      return;
+    }
     const validation = validateGmailComposeDraftFields({
       recipients: parseGmailComposeRecipients(state.recipients),
       subject: state.subject,
@@ -73,6 +89,7 @@ export function ComposeSurface() {
 
     dispatch({ type: "saving" });
     const request = {
+      accountId: account.id,
       idempotencyKey: state.idempotencyKey,
       ...validation.fields,
     };
@@ -106,6 +123,7 @@ export function ComposeSurface() {
     dispatch({ type: "sending" });
     try {
       await sendGmailComposeDraft(state.providerDraft.providerDraftId, {
+        accountId: gmailAccountId,
         idempotencyKey: state.sendIdempotencyKey,
       });
       dispatch({ type: "sent" });
@@ -130,6 +148,36 @@ export function ComposeSurface() {
         onSubmit={(event) => void handleSave(event)}
       >
         <div className="space-y-5">
+          <div className="grid gap-2 sm:grid-cols-[72px_minmax(0,1fr)] sm:items-center">
+            <label htmlFor="compose-account" className="text-sm text-muted-foreground">
+              From
+            </label>
+            {accountSelection === "all" ? (
+              <select
+                id="compose-account"
+                value={gmailAccountId}
+                onChange={(event) => setGmailAccountId(event.target.value)}
+                disabled={isLocked || Boolean(state.providerDraft)}
+                required
+                className="h-9 w-full rounded-md bg-transparent px-3 text-sm shadow-xs outline-none ring-1 ring-input focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="">Choose an account</option>
+                {accounts.map((candidate) => (
+                  <option
+                    key={candidate.id}
+                    value={candidate.id}
+                    disabled={candidate.status !== "connected"}
+                  >
+                    {candidate.email}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p id="compose-account" className="truncate text-sm font-medium">
+                {account?.email}
+              </p>
+            )}
+          </div>
           <div className="grid gap-2 sm:grid-cols-[72px_minmax(0,1fr)] sm:items-center">
             <label htmlFor="compose-recipients" className="text-sm text-muted-foreground">
               To

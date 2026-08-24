@@ -32,6 +32,13 @@ import {
 } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 
+import { MailAccountAvatar } from "./mail-account-avatar";
+import {
+  accountLabels,
+  createMailboxHref,
+  resolveMailboxAccountSelection,
+  selectedSidebarCounts,
+} from "./mail-account-scope";
 import { initials } from "./mail-format";
 import { MailNavigationPending } from "./mail-navigation-pending";
 import { useMailShell } from "./mail-shell-provider";
@@ -107,8 +114,17 @@ export interface MailSidebarProps {
 export function MailSidebar({
   sidebarCounts,
 }: MailSidebarProps) {
-  const { account, aiConfigured, invookLabels, user } = useMailShell();
+  const shell = useMailShell();
+  const { accounts, aiConfigured, user } = shell;
   const searchParams = useSearchParams();
+  const accountSelection = resolveMailboxAccountSelection(
+    searchParams.get("account"),
+    accounts,
+  );
+  const currentCounts = selectedSidebarCounts(
+    sidebarCounts,
+    accountSelection,
+  );
   const requestedSurface = searchParams.get("surface");
   const currentSurface: MailSurface = searchParams.has("thread")
     ? "mail"
@@ -128,12 +144,19 @@ export function MailSidebar({
         requestedView === "trash"
       ? requestedView
       : "all";
-  const labels = listSidebarLabels(invookLabels);
-  const connectedAccountImage =
-    account.image ??
-    (account.email.toLowerCase() === user.email.toLowerCase()
-      ? user.image
-      : null);
+  const currentSearchParams = new URLSearchParams(searchParams.toString());
+  const labelGroups = accounts.flatMap((account) => {
+    if (accountSelection !== "all" && account.id !== accountSelection) return [];
+    return [{ account, labels: listSidebarLabels(accountLabels(shell, account.id)) }];
+  });
+  const hrefFor = (updates: Parameters<typeof createMailboxHref>[1]): string =>
+    createMailboxHref(currentSearchParams, updates);
+  const handleAccountHref = (account: "all" | string): string =>
+    hrefFor({
+      account,
+      thread: null,
+      view: currentView.startsWith("label:") ? "all" : currentView,
+    });
 
   return (
     <aside className="flex min-h-0 flex-col bg-sidebar px-2 py-3 lg:px-3" aria-label="Mailbox navigation">
@@ -162,11 +185,15 @@ export function MailSidebar({
             label={item.label}
             icon={item.icon}
             active={currentSurface === item.surface}
-            href={`/mail?surface=${item.surface}`}
+            href={hrefFor({ surface: item.surface, thread: null })}
           />
         ))}
         <SettingsDialog
-          account={account}
+          key={accountSelection}
+          accounts={accounts}
+          selectedAccountId={
+            accountSelection === "all" ? null : accountSelection
+          }
           aiConfigured={aiConfigured}
           triggerClassName={navItemClassName(false)}
         />
@@ -174,7 +201,7 @@ export function MailSidebar({
           label={automationsItem.label}
           icon={automationsItem.icon}
           active={currentSurface === automationsItem.surface}
-          href={`/mail?surface=${automationsItem.surface}`}
+          href={hrefFor({ surface: automationsItem.surface, thread: null })}
         />
       </nav>
 
@@ -187,22 +214,36 @@ export function MailSidebar({
             label="Important"
             icon={LabelImportantIcon}
             active={currentSurface === "mail" && currentView === "important"}
-            href="/mail?view=important"
-            count={sidebarCounts?.views.important}
+            href={hrefFor({ surface: null, thread: null, view: "important" })}
+            count={currentCounts?.views.important}
           />
-          {labels.map((label) => {
-            const view = `label:${label.id}` as const;
-            return (
-              <NavLink
-                key={label.id}
-                label={label.name}
-                icon={AiMagicIcon}
-                active={currentSurface === "mail" && currentView === view}
-                href={`/mail?view=${view}`}
-                count={sidebarCounts?.labels[label.id]}
-              />
-            );
-          })}
+          {labelGroups.map(({ account, labels }) => (
+            <div key={account.id}>
+              {accountSelection === "all" && accounts.length > 1 && labels.length > 0 ? (
+                <p className="mb-1 mt-2 hidden truncate px-2.5 text-[10px] font-medium text-sidebar-foreground/35 lg:block">
+                  {account.email}
+                </p>
+              ) : null}
+              {labels.map((label) => {
+                const view = `label:${label.id}` as const;
+                return (
+                  <NavLink
+                    key={label.id}
+                    label={label.name}
+                    icon={AiMagicIcon}
+                    active={currentSurface === "mail" && currentView === view}
+                    href={hrefFor({
+                      account: account.id,
+                      surface: null,
+                      thread: null,
+                      view,
+                    })}
+                    count={sidebarCounts?.accounts[account.id]?.labels[label.id]}
+                  />
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         <p className="mb-1.5 mt-5 hidden px-2.5 text-xs font-medium text-sidebar-foreground/35 lg:block">
@@ -213,8 +254,8 @@ export function MailSidebar({
             label="All"
             icon={InboxIcon}
             active={currentSurface === "mail" && currentView === "all"}
-            href="/mail?view=all"
-            count={sidebarCounts?.views.all}
+            href={hrefFor({ surface: null, thread: null, view: "all" })}
+            count={currentCounts?.views.all}
           />
           {mailItems.map((item) => (
             <NavLink
@@ -222,8 +263,8 @@ export function MailSidebar({
               label={item.label}
               icon={item.icon}
               active={currentSurface === "mail" && currentView === item.view}
-              href={`/mail?view=${item.view}`}
-              count={sidebarCounts?.views[item.view]}
+              href={hrefFor({ surface: null, thread: null, view: item.view })}
+              count={currentCounts?.views[item.view]}
             />
           ))}
         </nav>
@@ -238,25 +279,55 @@ export function MailSidebar({
           Inboxes
         </p>
         <nav className="space-y-0.5" aria-label="Connected inboxes">
-          <div className="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/70">
-            <Avatar size="sm" className="size-5 border-0 after:border-0">
-              {connectedAccountImage ? (
-                <AvatarImage src={connectedAccountImage} alt="" />
-              ) : null}
-              <AvatarFallback className="bg-sidebar-accent text-[9px] font-semibold text-sidebar-foreground">
-                {initials(account.email)}
-              </AvatarFallback>
-            </Avatar>
-            <span className="hidden min-w-0 flex-1 truncate lg:block">
-              {account.email}
+          <Link
+            href={handleAccountHref("all")}
+            aria-current={accountSelection === "all" ? "true" : undefined}
+            className={cn(navItemClassName(accountSelection === "all"), "h-8 gap-2 px-2")}
+          >
+            <span className="grid size-5 shrink-0 place-items-center rounded-full bg-sidebar-accent">
+              <HugeiconsIcon icon={Mail01Icon} size={12} strokeWidth={1.7} />
             </span>
-            <HugeiconsIcon
-              icon={Tick02Icon}
-              size={14}
-              strokeWidth={1.8}
-              className="hidden shrink-0 text-sidebar-foreground/65 lg:block"
-            />
-          </div>
+            <span className="hidden min-w-0 flex-1 truncate lg:block">All</span>
+            {accountSelection === "all" ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                size={14}
+                strokeWidth={1.8}
+                className="hidden shrink-0 text-sidebar-foreground/65 lg:block"
+              />
+            ) : null}
+            <MailNavigationPending />
+          </Link>
+          {accounts.map((account) => {
+            const isActive = accountSelection === account.id;
+            return (
+              <Link
+                key={account.id}
+                href={handleAccountHref(account.id)}
+                aria-current={isActive ? "true" : undefined}
+                className={cn(navItemClassName(isActive), "h-8 gap-2 px-2")}
+              >
+                <MailAccountAvatar
+                  account={account}
+                  accounts={accounts}
+                  user={user}
+                  ringOffsetClassName="ring-offset-sidebar"
+                />
+                <span className="hidden min-w-0 flex-1 truncate lg:block">
+                  {account.email}
+                </span>
+                {isActive ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    size={14}
+                    strokeWidth={1.8}
+                    className="hidden shrink-0 text-sidebar-foreground/65 lg:block"
+                  />
+                ) : null}
+                <MailNavigationPending />
+              </Link>
+            );
+          })}
           <form action="/v1/connections/gmail/start" method="get">
             <button
               type="submit"

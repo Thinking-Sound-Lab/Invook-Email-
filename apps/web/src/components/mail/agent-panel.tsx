@@ -21,11 +21,13 @@ import { useMailShell } from "./mail-shell-provider";
 type MailAgentUIMessage = UIMessage;
 
 export interface AgentPanelProps {
+  accountSelection: string;
   openThreadId?: string;
   openThreadSubject?: string;
 }
 
 export function AgentPanel({
+  accountSelection,
   openThreadId,
   openThreadSubject,
 }: AgentPanelProps) {
@@ -34,9 +36,12 @@ export function AgentPanel({
     () =>
       new DefaultChatTransport({
         api: "/v1/agent",
-        body: openThreadId ? { currentThreadId: openThreadId } : {},
+        body: {
+          account: accountSelection,
+          ...(openThreadId ? { currentThreadId: openThreadId } : {}),
+        },
       }),
-    [openThreadId],
+    [accountSelection, openThreadId],
   );
   const {
     messages,

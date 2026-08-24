@@ -23,11 +23,16 @@ import { listLabelSettingsItems } from "./label-settings-items";
 import { LabelSettingsRow } from "./label-settings-row";
 
 export interface LabelSettingsProps {
+  accountId: string;
   invookLabels: InvookLabel[];
   onChanged: () => void | Promise<void>;
 }
 
-export function LabelSettings({ invookLabels, onChanged }: LabelSettingsProps) {
+export function LabelSettings({
+  accountId,
+  invookLabels,
+  onChanged,
+}: LabelSettingsProps) {
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [pendingLabelKey, setPendingLabelKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,12 +44,12 @@ export function LabelSettings({ invookLabels, onChanged }: LabelSettingsProps) {
   }
 
   async function handleCreateLabel(request: CreateInvookLabelRequest) {
-    await createInvookLabel(request);
+    await createInvookLabel(request, accountId);
     await onChanged();
   }
 
   function handlePreviewLabel(request: PreviewInvookLabelRequest) {
-    return previewInvookLabel(request);
+    return previewInvookLabel(request, accountId);
   }
 
   async function handleSetEnabled(

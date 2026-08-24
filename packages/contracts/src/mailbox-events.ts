@@ -117,9 +117,9 @@ export function parseMailboxStreamReadyEvent(
     const value: unknown = JSON.parse(serializedEvent);
     return isRecord(value) &&
       value.type === "mailbox_stream_ready" &&
-      typeof value.accountId === "string" &&
-      isUuid(value.accountId)
-      ? { type: value.type, accountId: value.accountId }
+      isStringArray(value.accountIds) &&
+      value.accountIds.length > 0
+      ? { type: value.type, accountIds: value.accountIds }
       : null;
   } catch {
     return null;

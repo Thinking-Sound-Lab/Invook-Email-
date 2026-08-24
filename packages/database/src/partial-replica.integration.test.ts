@@ -275,6 +275,7 @@ test(
         database,
         userId,
         otherUserId,
+        accountId,
         threadId,
         messageId,
         draftId,
@@ -286,16 +287,16 @@ test(
       const [shell, threadPage, threadDetail, sidebarCounts] = await Promise.all([
         getMailboxShellData(userId, database),
         listMailboxThreads(userId, {}, database),
-        getMailboxThreadDetail(userId, threadId, database),
+        getMailboxThreadDetail(userId, threadId, accountId, database),
         getMailboxSidebarCounts(userId, database),
       ]);
-      assert.equal(shell?.account.replica.state, "snapshotting");
+      assert.equal(shell?.accounts[0]?.replica.state, "snapshotting");
       assert.deepEqual(threadPage?.threads.map((thread) => thread.id), [threadId]);
       assert.deepEqual(
         threadDetail?.thread.messages.map((message) => message.id),
         [messageId],
       );
-      assert.deepEqual(sidebarCounts?.views, {
+      assert.deepEqual(sidebarCounts?.all.views, {
         all: 1,
         important: 0,
         starred: 0,
@@ -304,7 +305,8 @@ test(
         spam: 0,
         trash: 0,
       });
-      assert.equal(sidebarCounts?.labels[invookLabelId], 1);
+      assert.equal(sidebarCounts?.all.labels[invookLabelId], 1);
+      assert.deepEqual(sidebarCounts?.accounts[accountId], sidebarCounts?.all);
       assert.deepEqual(
         (
           await listMailboxThreads(userId, { view: "drafts" }, database)
@@ -342,6 +344,7 @@ test(
           structured.messages.map((message) => message.messageId),
           [messageId],
         );
+        assert.equal(structured.messages[0]?.accountId, accountId);
       }
       const unavailable = await queryInvookMailbox(
         { userId: otherUserId },
@@ -393,6 +396,175 @@ test(
         await getAiReplyDraftForGmailSave({ userId: otherUserId, draftId }, database),
         null,
       );
+    });
+  },
+);
+
+test(
+  "mailbox account scopes preserve every account and aggregate All",
+  { skip: !testDatabaseUrl },
+  async () => {
+    await withPartialReplicaFixture(async (fixture) => {
+      const { accountId, database, messageId, threadId, userId } = fixture;
+      const secondAccountId = uuidv4();
+      const secondThreadId = uuidv4();
+      const secondMessageId = uuidv4();
+      const firstStarredLabelId = uuidv4();
+      const secondStarredLabelId = uuidv4();
+      const sentAt = new Date("2026-08-16T09:00:00.000Z");
+
+      await database.insert(connectedAccounts).values({
+        id: secondAccountId,
+        userId,
+        providerAccountId: `provider-${secondAccountId}`,
+        email: "second@example.com",
+        memoryAcknowledgedAt: new Date(),
+        syncState: {
+          mailSync: "complete",
+          indexing: "complete",
+          memory: "complete",
+        },
+      });
+      await database.insert(gmailReplicaStates).values({
+        accountId: secondAccountId,
+        initialHistoryId: "200",
+        historyCursor: "200",
+        state: "ready",
+        readyAt: new Date(),
+      });
+      await database.insert(threads).values({
+        id: secondThreadId,
+        userId,
+        accountId: secondAccountId,
+        providerThreadId: `provider-thread-${secondThreadId}`,
+        subject: "Second account searchable mail",
+        snippet: "Only the second account owns this thread.",
+        participants: ["Second Sender <second-sender@example.com>"],
+        latestMessageAt: sentAt,
+        messageCount: 1,
+      });
+      const secondSender = {
+        raw: "Second Sender <second-sender@example.com>",
+        email: "second-sender@example.com",
+      };
+      await database.insert(messages).values({
+        id: secondMessageId,
+        userId,
+        accountId: secondAccountId,
+        threadId: secondThreadId,
+        providerMessageId: `provider-message-${secondMessageId}`,
+        direction: "incoming",
+        sender: secondSender,
+        recipients: ["second@example.com"],
+        providerHistoryId: "200",
+        internalDate: sentAt,
+        headerLines: [
+          {
+            key: "from",
+            line: "From: Second Sender <second-sender@example.com>",
+          },
+          {
+            key: "message-id",
+            line: `<second-${secondMessageId}@example.com>`,
+          },
+        ],
+        subject: "Second account searchable mail",
+        snippet: "Only the second account owns this thread.",
+        bodyText: "A second account searchable phrase is stored here.",
+        embeddingContentHash: createMessageContentHash({
+          direction: "incoming",
+          sender: secondSender,
+          recipients: ["second@example.com"],
+          subject: "Second account searchable mail",
+          bodyText: "A second account searchable phrase is stored here.",
+        }),
+        sentAt,
+      });
+      await database.insert(labels).values([
+        {
+          id: firstStarredLabelId,
+          userId,
+          accountId,
+          kind: "gmail",
+          providerLabelId: "STARRED",
+          name: "Starred",
+          normalizedName: "starred",
+          providerType: "system",
+        },
+        {
+          id: secondStarredLabelId,
+          userId,
+          accountId: secondAccountId,
+          kind: "gmail",
+          providerLabelId: "STARRED",
+          name: "Starred",
+          normalizedName: "starred",
+          providerType: "system",
+        },
+      ]);
+      await database.insert(messageLabels).values([
+        {
+          userId,
+          accountId,
+          messageId,
+          labelId: firstStarredLabelId,
+          source: "gmail",
+        },
+        {
+          userId,
+          accountId: secondAccountId,
+          messageId: secondMessageId,
+          labelId: secondStarredLabelId,
+          source: "gmail",
+        },
+      ]);
+
+      const [shell, allThreads, firstThreads, secondThreads, counts] =
+        await Promise.all([
+          getMailboxShellData(userId, database),
+          listMailboxThreads(userId, {}, database),
+          listMailboxThreads(userId, { accountId }, database),
+          listMailboxThreads(userId, { accountId: secondAccountId }, database),
+          getMailboxSidebarCounts(userId, database),
+        ]);
+
+      assert.deepEqual(
+        shell?.accounts.map((account) => account.id).sort(),
+        [accountId, secondAccountId].sort(),
+      );
+      assert.deepEqual(
+        allThreads?.threads.map((thread) => thread.id).sort(),
+        [threadId, secondThreadId].sort(),
+      );
+      assert.deepEqual(firstThreads?.threads.map((thread) => thread.id), [threadId]);
+      assert.deepEqual(secondThreads?.threads.map((thread) => thread.id), [
+        secondThreadId,
+      ]);
+      assert.equal(counts?.all.views.all, 2);
+      assert.equal(counts?.all.views.starred, 2);
+      assert.equal(counts?.accounts[accountId]?.views.all, 1);
+      assert.equal(counts?.accounts[accountId]?.views.starred, 1);
+      assert.equal(counts?.accounts[secondAccountId]?.views.all, 1);
+      assert.equal(counts?.accounts[secondAccountId]?.views.starred, 1);
+
+      const [allSearch, firstSearch, secondSearch] = await Promise.all([
+        searchMailbox({ userId, query: "second account searchable" }, database),
+        searchMailbox(
+          { userId, accountId, query: "second account searchable" },
+          database,
+        ),
+        searchMailbox(
+          {
+            userId,
+            accountId: secondAccountId,
+            query: "second account searchable",
+          },
+          database,
+        ),
+      ]);
+      assert.equal(allSearch[0]?.accountId, secondAccountId);
+      assert.deepEqual(firstSearch, []);
+      assert.equal(secondSearch[0]?.messageId, secondMessageId);
     });
   },
 );
@@ -551,7 +723,12 @@ test(
         changedThreadIds: [],
         refreshedThreadIds: [threadId],
       });
-      const threadDetail = await getMailboxThreadDetail(userId, threadId, database);
+      const threadDetail = await getMailboxThreadDetail(
+        userId,
+        threadId,
+        fixture.accountId,
+        database,
+      );
       assert.equal(
         threadDetail?.thread.messages[0]?.providerHistoryId,
         "120",

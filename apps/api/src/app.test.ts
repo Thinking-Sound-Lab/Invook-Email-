@@ -272,6 +272,7 @@ test("custom label creation accepts only supported historical windows", async ()
     url: "/v1/labels",
     headers: { cookie: await sessionCookie(attachmentOwnerId) },
     payload: {
+      accountId: attachmentOwnerId,
       name: "Security",
       description: "Account security notices",
       applyToPastDays: 14,

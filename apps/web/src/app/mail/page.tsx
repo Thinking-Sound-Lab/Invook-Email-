@@ -32,6 +32,7 @@ interface MailPageProps {
     thread?: string | string[];
     q?: string | string[];
     cursor?: string | string[];
+    account?: string | string[];
   }>;
 }
 
@@ -61,6 +62,10 @@ function normalizeSurface(value: string | undefined): MailSurface {
   return value && mailSurfaces.has(value as MailSurface) ? (value as MailSurface) : "mail";
 }
 
+function normalizeAccount(value: string | undefined): string {
+  return value === "all" || (value && validateUuid(value)) ? value : "all";
+}
+
 export default async function MailPage({ searchParams }: MailPageProps) {
   const params = await searchParams;
 
@@ -70,15 +75,26 @@ export default async function MailPage({ searchParams }: MailPageProps) {
   const query = firstValue(params.q)?.trim();
   const mailboxCursor = firstValue(params.cursor)?.trim() || undefined;
   const currentView = normalizeView(firstValue(params.view));
+  const accountSelection = normalizeAccount(firstValue(params.account));
 
   const [threadDetail, threadPage, searchResults] = await Promise.all([
-    requestedThreadId ? getMailboxThreadDetail(requestedThreadId) : null,
-    currentSurface === "mail" && !requestedThreadId
-      ? getMailboxThreadPage({ cursor: mailboxCursor, view: currentView })
+    requestedThreadId
+      ? getMailboxThreadDetail(requestedThreadId, accountSelection)
       : null,
-    currentSurface === "search" && query ? searchMailbox(query) : [],
+    currentSurface === "mail" && !requestedThreadId
+      ? getMailboxThreadPage({
+          account: accountSelection,
+          cursor: mailboxCursor,
+          view: currentView,
+        })
+      : null,
+    currentSurface === "search" && query
+      ? searchMailbox(query, accountSelection)
+      : [],
   ]);
-  if (requestedThreadId && !threadDetail) redirect(`/mail?view=${currentView}`);
+  if (requestedThreadId && !threadDetail) {
+    redirect(`/mail?account=${accountSelection}&view=${currentView}`);
+  }
   if (currentSurface === "mail" && !requestedThreadId && !threadPage) redirect("/");
   const selectedThread = threadDetail?.thread as SelectedThread | undefined;
 
@@ -86,6 +102,7 @@ export default async function MailPage({ searchParams }: MailPageProps) {
   if (selectedThread) {
     centerPane = (
       <ThreadReader
+        accountSelection={accountSelection}
         thread={selectedThread}
         currentView={currentView}
         mailboxCursor={mailboxCursor}
@@ -93,17 +110,24 @@ export default async function MailPage({ searchParams }: MailPageProps) {
       />
     );
   } else if (currentSurface === "compose") {
-    centerPane = <ComposeSurface />;
+    centerPane = <ComposeSurface key={accountSelection} />;
   } else if (currentSurface === "search" && !query) {
-    centerPane = <SearchSurface />;
+    centerPane = <SearchSurface accountSelection={accountSelection} />;
   } else if (currentSurface === "search" && query) {
-    centerPane = <SearchResultsSurface query={query} results={searchResults} />;
+    centerPane = (
+      <SearchResultsSurface
+        accountSelection={accountSelection}
+        query={query}
+        results={searchResults}
+      />
+    );
   } else if (currentSurface === "automations") {
     centerPane = <PendingSurface />;
   } else {
     centerPane = (
       <MailList
-        key={currentView}
+        key={`${accountSelection}:${currentView}`}
+        accountSelection={accountSelection}
         canonicalPageVersion={uuidv4()}
         currentView={currentView}
         initialOlderCursor={threadPage?.pagination.olderCursor ?? null}
@@ -122,7 +146,8 @@ export default async function MailPage({ searchParams }: MailPageProps) {
         {centerPane}
       </div>
       <AgentPanel
-        key={selectedThread?.id ?? "mailbox"}
+        key={`${accountSelection}:${selectedThread?.id ?? "mailbox"}`}
+        accountSelection={accountSelection}
         openThreadId={selectedThread?.id}
         openThreadSubject={selectedThread?.subject || undefined}
       />

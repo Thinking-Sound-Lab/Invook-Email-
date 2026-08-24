@@ -258,11 +258,9 @@ async function handleGmailCallback(
       });
     }
 
-    await sendRedirect(
-      reply,
-      new URL("/mail", getPublicAppOrigin()).toString(),
-      302,
-    );
+    const mailboxUrl = new URL("/mail", getPublicAppOrigin());
+    mailboxUrl.searchParams.set("account", account.id);
+    await sendRedirect(reply, mailboxUrl.toString(), 302);
   } catch (error) {
     console.error("api: gmail connection callback failed", {
       requestId: request.id,

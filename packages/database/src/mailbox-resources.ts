@@ -5,6 +5,7 @@ import type {
   MailboxPagination,
   MailboxSelectedThread,
   MailboxSettings,
+  MailboxScopeSidebarCounts,
   MailboxSidebarCounts,
   MailboxThreadDetail,
   MailboxThreadPage,
@@ -131,11 +132,11 @@ function createMailboxCursor(
   ).toString("base64url");
 }
 
-async function getMailboxAccountContext(
+async function listMailboxAccountContexts(
   userId: string,
   database: Database,
-): Promise<MailboxAccountRow | null> {
-  const [account] = await database
+): Promise<MailboxAccountRow[]> {
+  return database
     .select({
       id: connectedAccounts.id,
       email: connectedAccounts.email,
@@ -157,9 +158,25 @@ async function getMailboxAccountContext(
         not(eq(connectedAccounts.status, "disconnected")),
       ),
     )
-    .orderBy(desc(connectedAccounts.createdAt))
-    .limit(1);
-  return account ?? null;
+    .orderBy(asc(connectedAccounts.createdAt), asc(connectedAccounts.id));
+}
+
+async function resolveMailboxAccountContexts(
+  input: { userId: string; accountId?: string | null },
+  database: Database,
+): Promise<MailboxAccountRow[] | null> {
+  const accounts = await listMailboxAccountContexts(input.userId, database);
+  if (!input.accountId) return accounts.length > 0 ? accounts : null;
+  const account = accounts.find((candidate) => candidate.id === input.accountId);
+  return account ? [account] : null;
+}
+
+export async function resolveMailboxAccountIds(
+  input: { userId: string; accountId?: string | null },
+  database: Database = getDatabase(),
+): Promise<string[] | null> {
+  const accounts = await resolveMailboxAccountContexts(input, database);
+  return accounts ? accounts.map((account) => account.id) : null;
 }
 
 async function listInvookLabels(
@@ -187,10 +204,43 @@ async function listInvookLabels(
   return rows.sort((left, right) => left.name.localeCompare(right.name));
 }
 
+type AccountInvookLabel = InvookLabel & { accountId: string };
+
+async function listInvookLabelsForAccounts(
+  input: { userId: string; accountIds: string[] },
+  database: Database,
+): Promise<AccountInvookLabel[]> {
+  if (input.accountIds.length === 0) return [];
+  const rows = await database
+    .select({
+      accountId: labels.accountId,
+      id: labels.id,
+      name: labels.name,
+      description: labels.description,
+      systemKey: labels.systemKey,
+      definitionVersion: labels.definitionVersion,
+      isEnabled: labels.isEnabled,
+    })
+    .from(labels)
+    .where(
+      and(
+        eq(labels.userId, input.userId),
+        inArray(labels.accountId, input.accountIds),
+        eq(labels.kind, "invook"),
+      ),
+    )
+    .orderBy(asc(labels.accountId), asc(labels.createdAt), asc(labels.name));
+  return rows.sort((left, right) =>
+    left.accountId === right.accountId
+      ? left.name.localeCompare(right.name)
+      : left.accountId.localeCompare(right.accountId),
+  );
+}
+
 async function attachThreadLabels<T extends ThreadBaseRow>(
   input: {
     userId: string;
-    accountId: string;
+    accountIds: string[];
     threadRows: T[];
   },
   database: Database,
@@ -211,10 +261,11 @@ async function attachThreadLabels<T extends ThreadBaseRow>(
       .where(
         and(
           eq(threadLabelAssignments.userId, input.userId),
-          eq(threadLabelAssignments.accountId, input.accountId),
+          inArray(threadLabelAssignments.accountId, input.accountIds),
           inArray(threadLabelAssignments.threadId, threadIds),
           eq(labels.userId, input.userId),
-          eq(labels.accountId, input.accountId),
+          eq(labels.accountId, threadLabelAssignments.accountId),
+          inArray(labels.accountId, input.accountIds),
           eq(labels.kind, "invook"),
         ),
       ),
@@ -232,10 +283,12 @@ async function attachThreadLabels<T extends ThreadBaseRow>(
       .where(
         and(
           eq(messages.userId, input.userId),
-          eq(messages.accountId, input.accountId),
+          inArray(messages.accountId, input.accountIds),
           inArray(messages.threadId, threadIds),
+          eq(messageLabels.accountId, messages.accountId),
           eq(labels.userId, input.userId),
-          eq(labels.accountId, input.accountId),
+          eq(labels.accountId, messages.accountId),
+          inArray(labels.accountId, input.accountIds),
           eq(labels.kind, "gmail"),
           eq(labels.providerType, "system"),
           visibleMessageCondition,
@@ -279,42 +332,71 @@ async function attachThreadLabels<T extends ThreadBaseRow>(
 export async function getMailboxShellData(
   userId: string,
   database: Database = getDatabase(),
-): Promise<{ account: MailboxAccount; invookLabels: InvookLabel[] } | null> {
-  const account = await getMailboxAccountContext(userId, database);
-  if (!account) return null;
-  const invookLabels = await listInvookLabels(
-    { userId, accountId: account.id },
+): Promise<{
+  accounts: MailboxAccount[];
+  accountLabels: Array<{ accountId: string; labels: InvookLabel[] }>;
+} | null> {
+  const accounts = await listMailboxAccountContexts(userId, database);
+  if (accounts.length === 0) return null;
+  const invookLabels = await listInvookLabelsForAccounts(
+    { userId, accountIds: accounts.map((account) => account.id) },
     database,
   );
-  return { account: serializeAccount(account), invookLabels };
+  return {
+    accounts: accounts.map(serializeAccount),
+    accountLabels: accounts.map((account) => ({
+      accountId: account.id,
+      labels: invookLabels
+        .filter((label) => label.accountId === account.id)
+        .map(({ accountId: _accountId, ...label }) => label),
+    })),
+  };
+}
+
+function emptySidebarCounts(): MailboxScopeSidebarCounts {
+  return {
+    views: {
+      all: 0,
+      important: 0,
+      starred: 0,
+      drafts: 0,
+      sent: 0,
+      spam: 0,
+      trash: 0,
+    },
+    labels: {},
+  };
 }
 
 export async function getMailboxSidebarCounts(
   userId: string,
   database: Database = getDatabase(),
 ): Promise<MailboxSidebarCounts | null> {
-  const account = await getMailboxAccountContext(userId, database);
-  if (!account) return null;
+  const accounts = await listMailboxAccountContexts(userId, database);
+  if (accounts.length === 0) return null;
+  const accountIds = accounts.map((account) => account.id);
   const [
     invookLabels,
-    [allThreadCount],
+    allThreadCountRows,
     gmailLabelCountRows,
     invookLabelCountRows,
   ] =
     await Promise.all([
-      listInvookLabels({ userId, accountId: account.id }, database),
+      listInvookLabelsForAccounts({ userId, accountIds }, database),
       database
-        .select({ value: count(threads.id) })
+        .select({ accountId: threads.accountId, value: count(threads.id) })
         .from(threads)
         .where(
           and(
             eq(threads.userId, userId),
-            eq(threads.accountId, account.id),
+            inArray(threads.accountId, accountIds),
             mailboxViewCondition("all"),
           ),
-        ),
+        )
+        .groupBy(threads.accountId),
       database
         .select({
+          accountId: messages.accountId,
           labelId: labels.id,
           providerLabelId: labels.providerLabelId,
           value: countDistinct(messages.threadId),
@@ -325,16 +407,19 @@ export async function getMailboxSidebarCounts(
         .where(
           and(
             eq(messages.userId, userId),
-            eq(messages.accountId, account.id),
+            inArray(messages.accountId, accountIds),
+            eq(messageLabels.accountId, messages.accountId),
             eq(labels.userId, userId),
-            eq(labels.accountId, account.id),
+            eq(labels.accountId, messages.accountId),
+            inArray(labels.accountId, accountIds),
             eq(labels.kind, "gmail"),
             inArray(labels.providerLabelId, countedGmailProviderLabelIds),
           ),
         )
-        .groupBy(labels.id, labels.providerLabelId),
+        .groupBy(messages.accountId, labels.id, labels.providerLabelId),
       database
         .select({
+          accountId: threads.accountId,
           labelId: labels.id,
           systemKey: labels.systemKey,
           value: count(threads.id),
@@ -345,49 +430,69 @@ export async function getMailboxSidebarCounts(
         .where(
           and(
             eq(threads.userId, userId),
-            eq(threads.accountId, account.id),
+            inArray(threads.accountId, accountIds),
+            eq(threadLabelAssignments.accountId, threads.accountId),
+            eq(labels.accountId, threads.accountId),
             mailboxViewCondition("all"),
             eq(labels.kind, "invook"),
           ),
         )
-        .groupBy(labels.id, labels.systemKey),
+        .groupBy(threads.accountId, labels.id, labels.systemKey),
     ]);
-  const views: Record<StaticMailboxView, number> = {
-    all: allThreadCount?.value ?? 0,
-    important: 0,
-    starred: 0,
-    drafts: 0,
-    sent: 0,
-    spam: 0,
-    trash: 0,
-  };
-  const labelCounts = new Map<string, number>();
+  const countsByAccountId = new Map<string, MailboxScopeSidebarCounts>(
+    accounts.map((account) => [account.id, emptySidebarCounts()]),
+  );
+  for (const label of invookLabels) {
+    const counts = countsByAccountId.get(label.accountId);
+    if (counts) counts.labels[label.id] = 0;
+  }
+  for (const countRow of allThreadCountRows) {
+    const counts = countsByAccountId.get(countRow.accountId);
+    if (counts) counts.views.all = countRow.value;
+  }
   for (const countRow of invookLabelCountRows) {
-    labelCounts.set(countRow.labelId, countRow.value);
+    const counts = countsByAccountId.get(countRow.accountId);
+    if (!counts) continue;
+    counts.labels[countRow.labelId] = countRow.value;
     if (countRow.systemKey === "important") {
-      views.important = countRow.value;
+      counts.views.important = countRow.value;
     }
   }
   for (const countRow of gmailLabelCountRows) {
+    const counts = countsByAccountId.get(countRow.accountId);
+    if (!counts) continue;
     const view = mailboxViewForProviderLabelId(countRow.providerLabelId);
-    if (view) views[view] = countRow.value;
+    if (view) counts.views[view] = countRow.value;
+  }
+  const all = emptySidebarCounts();
+  for (const counts of countsByAccountId.values()) {
+    for (const view of Object.keys(all.views) as StaticMailboxView[]) {
+      all.views[view] += counts.views[view];
+    }
+    Object.assign(all.labels, counts.labels);
   }
   return {
-    views,
-    labels: Object.fromEntries(
-      invookLabels.map((label) => [label.id, labelCounts.get(label.id) ?? 0]),
-    ),
+    all,
+    accounts: Object.fromEntries(countsByAccountId),
   };
 }
 
 export async function listMailboxThreads(
   userId: string,
-  input: { cursor?: MailboxCursor | null; view?: MailboxView } = {},
+  input: {
+    accountId?: string | null;
+    cursor?: MailboxCursor | null;
+    view?: MailboxView;
+  } = {},
   database: Database = getDatabase(),
 ): Promise<MailboxThreadPage | null> {
-  const { cursor = null, view = "all" } = input;
-  const account = await getMailboxAccountContext(userId, database);
-  if (!account) return null;
+  const { accountId = null, cursor = null, view = "all" } = input;
+  const accounts = await resolveMailboxAccountContexts(
+    { userId, accountId },
+    database,
+  );
+  if (!accounts) return null;
+  const accountIds = accounts.map((account) => account.id);
   const mailboxSortTime = sql<Date>`coalesce(${threads.latestMessageAt}, to_timestamp(0))`;
   const cursorSortTime = cursor
     ? sql<Date>`${cursor.latestMessageAt.toISOString()}::timestamptz`
@@ -407,6 +512,8 @@ export async function listMailboxThreads(
     : undefined;
   const rawThreads = await database
     .select({
+      accountId: threads.accountId,
+      accountEmail: connectedAccounts.email,
       id: threads.id,
       subject: threads.subject,
       snippet: threads.snippet,
@@ -415,10 +522,11 @@ export async function listMailboxThreads(
       messageCount: threads.messageCount,
     })
     .from(threads)
+    .innerJoin(connectedAccounts, eq(connectedAccounts.id, threads.accountId))
     .where(
       and(
         eq(threads.userId, userId),
-        eq(threads.accountId, account.id),
+        inArray(threads.accountId, accountIds),
         visibleThreadCondition(),
         mailboxViewCondition(view),
         cursorCondition,
@@ -447,7 +555,7 @@ export async function listMailboxThreads(
         : null,
   };
   const pageThreads = await attachThreadLabels(
-    { userId, accountId: account.id, threadRows: pageRows },
+    { userId, accountIds, threadRows: pageRows },
     database,
   );
   return { pagination, threads: pageThreads };
@@ -456,12 +564,19 @@ export async function listMailboxThreads(
 export async function getMailboxThreadDetail(
   userId: string,
   threadId: string,
+  accountId: string | null = null,
   database: Database = getDatabase(),
 ): Promise<MailboxThreadDetail | null> {
-  const account = await getMailboxAccountContext(userId, database);
-  if (!account) return null;
+  const accounts = await resolveMailboxAccountContexts(
+    { userId, accountId },
+    database,
+  );
+  if (!accounts) return null;
+  const accountIds = accounts.map((account) => account.id);
   const [selectedThread] = await database
     .select({
+      accountId: threads.accountId,
+      accountEmail: connectedAccounts.email,
       id: threads.id,
       providerThreadId: threads.providerThreadId,
       subject: threads.subject,
@@ -471,11 +586,12 @@ export async function getMailboxThreadDetail(
       messageCount: threads.messageCount,
     })
     .from(threads)
+    .innerJoin(connectedAccounts, eq(connectedAccounts.id, threads.accountId))
     .where(
       and(
         eq(threads.id, threadId),
         eq(threads.userId, userId),
-        eq(threads.accountId, account.id),
+        inArray(threads.accountId, accountIds),
         visibleThreadCondition(),
       ),
     )
@@ -484,10 +600,10 @@ export async function getMailboxThreadDetail(
   const [threadRowsWithLabels, invookLabels, threadMessages, [threadDraft], providerDrafts] =
     await Promise.all([
       attachThreadLabels(
-        { userId, accountId: account.id, threadRows: [selectedThread] },
+        { userId, accountIds: [selectedThread.accountId], threadRows: [selectedThread] },
         database,
       ),
-      listInvookLabels({ userId, accountId: account.id }, database),
+      listInvookLabels({ userId, accountId: selectedThread.accountId }, database),
       database
         .select({
           id: messages.id,
@@ -510,7 +626,7 @@ export async function getMailboxThreadDetail(
         .where(
           and(
             eq(messages.userId, userId),
-            eq(messages.accountId, account.id),
+            eq(messages.accountId, selectedThread.accountId),
             eq(messages.threadId, selectedThread.id),
             visibleMessageCondition,
           ),
@@ -530,7 +646,7 @@ export async function getMailboxThreadDetail(
         .where(
           and(
             eq(drafts.userId, userId),
-            eq(drafts.accountId, account.id),
+            eq(drafts.accountId, selectedThread.accountId),
             eq(drafts.kind, "invook"),
             eq(drafts.threadId, selectedThread.id),
             eq(drafts.status, "editing"),
@@ -552,12 +668,12 @@ export async function getMailboxThreadDetail(
         .where(
           and(
             eq(drafts.userId, userId),
-            eq(drafts.accountId, account.id),
+            eq(drafts.accountId, selectedThread.accountId),
             eq(drafts.kind, "gmail"),
             eq(drafts.providerThreadId, selectedThread.providerThreadId),
             isNotNull(drafts.providerMessageId),
             eq(messages.userId, userId),
-            eq(messages.accountId, account.id),
+            eq(messages.accountId, selectedThread.accountId),
             visibleMessageCondition,
           ),
         )
@@ -586,9 +702,9 @@ export async function getMailboxThreadDetail(
           .where(
             and(
               eq(messageAttachments.userId, userId),
-              eq(messageAttachments.accountId, account.id),
+              eq(messageAttachments.accountId, selectedThread.accountId),
               eq(messages.userId, userId),
-              eq(messages.accountId, account.id),
+              eq(messages.accountId, selectedThread.accountId),
               inArray(messageAttachments.messageId, messageIds),
             ),
           )
@@ -607,10 +723,10 @@ export async function getMailboxThreadDetail(
           .where(
             and(
               eq(messages.userId, userId),
-              eq(messages.accountId, account.id),
+              eq(messages.accountId, selectedThread.accountId),
               inArray(messageLabels.messageId, messageIds),
               eq(labels.userId, userId),
-              eq(labels.accountId, account.id),
+              eq(labels.accountId, selectedThread.accountId),
               eq(labels.kind, "gmail"),
               eq(labels.providerType, "system"),
             ),
@@ -701,9 +817,14 @@ export async function getMailboxThreadDetail(
 
 export async function getMailboxSettings(
   userId: string,
+  accountId: string,
   database: Database = getDatabase(),
 ): Promise<MailboxSettings | null> {
-  const account = await getMailboxAccountContext(userId, database);
+  const accounts = await resolveMailboxAccountContexts(
+    { userId, accountId },
+    database,
+  );
+  const account = accounts?.[0];
   if (!account) return null;
   const [memoryRows, invookLabels] = await Promise.all([
     database
@@ -734,6 +855,7 @@ export async function getMailboxSettings(
     listInvookLabels({ userId, accountId: account.id }, database),
   ]);
   return {
+    accountId: account.id,
     memories: memoryRows.map((memory) => ({
       ...memory,
       confidence: memory.confidence === null ? null : Number(memory.confidence),
@@ -747,7 +869,9 @@ export async function getMailboxSettings(
 export async function getMailboxEventRecoveryContextForUser(
   userId: string,
   database: Database = getDatabase(),
-): Promise<{ accountId: string } | null> {
-  const account = await getMailboxAccountContext(userId, database);
-  return account ? { accountId: account.id } : null;
+): Promise<{ accountIds: string[] } | null> {
+  const accounts = await listMailboxAccountContexts(userId, database);
+  return accounts.length > 0
+    ? { accountIds: accounts.map((account) => account.id) }
+    : null;
 }

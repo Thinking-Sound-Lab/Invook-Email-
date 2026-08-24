@@ -118,14 +118,18 @@ const sendInput = {
 };
 
 test("compose send admission accepts only an exact idempotency key", () => {
-  assert.deepEqual(parseGmailComposeSendRequest({ idempotencyKey }), {
+  assert.deepEqual(parseGmailComposeSendRequest({ accountId, idempotencyKey }), {
+    accountId,
     idempotencyKey,
   });
   assert.equal(
-    parseGmailComposeSendRequest({ idempotencyKey, unexpected: true }),
+    parseGmailComposeSendRequest({ accountId, idempotencyKey, unexpected: true }),
     null,
   );
-  assert.equal(parseGmailComposeSendRequest({ idempotencyKey: "invalid" }), null);
+  assert.equal(
+    parseGmailComposeSendRequest({ accountId, idempotencyKey: "invalid" }),
+    null,
+  );
 });
 
 test("an exact send retry does not send the Gmail draft twice", async () => {

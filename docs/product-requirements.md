@@ -73,8 +73,18 @@ Historical search indexing uses durable 2,000-message provider batches. A signed
 The left sidebar contains:
 
 - Compose, Search, Settings, Automations;
-- All plus built-in and user-created Invook labels owned by the connected account;
+- All plus built-in and user-created Invook labels owned by the selected account;
 - mail views: Starred, Shared, Reminders, Scheduled, Drafts, Done, Sent, Trash.
+- an Inboxes selector containing exactly All, every connected Gmail account, and Add account.
+
+The Inboxes selection scopes every item inside Mail. All aggregates threads,
+search, labels, and mail statistics across every connected account. Selecting one
+account restricts those same resources to that account; the Mail view named All
+then means all Gmail Inbox threads for that selected account. Compose and
+account-owned settings require one explicit account when the aggregate scope is
+selected. Every connected account has a stable colored ring around its profile
+picture in Inboxes, and the same profile picture and ring appear immediately to
+the left of the date on each thread or search-result row.
 
 The center pane shows the selected mailbox or label view in reverse chronological order. Selecting a thread replaces the list with the real thread. Opening an unread thread submits one Gmail thread-level read mutation; Gmail is written first, and the stored replica changes only when provider history is applied. A failed passive mutation remains non-optimistic and exposes an explicit retry.
 

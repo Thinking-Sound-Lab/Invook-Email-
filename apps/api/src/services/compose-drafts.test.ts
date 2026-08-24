@@ -82,12 +82,13 @@ function memoryDependencies(input: {
 
 test("compose draft admission accepts only the exact validated wire contract", () => {
   assert.deepEqual(
-    parseGmailComposeDraftRequest({ idempotencyKey, ...fields }),
-    { idempotencyKey, ...fields },
+    parseGmailComposeDraftRequest({ accountId, idempotencyKey, ...fields }),
+    { accountId, idempotencyKey, ...fields },
   );
   assert.equal(
     parseGmailComposeDraftRequest({
       idempotencyKey,
+      accountId,
       ...fields,
       unexpected: "field",
     }),
@@ -96,6 +97,7 @@ test("compose draft admission accepts only the exact validated wire contract", (
   assert.equal(
     parseGmailComposeDraftRequest({
       idempotencyKey: "not-a-uuid",
+      accountId,
       ...fields,
     }),
     null,
@@ -103,6 +105,7 @@ test("compose draft admission accepts only the exact validated wire contract", (
   assert.equal(
     parseGmailComposeDraftRequest({
       idempotencyKey,
+      accountId,
       ...fields,
       subject: "Subject\r\nBcc: hidden@example.com",
     }),
