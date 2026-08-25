@@ -9,7 +9,6 @@ import type { ProtectedMemory } from "./memory-batch";
 import { getAiModel } from "./model";
 
 export * from "./memory-batch";
-export * from "./embedding";
 export * from "./mail-agent";
 export * from "./thread-label-classifier";
 export * from "./thread-label-batch";

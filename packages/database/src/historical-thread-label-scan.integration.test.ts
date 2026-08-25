@@ -98,7 +98,6 @@ test(
           subject: "Invoice",
           snippet: "Invoice is ready",
           bodyText: "Your invoice is ready.",
-          embeddingContentHash: "a".repeat(64),
           sentAt,
         },
         {
@@ -115,7 +114,6 @@ test(
           subject: "Spam",
           snippet: "Spam content",
           bodyText: "This must not reach classification.",
-          embeddingContentHash: "b".repeat(64),
           sentAt: new Date(sentAt.getTime() - 1_000),
         },
       ]);

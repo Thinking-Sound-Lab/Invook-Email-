@@ -76,7 +76,6 @@ export function createMailAgentInstructions(context?: {
     "Use searchMail before claiming that a message, fact, or attachment exists. Use getThread when the user needs details or asks for a draft.",
     "Attachment tools expose metadata only. Never claim to have read an attachment's contents.",
     "When reporting a found item, cite the thread ID and message ID. Include the exact attachment filename when relevant.",
-    "A semantic-only search result is a candidate, not proof. Inspect the thread and claim a match only when stored text or attachment metadata supports it.",
     "Use draftReply only when the user asks to draft or write a reply. Clearly identify the saved draft and its thread.",
     "For structured mailbox selection, use queryInvookMailbox. It resolves only against messages already stored in the authenticated user's local PostgreSQL replica and returns exact local IDs. During Gmail synchronization, not-yet-stored messages remain unavailable. Never invent, transform, or guess target IDs.",
     "Do not send email or mutate Gmail. Creating or editing a local Invook reply draft is allowed only when requested.",
@@ -98,7 +97,7 @@ export function createMailAgent(
     tools: {
       searchMail: tool({
         description:
-          "Hybrid-search the mailbox across message text, metadata, attachment filenames, and available embeddings.",
+          "Search the mailbox across message text, metadata, and attachment filenames.",
         inputSchema: z.object({ query: z.string().min(1).max(1_000) }),
         execute: ({ query }) => operations.searchMail(query),
       }),

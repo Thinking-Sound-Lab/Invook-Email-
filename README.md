@@ -31,7 +31,7 @@ See [Configuration](#configuration) before signing in or connecting Gmail.
 ## Capabilities
 
 - Mirror the complete Gmail mailbox, including Spam, Trash, drafts, raw MIME, and attachments.
-- Search mail with text, metadata, attachment filenames, and optional semantic similarity.
+- Search mail with text, metadata, and attachment filenames.
 - Assign exactly one Invook-owned Important, Newsletter, Billing, Others, or custom label to each Inbox thread without changing Gmail labels.
 - Learn editable Memory for writing preferences, contacts, and scheduling behavior.
 - Draft replies with only the current thread and relevant Memory as context.
@@ -45,7 +45,7 @@ See [Configuration](#configuration) before signing in or connecting Gmail.
 3. Workers copy Gmail data into PostgreSQL and store raw MIME and attachments in S3-compatible object storage.
 4. PostgreSQL owns product state and transactionally records Temporal commands. Temporal Cloud durably schedules, executes, and retries worker Activities.
 5. The mail reader sanitizes stored HTML and renders it inside an isolated Shadow DOM. Sender-hosted images load directly from their original URLs, so opening mail can disclose the request time and browser IP address to the image host.
-6. AI jobs classify labels, index search content, learn Memory, and create drafts. The Next.js app reads the resulting local replica through the API.
+6. AI jobs classify labels, learn Memory, and create drafts. The Next.js app reads the resulting local replica through the API.
 
 Provider-owned changes are written to Gmail first and then converge locally through Gmail history.
 
@@ -70,9 +70,9 @@ For the detailed synchronization and ownership rules, read the [Gmail mailbox re
 | --- | --- |
 | `apps/web` | Next.js App Router UI and same-origin API/SSE proxies |
 | `apps/api` | Fastify authentication, authorization, Gmail OAuth, webhooks, and product routes |
-| `apps/worker` | Durable Gmail sync, indexing, labeling, Memory, and feedback jobs |
+| `apps/worker` | Durable Gmail sync, labeling, Memory, and feedback jobs |
 | `packages/auth` | Better Auth Google Identity and database-backed sessions |
-| `packages/ai` | Model, embedding, Memory, label, draft, and mail-agent logic |
+| `packages/ai` | Model, Memory, label, draft, and mail-agent logic |
 | `packages/contracts` | Shared browser/server product and wire contracts |
 | `packages/database` | Drizzle schema, migrations, repositories, and workflows |
 | `packages/gmail` | Gmail OAuth, Gmail API, history mapping, and MIME parsing |
@@ -119,7 +119,7 @@ You can reuse the same OAuth client ID and secret for both flows or use separate
 AI configuration is feature-specific:
 
 - `AI_BASE_URL`, `AI_MODEL`, and optional `AI_API_KEY` power fast new/recent-thread labels, label previews/historical custom-label scans, feedback analysis, and drafting through an OpenAI-compatible endpoint.
-- `OPENAI_API_KEY`, optional `OPENAI_LABEL_BATCH_MODEL`, `OPENAI_LABEL_BATCH_INPUT_TOKEN_LIMIT`, `OPENAI_EMBEDDING_MODEL`, and `OPENAI_WEBHOOK_SECRET` power serialized historical thread-label Batch analysis and semantic indexing.
+- `OPENAI_API_KEY`, optional `OPENAI_LABEL_BATCH_MODEL`, `OPENAI_LABEL_BATCH_INPUT_TOKEN_LIMIT`, and `OPENAI_WEBHOOK_SECRET` power serialized historical thread-label Batch analysis.
 - `MEMORY_BATCH_PROVIDER=openai` uses OpenAI Batch for Memory.
 - `MEMORY_BATCH_PROVIDER=azure-openai` uses the `AZURE_OPENAI_*` Batch settings.
 
@@ -172,7 +172,7 @@ For a source-based development loop, keep PostgreSQL and MinIO available, config
 - **Language:** TypeScript
 - **Web:** Next.js 16, React 19, Tailwind CSS, shadcn/ui, Zustand
 - **API:** Fastify 5 and Better Auth
-- **Database:** PostgreSQL 17 with pgvector and Drizzle ORM
+- **Database:** PostgreSQL 17 with Drizzle ORM
 - **Jobs:** Temporal Cloud Workflows and Activities with a PostgreSQL transactional command handoff
 - **Storage:** S3-compatible object storage; MinIO locally
 - **Mail:** Gmail API, Google OAuth, and Gmail Pub/Sub notifications

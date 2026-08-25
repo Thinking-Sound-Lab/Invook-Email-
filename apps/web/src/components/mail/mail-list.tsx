@@ -92,7 +92,7 @@ function MailRow({
       href={mailboxHref(currentView, thread.id)}
       scroll={false}
       className={cn(
-        "group relative grid min-h-10 grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_4.5rem] items-center gap-3 border-b border-border/40 px-4 py-1.5 transition-colors [contain-intrinsic-size:40px] [content-visibility:auto] lg:grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_6.5rem_1rem_4.5rem] lg:gap-2.5",
+        "group relative grid min-h-12 grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_4.5rem] items-center gap-3 border-b border-border/40 px-4 py-2 transition-colors [contain-intrinsic-size:48px] [content-visibility:auto] lg:grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_6.5rem_1rem_4.5rem] lg:gap-2.5",
         "hover:bg-accent/55 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         isUnread && "bg-card/45",
       )}

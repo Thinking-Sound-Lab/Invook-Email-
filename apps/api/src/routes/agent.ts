@@ -65,12 +65,6 @@ export const registerAgentRoutes: FastifyPluginAsync = async (api) => {
       const results = await searchMailForUser({
         userId: session.userId,
         query,
-        onSemanticError: (error) => {
-          console.error("api: semantic mail search unavailable", {
-            requestId: request.id,
-            name: error instanceof Error ? error.name : "UnknownError",
-          });
-        },
       });
       await sendJson(reply, 200, { results });
     },

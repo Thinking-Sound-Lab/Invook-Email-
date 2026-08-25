@@ -63,7 +63,6 @@ test(
         sender: { raw: "Sender <sender@example.com>", email: "sender@example.com" },
         internalDate: new Date("2026-08-14T10:00:00.000Z"),
         sentAt: new Date("2026-08-14T10:00:00.000Z"),
-        embeddingContentHash: "a".repeat(64),
         rawObjectKey: "raw/provider-message.eml",
       });
       await database.insert(messageAttachments).values({
