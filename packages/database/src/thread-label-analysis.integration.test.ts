@@ -344,6 +344,206 @@ test(
     }
   },
 );
+
+test(
+  "live analysis that loses Inbox eligibility can be requeued after unarchive",
+  { skip: !testDatabaseUrl },
+  async () => {
+    if (!testDatabaseUrl) return;
+    const client = postgres(testDatabaseUrl, { max: 1 });
+    const database = drizzle(client, { schema }) as Database;
+    const userId = uuidv4();
+    const accountId = uuidv4();
+    const threadId = uuidv4();
+    const messageId = uuidv4();
+    const sentAt = new Date("2026-08-25T11:00:00.000Z");
+
+    try {
+      await database.insert(profiles).values({
+        id: userId,
+        email: `${userId}@example.test`,
+        displayName: "Ineligible live label reservation test",
+      });
+      await database.insert(connectedAccounts).values({
+        id: accountId,
+        userId,
+        providerAccountId: `provider-${accountId}`,
+        email: "owner@example.test",
+        memoryAcknowledgedAt: sentAt,
+      });
+      await ensureBuiltInInvookLabels({ userId, accountId }, database);
+      const [inboxLabel] = await database
+        .insert(labels)
+        .values({
+          userId,
+          accountId,
+          kind: "gmail",
+          providerLabelId: "INBOX",
+          name: "Inbox",
+          normalizedName: "inbox",
+          providerType: "system",
+        })
+        .returning({ id: labels.id });
+      assert.ok(inboxLabel);
+      const [important] = await database
+        .select({ id: labels.id })
+        .from(labels)
+        .where(
+          and(
+            eq(labels.accountId, accountId),
+            eq(labels.kind, "invook"),
+            eq(labels.systemKey, "important"),
+          ),
+        )
+        .limit(1);
+      assert.ok(important);
+      await database.insert(threads).values({
+        id: threadId,
+        userId,
+        accountId,
+        providerThreadId: `provider-thread-${threadId}`,
+        subject: "Please review",
+        snippet: "Action requested",
+        participants: ["sender@example.test"],
+        latestMessageAt: sentAt,
+        labelAnalysisVersion: 2,
+        labelAnalysisState: "pending",
+      });
+      await database.insert(messages).values({
+        id: messageId,
+        userId,
+        accountId,
+        threadId,
+        providerMessageId: `provider-${messageId}`,
+        direction: "incoming",
+        sender: { raw: "Sender <sender@example.test>", email: "sender@example.test" },
+        recipients: ["owner@example.test"],
+        internalDate: sentAt,
+        headerLines: [],
+        subject: "Please review",
+        snippet: "Action requested",
+        bodyText: "Please review and reply today.",
+        embeddingContentHash: "d".repeat(64),
+        sentAt,
+      });
+      await database.insert(messageLabels).values({
+        userId,
+        accountId,
+        messageId,
+        labelId: inboxLabel.id,
+        source: "gmail",
+      });
+      await database.insert(threadLabelAssignments).values({
+        userId,
+        accountId,
+        threadId,
+        labelId: important.id,
+        source: "ai",
+        confidence: "90.00",
+        modelId: "test-live-model",
+        definitionVersion: 1,
+      });
+
+      assert.equal(
+        await enqueueLiveInboxThreadLabelAnalyses(
+          { userId, accountId, threadIds: [threadId] },
+          database,
+        ),
+        1,
+      );
+      const [step] = await database
+        .select({ input: workflowSteps.input })
+        .from(workflowSteps)
+        .where(
+          and(
+            eq(workflowSteps.accountId, accountId),
+            eq(workflowSteps.stepType, "label.thread.assign"),
+          ),
+        )
+        .limit(1);
+      assert.equal(step?.input.analysisVersion, 2);
+      const checkpoint = {
+        threadId,
+        analysisVersion: 2,
+        definitionHash: String(step?.input.definitionHash),
+      };
+
+      await replaceGmailMessageLabels(
+        {
+          userId,
+          accountId,
+          providerMessageId: `provider-${messageId}`,
+          providerHistoryId: "201",
+          gmailLabels: [],
+        },
+        database,
+      );
+      const ineligible = await beginThreadLabelAnalysis(
+        { userId, accountId, checkpoint },
+        database,
+      );
+      assert.equal(ineligible.status, "ineligible");
+      assert.deepEqual(
+        await database
+          .select({
+            state: threads.labelAnalysisState,
+            version: threads.labelAnalysisVersion,
+          })
+          .from(threads)
+          .where(eq(threads.id, threadId))
+          .then((rows) => rows[0]),
+        { state: "pending", version: 3 },
+      );
+
+      await replaceGmailMessageLabels(
+        {
+          userId,
+          accountId,
+          providerMessageId: `provider-${messageId}`,
+          providerHistoryId: "202",
+          gmailLabels: [{ providerLabelId: "INBOX", name: "Inbox" }],
+        },
+        database,
+      );
+      assert.equal(
+        (
+          await database
+            .select({
+              state: threads.labelAnalysisState,
+              version: threads.labelAnalysisVersion,
+            })
+            .from(threads)
+            .where(eq(threads.id, threadId))
+            .then((rows) => rows[0])
+        )?.state,
+        "pending",
+      );
+      assert.equal(
+        await enqueueLiveInboxThreadLabelAnalyses(
+          { userId, accountId, threadIds: [threadId] },
+          database,
+        ),
+        1,
+      );
+      const [replay] = await database
+        .select({ input: workflowSteps.input })
+        .from(workflowSteps)
+        .where(
+          and(
+            eq(workflowSteps.accountId, accountId),
+            eq(workflowSteps.stepType, "label.thread.assign"),
+            sql`${workflowSteps.input}->>'analysisVersion' = '3'`,
+          ),
+        )
+        .limit(1);
+      assert.equal(replay?.input.lane, "live");
+    } finally {
+      await database.delete(profiles).where(eq(profiles.id, userId));
+      await client.end();
+    }
+  },
+);
+
 test(
   "recent label replans bypass a full distinct-thread fast-lane cap",
   { skip: !testDatabaseUrl },

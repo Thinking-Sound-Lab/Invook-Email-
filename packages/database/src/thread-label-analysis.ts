@@ -286,6 +286,30 @@ function checkpointMatches(
   );
 }
 
+async function releaseInboxIneligibleLiveLabelReservation(
+  threadId: string,
+  database: DatabaseExecutor,
+): Promise<void> {
+  // The assign workflow step completes successfully on ineligible, consuming
+  // `label.thread.assign:${threadId}:${version}:${definitionHash}`. Bump the
+  // version so a later return to Inbox can enqueue a fresh step. Leaving the
+  // row `running` excludes every future live/batch candidate, and an existing
+  // AI assignment also prevents unarchive from resetting the state.
+  await database
+    .update(threads)
+    .set({
+      labelAnalysisState: "pending",
+      labelAnalysisVersion: sql`${threads.labelAnalysisVersion} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(threads.id, threadId),
+        eq(threads.labelAnalysisState, "running"),
+      ),
+    );
+}
+
 function automaticThreadLabelAssignmentAllowed() {
   return sql<boolean>`not exists (
     select 1 from ${threadLabelAssignments} manual_assignment
@@ -677,7 +701,10 @@ export async function beginThreadLabelAnalysis(
       return { status: "superseded" };
     }
     const inboxMessages = await listInboxThreadMessages(thread.id, transaction);
-    if (inboxMessages.length === 0) return { status: "ineligible" };
+    if (inboxMessages.length === 0) {
+      await releaseInboxIneligibleLiveLabelReservation(thread.id, transaction);
+      return { status: "ineligible" };
+    }
     return {
       status: "ready",
       thread: { id: thread.id, subject: thread.subject, messages: inboxMessages },
@@ -763,7 +790,10 @@ export async function completeThreadLabelAnalysis(
       throw new Error("The thread label result does not match current definitions.");
     }
     const inboxMessages = await listInboxThreadMessages(thread.id, transaction);
-    if (inboxMessages.length === 0) return { status: "superseded" };
+    if (inboxMessages.length === 0) {
+      await releaseInboxIneligibleLiveLabelReservation(thread.id, transaction);
+      return { status: "superseded" };
+    }
     const assignmentSaved = await saveAiThreadLabelAssignment(
       {
         userId: input.userId,
