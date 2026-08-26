@@ -104,6 +104,14 @@ test("replicas without a usable live baseline remain deferred", () => {
     }),
     { kind: "defer", state: "repairing" },
   );
+  assert.deepEqual(
+    planGmailHistoryCatchup({
+      replicaState: "failed",
+      initialHistoryId: "100",
+      historyCursor: "200",
+    }),
+    { kind: "defer", state: "failed" },
+  );
 });
 
 test("a pending cursor yields to a durable continuation after one range", () => {

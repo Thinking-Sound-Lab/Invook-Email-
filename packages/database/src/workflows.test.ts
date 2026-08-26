@@ -10,12 +10,28 @@ import {
   createGmailSyncMessageBatchSteps,
   createPostSyncDerivationSteps,
   GMAIL_SYNC_MESSAGE_BATCH_SIZE,
+  shouldMarkGmailReplicaFailedForTerminalStep,
   TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE,
   temporalCommandJobFromRow,
   temporalCommandPriority,
   tenantTaskQueueLaneForStep,
   tenantTaskQueueLaneForStepType,
 } from "./workflows";
+
+test("exhausted history catch-up does not fail a ready Gmail replica", () => {
+  assert.equal(
+    shouldMarkGmailReplicaFailedForTerminalStep("gmail.history.catchup"),
+    false,
+  );
+  assert.equal(
+    shouldMarkGmailReplicaFailedForTerminalStep("gmail.watch.renew"),
+    true,
+  );
+  assert.equal(
+    shouldMarkGmailReplicaFailedForTerminalStep("gmail.sync.page"),
+    false,
+  );
+});
 
 test("live Gmail work dispatches ahead of bulk synchronization work", () => {
   assert.equal(TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE, 10);
