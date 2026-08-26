@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
-import { parseGmailMessage } from "./message";
+import { normalizeGmailFullMessage, parseGmailMessage } from "./message";
 
 const attachmentBytes = Buffer.from([0x00, 0x01, 0x02, 0xfe, 0xff]);
 const mime = Buffer.from(
@@ -65,13 +65,6 @@ test("raw MIME parsing preserves headers, bodies, bytes, and Gmail metadata", as
   assert.equal(parsed.internalDate, "1786527000000");
   assert.equal(parsed.sizeEstimate, mime.byteLength);
   assert.deepEqual(parsed.labelIds, ["INBOX", "IMPORTANT"]);
-  assert.deepEqual(parsed.raw, mime);
-  assert.equal(parsed.rawSize, mime.byteLength);
-  assert.equal(
-    parsed.rawChecksumSha256,
-    createHash("sha256").update(mime).digest("hex"),
-  );
-
   assert.deepEqual(
     parsed.headers.slice(0, 2).map(({ name }) => name),
     ["received", "received"],
@@ -103,6 +96,65 @@ test("raw MIME parsing preserves headers, bodies, bytes, and Gmail metadata", as
     attachment.checksumSha256,
     createHash("sha256").update(attachmentBytes).digest("hex"),
   );
+});
+
+test("full-format normalization reuses Gmail's parsed parts and loads external bytes", async () => {
+  const attachmentRequests: Array<{ messageId: string; attachmentId: string }> = [];
+  const parsed = await normalizeGmailFullMessage(
+    {
+      id: "full-message-id",
+      threadId: "full-thread-id",
+      historyId: "9876",
+      internalDate: "1786527000000",
+      sizeEstimate: 512,
+      labelIds: ["INBOX", "Label_7"],
+      snippet: "Complete body",
+      payload: {
+        mimeType: "multipart/mixed",
+        headers: [
+          { name: "From", value: "Sender Name <sender@example.com>" },
+          { name: "To", value: "receiver@example.com" },
+          { name: "Subject", value: "=?UTF-8?Q?Full_=E2=9C=93?=" },
+          { name: "Message-ID", value: "<full@example.com>" },
+        ],
+        parts: [
+          {
+            partId: "0",
+            mimeType: "text/plain",
+            body: { data: Buffer.from("Complete body").toString("base64url") },
+          },
+          {
+            partId: "1",
+            mimeType: "application/pdf",
+            filename: "invoice.pdf",
+            headers: [
+              { name: "Content-Disposition", value: "attachment; filename=invoice.pdf" },
+            ],
+            body: { attachmentId: "attachment-1", size: attachmentBytes.byteLength },
+          },
+        ],
+      },
+    },
+    async (request) => {
+      attachmentRequests.push(request);
+      return { data: attachmentBytes.toString("base64url"), size: attachmentBytes.byteLength };
+    },
+  );
+
+  assert.equal(parsed.providerMessageId, "full-message-id");
+  assert.equal(parsed.providerThreadId, "full-thread-id");
+  assert.equal(parsed.subject, "Full ✓");
+  assert.equal(parsed.from, '"Sender Name" <sender@example.com>');
+  assert.deepEqual(parsed.to, ["receiver@example.com"]);
+  assert.equal(parsed.bodyText, "Complete body");
+  assert.equal(parsed.bodyHtml, null);
+  assert.equal(parsed.sentAt, new Date(1786527000000).toISOString());
+  assert.deepEqual(attachmentRequests, [
+    { messageId: "full-message-id", attachmentId: "attachment-1" },
+  ]);
+  assert.equal(parsed.attachments[0]?.providerAttachmentId, "attachment-1");
+  assert.equal(parsed.attachments[0]?.mimePartPath, "1");
+  assert.deepEqual(parsed.attachments[0]?.content, attachmentBytes);
 });
 
 test("raw MIME parsing reports absent body variants honestly", async () => {

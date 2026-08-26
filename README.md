@@ -30,7 +30,7 @@ See [Configuration](#configuration) before signing in or connecting Gmail.
 
 ## Capabilities
 
-- Mirror the complete Gmail mailbox, including Spam, Trash, drafts, raw MIME, and attachments.
+- Mirror the complete Gmail mailbox, including Spam, Trash, drafts, parsed message content, and attachments.
 - Search mail with text, metadata, attachment filenames, and optional semantic similarity.
 - Assign exactly one Invook-owned Important, Newsletter, Billing, Others, or custom label to each Inbox thread without changing Gmail labels.
 - Learn editable Memory for writing preferences, contacts, and scheduling behavior.
@@ -42,7 +42,7 @@ See [Configuration](#configuration) before signing in or connecting Gmail.
 
 1. Better Auth handles global Google Identity sign-in and database-backed browser sessions. It requests identity scopes only, never Gmail access.
 2. A signed-in user separately connects a Gmail mailbox. The Fastify API validates the mailbox, encrypts its credentials, registers a Gmail watch, and creates durable synchronization work.
-3. Workers copy Gmail data into PostgreSQL and store raw MIME and attachments in S3-compatible object storage.
+3. Workers normalize Gmail full-format thread data into PostgreSQL and store attachment bytes in S3-compatible object storage.
 4. PostgreSQL owns product state and transactionally records Temporal commands. Temporal Cloud durably schedules, executes, and retries worker Activities.
 5. The mail reader sanitizes stored HTML and renders it inside an isolated Shadow DOM. Sender-hosted images load directly from their original URLs, so opening mail can disclose the request time and browser IP address to the image host.
 6. AI jobs classify labels, index search content, learn Memory, and create drafts. The Next.js app reads the resulting local replica through the API.
@@ -75,8 +75,8 @@ For the detailed synchronization and ownership rules, read the [Gmail mailbox re
 | `packages/ai` | Model, embedding, Memory, label, draft, and mail-agent logic |
 | `packages/contracts` | Shared browser/server product and wire contracts |
 | `packages/database` | Drizzle schema, migrations, repositories, and workflows |
-| `packages/gmail` | Gmail OAuth, Gmail API, history mapping, and MIME parsing |
-| `packages/object-storage` | S3-compatible raw MIME and attachment storage |
+| `packages/gmail` | Gmail OAuth, Gmail API, history mapping, full-message normalization, and draft MIME parsing |
+| `packages/object-storage` | S3-compatible attachment storage |
 | `packages/workflows` | Deterministic Temporal Workflows and shared execution contracts |
 | `docker` | Local services and application images |
 | `docs` | Product and implementation contracts |
@@ -142,7 +142,7 @@ Temporal execution is isolated by Invook user. Every user receives deterministic
 | Web | [localhost:3000](http://localhost:3000) | Invook UI |
 | API | [localhost:4000](http://localhost:4000) | Fastify API |
 | PostgreSQL | `localhost:54322` | Mailbox, product, and workflow state |
-| MinIO API | [localhost:9000](http://localhost:9000) | Raw MIME and attachment objects |
+| MinIO API | [localhost:9000](http://localhost:9000) | Attachment objects |
 | MinIO console | [localhost:9001](http://localhost:9001) | Local object-storage administration |
 
 Named Docker volumes preserve local data across `make down`.

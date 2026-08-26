@@ -21,7 +21,10 @@ import { registerGmailProviderRoutes } from "./routes/gmail-provider";
 import { registerGmailConnectionRoutes } from "./routes/gmail-connections";
 import { registerHealthRoutes } from "./routes/health";
 import { registerAccountSyncEventRoutes } from "./routes/account-sync-events";
-import { registerLabelRoutes } from "./routes/labels";
+import {
+  registerLabelRoutes,
+  type LabelRouteDependencies,
+} from "./routes/labels";
 import { registerGooglePubSubRoutes } from "./routes/google-pubsub";
 import { registerMailboxEventRoutes } from "./routes/mailbox-events";
 import { registerMailboxRoutes } from "./routes/mailbox";
@@ -44,6 +47,7 @@ function isInvalidBodyError(error: unknown): boolean {
 export async function buildApi(options: {
   attachmentRoutes?: AttachmentRouteDependencies;
   auth?: AuthService;
+  labelRoutes?: LabelRouteDependencies;
 } = {}) {
   const api = Fastify({
     bodyLimit: MAXIMUM_REQUEST_BODY_BYTES,
@@ -100,7 +104,10 @@ export async function buildApi(options: {
   await api.register(registerMailboxEventRoutes);
   await api.register(registerMailboxRoutes);
   await api.register(registerMemoryRoutes, { prefix: "/v1/memories" });
-  await api.register(registerLabelRoutes, { prefix: "/v1/labels" });
+  await api.register(registerLabelRoutes, {
+    prefix: "/v1/labels",
+    ...options.labelRoutes,
+  });
   await api.register(registerThreadLabelRoutes, { prefix: "/v1/threads" });
   await api.register(registerDraftRoutes);
   await api.register(registerComposeDraftRoutes);

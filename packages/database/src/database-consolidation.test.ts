@@ -37,6 +37,10 @@ const tenantTemporalRoutingMigrationUrl = new URL(
   "../drizzle/0033_shallow_apocalypse.sql",
   import.meta.url,
 );
+const labelPreviewReceiptMigrationUrl = new URL(
+  "../drizzle/0034_lovely_flatman.sql",
+  import.meta.url,
+);
 const schemaUrl = new URL("./schema.ts", import.meta.url);
 const migrationsUrl = new URL("../drizzle/", import.meta.url);
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -49,9 +53,18 @@ function assertBefore(source: string, earlier: string, later: string): void {
   assert.ok(earlierIndex < laterIndex, `${earlier} must precede ${later}`);
 }
 
-test("the Drizzle schema has exactly the 30 owned tables", async () => {
+test("the Drizzle schema has exactly the 31 owned tables", async () => {
   const source = await readFile(schemaUrl, "utf8");
-  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 30);
+  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 31);
+});
+
+test("the label preview receipt migration backfills durable historical jobs", async () => {
+  const migration = await readFile(labelPreviewReceiptMigrationUrl, "utf8");
+
+  assert.match(migration, /CREATE TABLE "label_preview_receipts"/);
+  assert.match(migration, /'\{historicalScanId\}'/);
+  assert.match(migration, /'\{previewReceiptId\}'/);
+  assert.match(migration, /'label\.thread\.scan'/);
 });
 
 test("the auth migration preserves identity without copying Gmail credentials", async () => {

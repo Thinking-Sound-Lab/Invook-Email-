@@ -12,17 +12,17 @@ test("mail sync progress preserves durable run counts", () => {
       state: "running",
       run: {
         discoveryComplete: true,
-        discoveredMessageCount: 71_468,
-        processedMessageCount: 14_895,
-        failedMessageCount: 0,
+        discoveredThreadCount: 71_468,
+        processedThreadCount: 14_895,
+        failedThreadCount: 0,
       },
     }),
     {
       state: "running",
       discoveryComplete: true,
-      discoveredMessageCount: 71_468,
-      processedMessageCount: 14_895,
-      failedMessageCount: 0,
+      discoveredThreadCount: 71_468,
+      processedThreadCount: 14_895,
+      failedThreadCount: 0,
     },
   );
 });
@@ -31,9 +31,9 @@ test("a completed account is known to have finished discovery without a run", ()
   assert.deepEqual(deriveMailSyncProgress({ state: "complete", run: null }), {
     state: "complete",
     discoveryComplete: true,
-    discoveredMessageCount: 0,
-    processedMessageCount: 0,
-    failedMessageCount: 0,
+    discoveredThreadCount: 0,
+    processedThreadCount: 0,
+    failedThreadCount: 0,
   });
 });
 
@@ -41,45 +41,45 @@ test("sync notifications advance on a new percentage or durable count interval",
   assert.equal(
     hasMailSyncProgressAdvanced({
       discoveryComplete: true,
-      discoveredMessageCount: 10_000,
-      previousProcessedMessageCount: 99,
-      processedMessageCount: 100,
+      discoveredThreadCount: 10_000,
+      previousProcessedThreadCount: 99,
+      processedThreadCount: 100,
     }),
     true,
   );
   assert.equal(
     hasMailSyncProgressAdvanced({
       discoveryComplete: true,
-      discoveredMessageCount: 10_000,
-      previousProcessedMessageCount: 199,
-      processedMessageCount: 200,
+      discoveredThreadCount: 10_000,
+      previousProcessedThreadCount: 199,
+      processedThreadCount: 200,
     }),
     true,
   );
   assert.equal(
     hasMailSyncProgressAdvanced({
       discoveryComplete: true,
-      discoveredMessageCount: 10_000,
-      previousProcessedMessageCount: 200,
-      processedMessageCount: 201,
+      discoveredThreadCount: 10_000,
+      previousProcessedThreadCount: 200,
+      processedThreadCount: 201,
     }),
     false,
   );
   assert.equal(
     hasMailSyncProgressAdvanced({
       discoveryComplete: false,
-      discoveredMessageCount: 10_000,
-      previousProcessedMessageCount: 99,
-      processedMessageCount: 100,
+      discoveredThreadCount: 10_000,
+      previousProcessedThreadCount: 99,
+      processedThreadCount: 100,
     }),
     true,
   );
   assert.equal(
     hasMailSyncProgressAdvanced({
       discoveryComplete: false,
-      discoveredMessageCount: 10_000,
-      previousProcessedMessageCount: 100,
-      processedMessageCount: 101,
+      discoveredThreadCount: 10_000,
+      previousProcessedThreadCount: 100,
+      processedThreadCount: 101,
     }),
     false,
   );

@@ -12,6 +12,7 @@ import {
 const GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1";
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 export const GMAIL_MESSAGE_LIST_MAX_RESULTS = 500;
+export const GMAIL_THREAD_LIST_MAX_RESULTS = 500;
 export const GOOGLE_REAUTHENTICATION_REQUIRED_ERROR_CODE =
   "provider_authentication_failed";
 
@@ -27,7 +28,7 @@ export type GmailMessageReference = {
   threadId: string;
 };
 
-/** The lossless representation returned by Gmail's messages.get format=raw. */
+/** Gmail message metadata shared by full content and raw draft reads. */
 export type GmailMessageState = GmailMessageReference & {
   labelIds?: string[];
   snippet?: string;
@@ -38,6 +39,41 @@ export type GmailMessageState = GmailMessageReference & {
 
 export type GmailRawMessage = GmailMessageState & {
   raw: string;
+};
+
+export type GmailMessagePartBody = {
+  attachmentId?: string;
+  size?: number;
+  data?: string;
+};
+
+export type GmailMessagePart = {
+  partId?: string;
+  mimeType?: string;
+  filename?: string;
+  headers?: Array<{ name?: string; value?: string }>;
+  body?: GmailMessagePartBody;
+  parts?: GmailMessagePart[];
+};
+
+export type GmailFullMessage = GmailMessageState & {
+  payload: GmailMessagePart;
+};
+
+export type GmailThreadReference = {
+  id: string;
+  snippet?: string;
+  historyId?: string;
+};
+
+export type GmailThreadPage = {
+  threads?: GmailThreadReference[];
+  nextPageToken?: string;
+  resultSizeEstimate?: number;
+};
+
+export type GmailFullThread = GmailThreadReference & {
+  messages: GmailFullMessage[];
 };
 
 export type GmailMessagePage = {
@@ -294,13 +330,39 @@ function filterGmailMessageState<T extends GmailMessageState>(message: T): T {
 export async function getGmailMessage(
   accessToken: string,
   messageId: string,
-): Promise<GmailRawMessage> {
-  const search = new URLSearchParams({ format: "raw" });
-  const message = await gmailRequest<GmailRawMessage>(
+): Promise<GmailFullMessage> {
+  const search = new URLSearchParams({ format: "full" });
+  const message = await gmailRequest<GmailFullMessage>(
     accessToken,
     `/users/me/messages/${encodeURIComponent(messageId)}?${search.toString()}`,
   );
   return filterGmailMessageState(message);
+}
+
+export async function getGmailThread(
+  accessToken: string,
+  threadId: string,
+): Promise<GmailFullThread> {
+  const search = new URLSearchParams({ format: "full" });
+  const thread = await gmailRequest<GmailFullThread>(
+    accessToken,
+    `/users/me/threads/${encodeURIComponent(threadId)}?${search.toString()}`,
+  );
+  return {
+    ...thread,
+    messages: (thread.messages ?? []).map(filterGmailMessageState),
+  };
+}
+
+export function getGmailAttachment(
+  accessToken: string,
+  messageId: string,
+  attachmentId: string,
+): Promise<GmailMessagePartBody> {
+  return gmailRequest<GmailMessagePartBody>(
+    accessToken,
+    `/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+  );
 }
 
 export async function getGmailMessageState(
@@ -332,6 +394,21 @@ export function listGmailMessages(
   return gmailRequest<GmailMessagePage>(
     accessToken,
     `/users/me/messages?${search.toString()}`,
+  );
+}
+
+export function listGmailThreads(
+  accessToken: string,
+  options: { pageToken?: string },
+): Promise<GmailThreadPage> {
+  const search = new URLSearchParams({
+    includeSpamTrash: "true",
+    maxResults: String(GMAIL_THREAD_LIST_MAX_RESULTS),
+  });
+  if (options.pageToken) search.set("pageToken", options.pageToken);
+  return gmailRequest<GmailThreadPage>(
+    accessToken,
+    `/users/me/threads?${search.toString()}`,
   );
 }
 

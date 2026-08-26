@@ -82,8 +82,13 @@ request, run the full repository gate and validate Docker Compose:
 
 ```bash
 make verify
+TEST_DATABASE_URL=postgresql://invook:invook@127.0.0.1:54322/invook_test make verify-database
 docker compose -f docker/compose.yml config --quiet
 ```
+
+`verify-database` runs the real-PostgreSQL integration suite and fails closed
+when `TEST_DATABASE_URL` is absent. Point it at a migrated disposable test
+database, never at a mailbox database containing product data.
 
 If an external service prevents a check, state exactly what ran, what failed,
 and what remains unverified. Do not weaken assertions or claim checks that were

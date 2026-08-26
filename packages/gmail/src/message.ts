@@ -9,7 +9,12 @@ import {
   type HeaderValue,
 } from "mailparser";
 
-import type { GmailRawMessage } from "./client";
+import type {
+  GmailFullMessage,
+  GmailMessagePart,
+  GmailMessagePartBody,
+  GmailRawMessage,
+} from "./client";
 import {
   filterGmailSystemLabelIds,
   type GmailSystemLabelId,
@@ -26,6 +31,7 @@ export type ParsedGmailHeader = {
 
 export type ParsedGmailAttachment = {
   index: number;
+  providerAttachmentId: string | null;
   mimePartPath: string | null;
   filename: string | null;
   mimeType: string;
@@ -47,9 +53,6 @@ export type ParsedGmailMessage = {
   sizeEstimate: number | null;
   labelIds: GmailSystemLabelId[];
   snippet: string;
-  raw: Buffer;
-  rawSize: number;
-  rawChecksumSha256: string;
   headers: ParsedGmailHeader[];
   subject: string;
   from: string;
@@ -65,6 +68,11 @@ export type ParsedGmailMessage = {
   sentAt: string | null;
   attachments: ParsedGmailAttachment[];
 };
+
+export type GmailAttachmentLoader = (input: {
+  messageId: string;
+  attachmentId: string;
+}) => Promise<GmailMessagePartBody>;
 
 export const GMAIL_MESSAGE_FUTURE_TOLERANCE_MS = 24 * 60 * 60 * 1_000;
 
@@ -214,9 +222,6 @@ export async function parseGmailMessage(
       typeof message.sizeEstimate === "number" ? message.sizeEstimate : null,
     labelIds: filterGmailSystemLabelIds(message.labelIds),
     snippet: message.snippet ?? "",
-    raw,
-    rawSize: raw.byteLength,
-    rawChecksumSha256: sha256(raw),
     headers,
     subject: parsed.subject ?? "",
     from: firstAddress(parsed.from),
@@ -238,6 +243,7 @@ export async function parseGmailMessage(
       const mimePart = attachment as typeof attachment & { partId?: string };
       return {
         index,
+        providerAttachmentId: null,
         mimePartPath: mimePart.partId ?? null,
         filename: attachment.filename ?? null,
         mimeType: attachment.contentType,
@@ -251,6 +257,260 @@ export async function parseGmailMessage(
         content: attachment.content,
       };
     }),
+  };
+}
+
+function gmailPartHeaders(part: GmailMessagePart): ParsedGmailHeader[] {
+  if (part.headers !== undefined && !Array.isArray(part.headers)) {
+    throw new Error("Gmail full message part headers are invalid.");
+  }
+  const headers = part.headers ?? [];
+  return headers.map((header) => {
+    if (
+      typeof header !== "object" ||
+      header === null ||
+      typeof header.name !== "string" ||
+      typeof header.value !== "string"
+    ) {
+      throw new Error("Gmail full message part header values are invalid.");
+    }
+    return {
+      name: header.name.toLowerCase(),
+      value: header.value,
+      raw: `${header.name}: ${header.value}`,
+    };
+  });
+}
+
+function gmailHeaderValue(
+  headers: ParsedGmailHeader[],
+  name: string,
+): string | undefined {
+  return headers.find((header) => header.name === name)?.value;
+}
+
+function gmailBodyData(body: GmailMessagePartBody | undefined): Buffer | null {
+  if (body === undefined) return null;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new Error("Gmail full message part body is invalid.");
+  }
+  if (
+    (body.attachmentId !== undefined &&
+      (typeof body.attachmentId !== "string" || !body.attachmentId.trim())) ||
+    (body.size !== undefined &&
+      (typeof body.size !== "number" ||
+        !Number.isFinite(body.size) ||
+        body.size < 0))
+  ) {
+    throw new Error("Gmail full message part body metadata is invalid.");
+  }
+  if (body.data === undefined) return null;
+  if (typeof body.data !== "string") {
+    throw new Error("Gmail full message part data is invalid.");
+  }
+  return Buffer.from(body.data, "base64url");
+}
+
+function contentDisposition(headers: ParsedGmailHeader[]): string | null {
+  const value = gmailHeaderValue(headers, "content-disposition");
+  return value?.split(";", 1)[0]?.trim().toLowerCase() || null;
+}
+
+function contentId(headers: ParsedGmailHeader[]): string | null {
+  return gmailHeaderValue(headers, "content-id") ?? null;
+}
+
+async function loadGmailPartBody(input: {
+  messageId: string;
+  body: GmailMessagePartBody | undefined;
+  loadAttachment: GmailAttachmentLoader;
+}): Promise<Buffer> {
+  const inline = gmailBodyData(input.body);
+  if (inline) return inline;
+  const attachmentId = input.body?.attachmentId;
+  if (!attachmentId) return Buffer.alloc(0);
+  const external = await input.loadAttachment({
+    messageId: input.messageId,
+    attachmentId,
+  });
+  const content = gmailBodyData(external);
+  if (!content) {
+    throw new Error(
+      `Gmail attachment ${attachmentId} for message ${input.messageId} has no data.`,
+    );
+  }
+  return content;
+}
+
+type NormalizedGmailParts = {
+  textBodies: string[];
+  htmlBodies: string[];
+  attachments: ParsedGmailAttachment[];
+};
+
+async function normalizeGmailParts(input: {
+  messageId: string;
+  part: GmailMessagePart;
+  loadAttachment: GmailAttachmentLoader;
+  output: NormalizedGmailParts;
+}): Promise<void> {
+  if (
+    typeof input.part !== "object" ||
+    input.part === null ||
+    Array.isArray(input.part) ||
+    (input.part.mimeType !== undefined &&
+      typeof input.part.mimeType !== "string") ||
+    (input.part.filename !== undefined &&
+      typeof input.part.filename !== "string")
+  ) {
+    throw new Error("Gmail full message part is invalid.");
+  }
+  const mimeType = input.part.mimeType?.toLowerCase() || "application/octet-stream";
+  if (mimeType.startsWith("multipart/")) {
+    if (input.part.parts !== undefined && !Array.isArray(input.part.parts)) {
+      throw new Error("Gmail multipart children are invalid.");
+    }
+    for (const child of input.part.parts ?? []) {
+      await normalizeGmailParts({ ...input, part: child });
+    }
+    return;
+  }
+
+  const headers = gmailPartHeaders(input.part);
+  const disposition = contentDisposition(headers);
+  const partContentId = contentId(headers);
+  const filename = input.part.filename?.trim() || null;
+  const isAttachment = Boolean(
+    filename ||
+      disposition === "attachment" ||
+      partContentId ||
+      (!mimeType.startsWith("text/") &&
+        (input.part.body?.attachmentId || input.part.body?.data)),
+  );
+  const content = await loadGmailPartBody({
+    messageId: input.messageId,
+    body: input.part.body,
+    loadAttachment: input.loadAttachment,
+  });
+
+  if (!isAttachment && mimeType === "text/plain") {
+    input.output.textBodies.push(content.toString("utf8"));
+    return;
+  }
+  if (!isAttachment && mimeType === "text/html") {
+    input.output.htmlBodies.push(content.toString("utf8"));
+    return;
+  }
+  if (content.length === 0 && !input.part.body?.attachmentId) return;
+
+  const attachmentId = input.part.body?.attachmentId ?? null;
+  input.output.attachments.push({
+    index: input.output.attachments.length,
+    providerAttachmentId: attachmentId,
+    mimePartPath: input.part.partId ?? null,
+    filename,
+    mimeType,
+    contentDisposition: disposition,
+    contentId: partContentId,
+    cid: partContentId?.replace(/^<|>$/g, "") ?? null,
+    related: disposition === "inline" || Boolean(partContentId),
+    size:
+      typeof input.part.body?.size === "number"
+        ? input.part.body.size
+        : content.byteLength,
+    checksumSha256: sha256(content),
+    headers,
+    content,
+  });
+}
+
+/** Maps Gmail's already-parsed format=full JSON into Invook's message contract. */
+export async function normalizeGmailFullMessage(
+  message: GmailFullMessage,
+  loadAttachment: GmailAttachmentLoader,
+): Promise<ParsedGmailMessage> {
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    typeof message.id !== "string" ||
+    !message.id.trim() ||
+    typeof message.threadId !== "string" ||
+    !message.threadId.trim() ||
+    typeof message.payload !== "object" ||
+    message.payload === null ||
+    Array.isArray(message.payload)
+  ) {
+    throw new Error("Gmail full message identity or payload is missing.");
+  }
+  if (
+    (message.labelIds !== undefined &&
+      (!Array.isArray(message.labelIds) ||
+        message.labelIds.some((labelId) => typeof labelId !== "string"))) ||
+    (message.historyId !== undefined && typeof message.historyId !== "string") ||
+    (message.internalDate !== undefined &&
+      typeof message.internalDate !== "string") ||
+    (message.snippet !== undefined && typeof message.snippet !== "string") ||
+    (message.sizeEstimate !== undefined &&
+      (typeof message.sizeEstimate !== "number" ||
+        !Number.isFinite(message.sizeEstimate) ||
+        message.sizeEstimate < 0))
+  ) {
+    throw new Error("Gmail full message metadata is invalid.");
+  }
+  const headers = gmailPartHeaders(message.payload);
+  const headerSource = Buffer.from(
+    `${headers.map((header) => header.raw).join("\r\n")}\r\n\r\n`,
+    "utf8",
+  );
+  const parsedHeaders = await simpleParser(headerSource, {
+    skipHtmlToText: true,
+    skipTextToHtml: true,
+  });
+  const normalizedParts: NormalizedGmailParts = {
+    textBodies: [],
+    htmlBodies: [],
+    attachments: [],
+  };
+  await normalizeGmailParts({
+    messageId: message.id,
+    part: message.payload,
+    loadAttachment,
+    output: normalizedParts,
+  });
+
+  return {
+    providerMessageId: message.id,
+    providerThreadId: message.threadId,
+    historyId: message.historyId ?? null,
+    internalDate: message.internalDate ?? null,
+    sizeEstimate:
+      typeof message.sizeEstimate === "number" ? message.sizeEstimate : null,
+    labelIds: filterGmailSystemLabelIds(message.labelIds),
+    snippet: message.snippet ?? "",
+    headers,
+    subject: parsedHeaders.subject ?? gmailHeaderValue(headers, "subject") ?? "",
+    from: firstAddress(parsedHeaders.from) || gmailHeaderValue(headers, "from") || "",
+    to: addresses(parsedHeaders.to),
+    cc: addresses(parsedHeaders.cc),
+    bcc: addresses(parsedHeaders.bcc),
+    replyTo: parsedHeaders.replyTo?.text ?? gmailHeaderValue(headers, "reply-to") ?? null,
+    messageId: parsedHeaders.messageId ?? gmailHeaderValue(headers, "message-id") ?? null,
+    inReplyTo: parsedHeaders.inReplyTo ?? gmailHeaderValue(headers, "in-reply-to") ?? null,
+    references: referenceList(parsedHeaders.references),
+    bodyText:
+      normalizedParts.textBodies.length > 0
+        ? normalizedParts.textBodies.join("\n")
+        : null,
+    bodyHtml:
+      normalizedParts.htmlBodies.length > 0
+        ? normalizedParts.htmlBodies.join("\n")
+        : null,
+    sentAt: resolveGmailMessageDate({
+      internalDate: message.internalDate,
+      headerDate: parsedHeaders.date,
+      headers,
+    }),
+    attachments: normalizedParts.attachments,
   };
 }
 

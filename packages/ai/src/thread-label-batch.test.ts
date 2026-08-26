@@ -3,11 +3,34 @@ import test from "node:test";
 
 import {
   classifyThreadLabelBatchFailure,
+  getThreadLabelBatchModelId,
   prepareThreadLabelBatch,
   THREAD_LABEL_BATCH_REQUEST_LIMIT,
   ThreadLabelBatchConfigurationError,
   type ThreadLabelBatchEntry,
 } from "./thread-label-batch";
+
+test("thread-label Batch defaults to GPT-5.6 Luna", () => {
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  const previousWebhookSecret = process.env.OPENAI_WEBHOOK_SECRET;
+  const previousModel = process.env.OPENAI_LABEL_BATCH_MODEL;
+  process.env.OPENAI_API_KEY = "test-key";
+  process.env.OPENAI_WEBHOOK_SECRET = "test-secret";
+  delete process.env.OPENAI_LABEL_BATCH_MODEL;
+  try {
+    assert.equal(getThreadLabelBatchModelId(), "gpt-5.6-luna");
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousApiKey;
+    if (previousWebhookSecret === undefined) {
+      delete process.env.OPENAI_WEBHOOK_SECRET;
+    } else {
+      process.env.OPENAI_WEBHOOK_SECRET = previousWebhookSecret;
+    }
+    if (previousModel === undefined) delete process.env.OPENAI_LABEL_BATCH_MODEL;
+    else process.env.OPENAI_LABEL_BATCH_MODEL = previousModel;
+  }
+});
 
 function entry(index: number): ThreadLabelBatchEntry {
   return {

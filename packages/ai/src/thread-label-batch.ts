@@ -7,7 +7,7 @@ import type {
   StoredThreadLabelClassifierInput,
 } from "./thread-label-classifier";
 
-const DEFAULT_MODEL_ID = "gpt-5.4-nano-2026-03-17";
+const DEFAULT_MODEL_ID = "gpt-5.6-luna";
 const BATCH_FILE_LIMIT_BYTES = 200_000_000;
 const DEFAULT_BATCH_INPUT_TOKEN_LIMIT = 500_000;
 const BATCH_REQUEST_TOKEN_OVERHEAD = 256;

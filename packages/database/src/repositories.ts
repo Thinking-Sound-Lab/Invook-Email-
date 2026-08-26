@@ -23,6 +23,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { v4 as uuidv4 } from "uuid";
 
 import {
   getDatabase,
@@ -38,7 +39,11 @@ import {
   type IndexingPrerequisiteState,
 } from "./embedding-indexing";
 import {
-  enqueueHistoricalThreadLabelScan,
+  consumeLabelPreviewReceipt,
+  LabelPreviewReceiptConflictError,
+} from "./label-preview-receipts";
+import {
+  enqueueHistoricalThreadLabelScanCoordinator,
   ensureBuiltInInvookLabels,
   refreshThreadProjection,
 } from "./thread-label-analysis";
@@ -79,6 +84,7 @@ import type {
 import {
   createInitialMailSyncRun,
   createRepairMailSyncRun,
+  completeMailSyncThreadWithExecutor,
   enqueueWorkflowStep,
   enqueueWorkflowStepWithExecutor,
   enqueueWorkflowStepsWithExecutor,
@@ -1062,9 +1068,9 @@ export async function getMailSyncProgressForAccount(
   const [run] = await database
     .select({
       discoveryComplete: mailSyncRuns.discoveryComplete,
-      discoveredMessageCount: mailSyncRuns.discoveredMessageCount,
-      processedMessageCount: mailSyncRuns.processedMessageCount,
-      failedMessageCount: mailSyncRuns.failedMessageCount,
+      discoveredThreadCount: mailSyncRuns.discoveredThreadCount,
+      processedThreadCount: mailSyncRuns.processedThreadCount,
+      failedThreadCount: mailSyncRuns.failedThreadCount,
     })
     .from(mailSyncRuns)
     .where(and(eq(mailSyncRuns.accountId, input.accountId), runStatusCondition))
@@ -1268,12 +1274,11 @@ async function lockEmbeddingIndex(
   );
 }
 
-export async function upsertMailboxMessage(
+async function upsertMailboxMessageWithTransaction(
   input: IndexedMessage,
-  database: Database = getDatabase(),
+  transaction: DatabaseTransaction,
   activeRunId?: string,
 ) {
-  return database.transaction(async (transaction) => {
     if (activeRunId) {
       const [activeRun] = await transaction
         .select({ id: mailSyncRuns.id })
@@ -1367,10 +1372,6 @@ export async function upsertMailboxMessage(
         snippet: messages.snippet,
         bodyText: messages.bodyText,
         bodyHtml: messages.bodyHtml,
-        rawObjectKey: messages.rawObjectKey,
-        rawChecksumSha256: messages.rawChecksumSha256,
-        rawContentLength: messages.rawContentLength,
-        rawEtag: messages.rawEtag,
         sentAt: messages.sentAt,
         isMemoryEligible: messages.isMemoryEligible,
         embeddingContentHash: messages.embeddingContentHash,
@@ -1414,12 +1415,6 @@ export async function upsertMailboxMessage(
       existingMessage.subject !== input.subject ||
       existingMessage.bodyText !== input.bodyText ||
       existingMessage.bodyHtml !== input.bodyHtml ||
-      existingMessage.rawObjectKey !== (input.rawObject?.key ?? null) ||
-      existingMessage.rawChecksumSha256 !==
-        (input.rawObject?.checksumSha256 ?? null) ||
-      existingMessage.rawContentLength !==
-        (input.rawObject?.contentLength ?? null) ||
-      existingMessage.rawEtag !== (input.rawObject?.etag ?? null) ||
       existingMessage.sentAt.getTime() !== input.sentAt.getTime() ||
       existingMessage.isMemoryEligible !== input.isMemoryEligible;
     const changed =
@@ -1451,10 +1446,6 @@ export async function upsertMailboxMessage(
           bodyText: input.bodyText,
           embeddingContentHash: contentHash,
           bodyHtml: input.bodyHtml,
-          rawObjectKey: input.rawObject?.key ?? null,
-          rawChecksumSha256: input.rawObject?.checksumSha256 ?? null,
-          rawContentLength: input.rawObject?.contentLength ?? null,
-          rawEtag: input.rawObject?.etag ?? null,
           sentAt: input.sentAt,
           isMemoryEligible: input.isMemoryEligible,
         })
@@ -1473,10 +1464,6 @@ export async function upsertMailboxMessage(
             bodyText: input.bodyText,
             embeddingContentHash: contentHash,
             bodyHtml: input.bodyHtml,
-            rawObjectKey: input.rawObject?.key ?? null,
-            rawChecksumSha256: input.rawObject?.checksumSha256 ?? null,
-            rawContentLength: input.rawObject?.contentLength ?? null,
-            rawEtag: input.rawObject?.etag ?? null,
             sentAt: input.sentAt,
             isMemoryEligible: input.isMemoryEligible,
             updatedAt: new Date(),
@@ -1717,6 +1704,66 @@ export async function upsertMailboxMessage(
     }
 
     return { messageId, threadId, changed };
+}
+
+export async function upsertMailboxMessage(
+  input: IndexedMessage,
+  database: Database = getDatabase(),
+  activeRunId?: string,
+) {
+  return database.transaction((transaction) =>
+    upsertMailboxMessageWithTransaction(input, transaction, activeRunId),
+  );
+}
+
+export async function upsertMailboxThreadMessages(
+  input: { messages: IndexedMessage[]; activeRunId: string },
+  database: Database = getDatabase(),
+): Promise<{ threadId: string; changed: boolean }> {
+  if (input.messages.length === 0) {
+    throw new Error("A Gmail thread must contain at least one message.");
+  }
+  const [firstMessage] = input.messages;
+  if (!firstMessage) {
+    throw new Error("A Gmail thread must contain at least one message.");
+  }
+  if (
+    input.messages.some(
+      (message) =>
+        message.userId !== firstMessage.userId ||
+        message.accountId !== firstMessage.accountId ||
+        message.providerThreadId !== firstMessage.providerThreadId ||
+        message.ingestionMode !== "initial",
+    )
+  ) {
+    throw new Error("A Gmail thread batch has inconsistent message ownership.");
+  }
+
+  return database.transaction(async (transaction) => {
+    let threadId: string | null = null;
+    let changed = false;
+    for (const message of input.messages) {
+      const stored = await upsertMailboxMessageWithTransaction(
+        message,
+        transaction,
+        input.activeRunId,
+      );
+      if (threadId && stored.threadId !== threadId) {
+        throw new Error("Gmail thread messages mapped to different local threads.");
+      }
+      threadId = stored.threadId;
+      changed ||= stored.changed;
+    }
+    if (!threadId) throw new Error("The Gmail thread stored no messages.");
+    const completed = await completeMailSyncThreadWithExecutor(
+      {
+        runId: input.activeRunId,
+        providerThreadId: firstMessage.providerThreadId,
+      },
+      transaction,
+    );
+    if (!completed) throw new InactiveMailSyncRunError(input.activeRunId);
+    return { threadId, changed };
   });
 }
 
@@ -1738,7 +1785,6 @@ export async function deleteIndexedMessage(
         providerThreadId: threads.providerThreadId,
         providerHistoryId: messages.providerHistoryId,
         assignmentId: threadLabelAssignments.id,
-        rawObjectKey: messages.rawObjectKey,
         updatedAt: messages.updatedAt,
       })
       .from(messages)
@@ -1762,10 +1808,8 @@ export async function deleteIndexedMessage(
       .select({ objectKey: messageAttachments.objectKey })
       .from(messageAttachments)
       .where(eq(messageAttachments.messageId, storedMessage.id));
-    const objectKeys = [
-      storedMessage.rawObjectKey,
-      ...attachmentObjects.map((attachment) => attachment.objectKey),
-    ]
+    const objectKeys = attachmentObjects
+      .map((attachment) => attachment.objectKey)
       .filter((key): key is string => Boolean(key))
       .sort();
     await enqueueWorkflowStepWithExecutor(
@@ -2042,6 +2086,18 @@ export class LabelConflictError extends Error {
   }
 }
 
+export type LabelMutationOperation = "create" | "update" | "set_enabled";
+
+export class LabelMutationError extends Error {
+  readonly operation: LabelMutationOperation;
+
+  constructor(operation: LabelMutationOperation, cause: unknown) {
+    super("The label change could not be completed.", { cause });
+    this.name = "LabelMutationError";
+    this.operation = operation;
+  }
+}
+
 function normalizeLabelName(value: string) {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
@@ -2061,8 +2117,9 @@ export async function createInvookLabel(
     name: string;
     description: string;
     applyToPastDays?: LabelHistoryWindowDays | null;
+    previewReceiptId?: string | null;
   },
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   try {
     return await database.transaction(async (transaction) => {
@@ -2110,19 +2167,39 @@ export async function createInvookLabel(
         .returning();
       if (!label) throw new Error("The label could not be created.");
       const windowDays = input.applyToPastDays ?? null;
-      const queuedThreadCount = windowDays
-        ? await enqueueHistoricalThreadLabelScan(
+      const admittedAt = new Date();
+      if (windowDays) {
+        const historicalScanId = uuidv4();
+        if (input.previewReceiptId) {
+          await consumeLabelPreviewReceipt(
             {
+              receiptId: input.previewReceiptId,
               userId: input.userId,
               accountId: account.id,
-              labelId: label.id,
-              definitionVersion: label.definitionVersion,
-              enablementVersion: label.enablementVersion,
-              after: new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000),
+              name: label.name,
+              description: label.description,
+              historicalScanId,
+              consumedAt: admittedAt,
             },
             transaction,
-          )
-        : 0;
+          );
+        }
+        await enqueueHistoricalThreadLabelScanCoordinator(
+          {
+            historicalScanId,
+            previewReceiptId: input.previewReceiptId ?? null,
+            userId: input.userId,
+            accountId: account.id,
+            labelId: label.id,
+            definitionVersion: label.definitionVersion,
+            enablementVersion: label.enablementVersion,
+            after: new Date(
+              admittedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000,
+            ),
+          },
+          transaction,
+        );
+      }
       return {
         id: label.id,
         name: label.name,
@@ -2131,15 +2208,16 @@ export async function createInvookLabel(
         definitionVersion: label.definitionVersion,
         isEnabled: label.isEnabled,
         historicalAnalysis: windowDays
-          ? { windowDays, queuedThreadCount }
+          ? { windowDays, status: "queued" as const }
           : null,
       };
     });
   } catch (error) {
+    if (error instanceof LabelPreviewReceiptConflictError) throw error;
     if (error instanceof LabelConflictError || isUniqueViolation(error)) {
       throw new LabelConflictError();
     }
-    throw error;
+    throw new LabelMutationError("create", error);
   }
 }
 
@@ -2183,7 +2261,7 @@ export async function updateInvookLabel(
     if (error instanceof LabelConflictError || isUniqueViolation(error)) {
       throw new LabelConflictError();
     }
-    throw error;
+    throw new LabelMutationError("update", error);
   }
 }
 
@@ -2250,19 +2328,21 @@ export async function setInvookLabelEnabled(
       input.isEnabled && !currentLabel.isEnabled
         ? input.applyToPastDays ?? null
         : null;
-    const queuedThreadCount = windowDays
-      ? await enqueueHistoricalThreadLabelScan(
-          {
-            userId: input.userId,
-            accountId: currentLabel.accountId,
-            labelId: label.id,
-            definitionVersion: label.definitionVersion,
-            enablementVersion: label.enablementVersion,
-            after: new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000),
-          },
-          transaction,
-        )
-      : 0;
+    if (windowDays) {
+      await enqueueHistoricalThreadLabelScanCoordinator(
+        {
+          historicalScanId: uuidv4(),
+          previewReceiptId: null,
+          userId: input.userId,
+          accountId: currentLabel.accountId,
+          labelId: label.id,
+          definitionVersion: label.definitionVersion,
+          enablementVersion: label.enablementVersion,
+          after: new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000),
+        },
+        transaction,
+      );
+    }
     return {
       id: label.id,
       name: label.name,
@@ -2271,9 +2351,16 @@ export async function setInvookLabelEnabled(
       definitionVersion: label.definitionVersion,
       isEnabled: label.isEnabled,
       historicalAnalysis: windowDays
-        ? { windowDays, queuedThreadCount }
+        ? { windowDays, status: "queued" as const }
         : null,
     };
+  }).catch((error: unknown) => {
+    if (error instanceof LabelConflictError || isUniqueViolation(error)) {
+      throw error instanceof LabelConflictError
+        ? error
+        : new LabelConflictError();
+    }
+    throw new LabelMutationError("set_enabled", error);
   });
 }
 

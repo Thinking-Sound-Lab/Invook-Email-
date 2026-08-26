@@ -6,6 +6,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { LABEL_PREVIEW_STALE_ERROR } from "@invook/contracts";
 import type {
   CreateInvookLabelRequest,
   InvookLabelPreviewResponse,
@@ -106,10 +107,19 @@ export function CreateLabelDialog({
         name,
         description,
         applyToPastDays: isHistoryEnabled ? historyWindowDays : null,
+        previewReceiptId:
+          isHistoryEnabled && preview?.previewReceiptId
+            ? preview.previewReceiptId
+            : undefined,
       });
       onClose();
     } catch (cause) {
-      setError(apiErrorMessage(cause, "Invook could not create this label."));
+      const message = apiErrorMessage(
+        cause,
+        "Invook could not create this label.",
+      );
+      setError(message);
+      if (message === LABEL_PREVIEW_STALE_ERROR) setPreview(null);
       setIsConfirming(false);
       setIsCreating(false);
     }

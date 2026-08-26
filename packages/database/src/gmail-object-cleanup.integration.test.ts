@@ -22,7 +22,7 @@ import { markWorkflowStepRunning } from "./workflows";
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
 test(
-  "message deletion durably records its immutable object manifest before relational cleanup",
+  "message deletion durably records its attachment manifest before relational cleanup",
   { skip: !testDatabaseUrl },
   async () => {
     if (!testDatabaseUrl) return;
@@ -64,7 +64,6 @@ test(
         internalDate: new Date("2026-08-14T10:00:00.000Z"),
         sentAt: new Date("2026-08-14T10:00:00.000Z"),
         embeddingContentHash: "a".repeat(64),
-        rawObjectKey: "raw/provider-message.eml",
       });
       await database.insert(messageAttachments).values({
         userId,
@@ -73,6 +72,7 @@ test(
         filename: "document.pdf",
         objectKey: "attachments/provider-message/document.pdf",
       });
+      const expectedObjectKeys = ["attachments/provider-message/document.pdf"];
 
       const result = await deleteIndexedMessage(
         {
@@ -83,10 +83,7 @@ test(
         database,
       );
 
-      assert.deepEqual(result.objectKeys, [
-        "attachments/provider-message/document.pdf",
-        "raw/provider-message.eml",
-      ]);
+      assert.deepEqual(result.objectKeys, expectedObjectKeys);
       assert.equal(
         (await database.select().from(messages).where(eq(messages.id, messageId))).length,
         0,
@@ -106,10 +103,7 @@ test(
           providerMessageId: "provider-message",
           providerThreadId: "provider-thread",
           providerHistoryId: "150",
-          objectKeys: [
-            "attachments/provider-message/document.pdf",
-            "raw/provider-message.eml",
-          ],
+          objectKeys: expectedObjectKeys,
         },
       });
       assert.equal(step.maxAttempts, 10);

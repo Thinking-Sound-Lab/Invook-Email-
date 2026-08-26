@@ -62,7 +62,7 @@ After sign-in, an authenticated user with no mailbox sees an honest **Connect Gm
 
 Signing out revokes only the Better Auth browser session. It does not revoke Gmail credentials, stop a Gmail watch, cancel durable work, or change a mailbox replica. Mailbox disconnection and account deletion remain explicit lifecycles.
 
-The first connection follows every Gmail result page with Spam and Trash included, stores exact raw MIME and attachment bytes in S3-compatible storage, and stores complete headers, text/HTML, recognized Gmail system-label memberships, Gmail Draft resources, applied/pending cursors, watch state, and workflow checkpoints in PostgreSQL. Each committed 25-message synchronization activity admits its ready recent Inbox threads to durable label analysis; Gmail fetching continues independently. Authenticated Pub/Sub pushes apply from the watch baseline while the initial snapshot continues, without marking the replica ready. The final replay from H0 is still the only path that marks the replica ready and releases indexing and initial Memory. Gmail remains canonical for provider-owned state. The detailed boundary is defined in `docs/gmail-replica-contract.md`.
+The first connection follows every Gmail thread result page with Spam and Trash included. Bounded activities fetch each thread with `format=full`, atomically store all of its normalized messages and checkpoint in PostgreSQL, and store only attachment bytes in S3-compatible storage. Threads become browsable immediately without waiting for Invook labels. Once 100 eligible Inbox threads are fully stored, an account-locked admission check starts durable OpenAI Batch label analysis while Gmail storage continues; labels appear as Batch results commit. Authenticated Pub/Sub pushes apply from the watch baseline while the initial snapshot continues, without marking the replica ready. The final replay from H0 is still the only path that marks the replica ready and releases indexing and initial Memory. Gmail remains canonical for provider-owned state. The detailed boundary is defined in `docs/gmail-replica-contract.md`.
 
 Each connected account also has one durable daily watch-renewal action. A successful renewal catches up from the stored cursor and schedules its successor. Normal initial synchronization, catch-up, and renewal do not run a full replica audit.
 
@@ -78,7 +78,7 @@ The left sidebar contains:
 
 The center pane shows the selected mailbox or label view in reverse chronological order. Selecting a thread replaces the list with the real thread. Opening an unread thread submits one Gmail thread-level read mutation; Gmail is written first, and the stored replica changes only when provider history is applied. A failed passive mutation remains non-optimistic and exposes an explicit retry.
 
-The right pane is the agent for Find and local Write. It reads authoritative stored mail and may create local drafts, but it has no Gmail mutation tools. During initial synchronization, Inbox threads remain unavailable until their one Invook label is assigned; provider-only non-Inbox views remain available from stored Gmail state. Explicit product actions for archive, read state, star, Trash, and Gmail Drafts write Gmail first and converge through provider history. Agent-initiated sending, recurring Inbox Zero, and standing approvals remain unavailable.
+The right pane is the agent for Find and local Write. It reads authoritative stored mail and may create local drafts, but it has no Gmail mutation tools. During initial synchronization, committed Inbox threads are available immediately and honestly show no Invook label until asynchronous Batch analysis commits one; provider-only non-Inbox views remain available from stored Gmail state. Explicit product actions for archive, read state, star, Trash, and Gmail Drafts write Gmail first and converge through provider history. Agent-initiated sending, recurring Inbox Zero, and standing approvals remain unavailable.
 
 ### Label settings
 
@@ -119,7 +119,7 @@ Deleting removes the active record and its text. A non-reversible fingerprint to
 
 ## Batch analysis
 
-Embeddings are not required for Memory v3 or labels. The newest 200 Gmail Inbox threads in an import enter the tenant's live structured-classification lane as soon as their currently discovered sync items are complete; they do not wait for mailbox-wide discovery. Older history accumulates into serialized durable OpenAI Batch submissions of at most 2,000 threads, 200 MB, and the configured input-token ceiling. Full historical batches may be submitted after Gmail discovery completes while remaining messages are still being stored; Gmail finalization flushes the remainder. Gmail synchronization stays on the tenant's bulk lane while both label paths run on its live lane. Later content discovered during the same snapshot replans only an AI assignment at a newer analysis version; manual labels remain authoritative, and ordinary post-snapshot messages do not reclassify a labelled thread.
+Embeddings are not required for Memory v3 or labels. Initial and repair imports have one label-analysis path: serialized durable OpenAI Batch submissions admitted from 100 eligible complete Inbox threads and capped at 2,000 requests, 200 MB, and the configured input-token ceiling. There is no duplicate newest-200 live-model pass. Admission is checked after each bounded Gmail storage activity, only one submission may be queued or active per account, and Gmail finalization flushes the remainder below 100. Newly eligible unassigned Inbox threads arriving after synchronization use the live structured-classification lane. Later content discovered during the same snapshot advances the pending Batch analysis version; manual labels remain authoritative, and ordinary post-snapshot content does not reclassify an already-labelled thread.
 
 For initial Memory, the worker uses the selected OpenAI or Azure OpenAI native Batch API as follows:
 
@@ -197,10 +197,11 @@ Worker
   -> PostgreSQL product state, checkpoints, and transactional Temporal commands
   -> Temporal Cloud Workflows, schedules, task delivery, and retries
   -> Gmail snapshot, history replay, Pub/Sub catch-up, watch renewal, and repair runs
-  -> S3-compatible raw MIME and attachment object storage
+  -> S3-compatible attachment object storage
   -> Temporal Activities for search indexing, Invook-label analysis, and initial or incremental Memory
   -> selected OpenAI or Azure OpenAI Batch provider for Memory
-  -> configured model endpoint for validated per-thread label classification
+  -> selected OpenAI Batch provider for initial Invook-label analysis
+  -> configured model endpoint for validated incoming-thread label classification
   -> configured model endpoint for feedback and drafts
   -> validated results in PostgreSQL
 ```

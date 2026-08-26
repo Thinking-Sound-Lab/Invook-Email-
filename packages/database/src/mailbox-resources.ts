@@ -502,8 +502,6 @@ export async function getMailboxThreadDetail(
           subject: messages.subject,
           bodyText: messages.bodyText,
           bodyHtml: messages.bodyHtml,
-          rawChecksumSha256: messages.rawChecksumSha256,
-          rawContentLength: messages.rawContentLength,
           sentAt: messages.sentAt,
         })
         .from(messages)
@@ -661,13 +659,6 @@ export async function getMailboxThreadDetail(
         };
       }),
       gmailLabels: gmailLabelsByMessage.get(message.id) ?? [],
-      rawMime:
-        message.rawChecksumSha256 && message.rawContentLength !== null
-          ? {
-              checksumSha256: message.rawChecksumSha256,
-              contentLength: message.rawContentLength,
-            }
-          : null,
       attachments: attachmentsByMessage.get(message.id) ?? [],
     })),
     aiReplyDraft:

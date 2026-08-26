@@ -52,12 +52,11 @@ export type TemporalCommandJob = WorkflowStepJob & {
 };
 
 export const TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE = 10;
-export const GMAIL_SYNC_MESSAGE_BATCH_SIZE = 25;
+export const GMAIL_SYNC_THREAD_BATCH_SIZE = 10;
 
 const gmailConnectedAccountStepTypes = [
   "gmail.sync.page",
-  "gmail.sync.message",
-  "gmail.sync.message.batch",
+  "gmail.sync.thread.batch",
   "gmail.sync.finalize",
   "gmail.message.refresh",
   "gmail.history.catchup",
@@ -72,7 +71,7 @@ const gmailReplicaStepTypeSet = new Set<string>(gmailReplicaStepTypes);
 
 async function lockMailSyncRun(
   input: { runId: string; accountId?: string; allowCompleted?: boolean },
-  database: Database,
+  database: DatabaseExecutor,
 ) {
   const allowedStatuses = input.allowCompleted
     ? (["queued", "running", "complete"] as const)
@@ -144,9 +143,9 @@ async function terminalizeMailSyncRun(
     .update(mailSyncRuns)
     .set({
       status: "failed",
-      discoveredMessageCount: counts.total,
-      processedMessageCount: counts.complete,
-      failedMessageCount: counts.failed,
+      discoveredThreadCount: counts.total,
+      processedThreadCount: counts.complete,
+      failedThreadCount: counts.failed,
       lastError: input.message,
       completedAt: input.failedAt,
       updatedAt: input.failedAt,
@@ -287,14 +286,15 @@ export function tenantTaskQueueLaneForStepType(
 ): TenantTaskQueueLane {
   switch (stepType) {
     case "gmail.sync.page":
-    case "gmail.sync.message":
-    case "gmail.sync.message.batch":
+    case "gmail.sync.thread.batch":
     case "gmail.sync.finalize":
     case "gmail.account.cleanup":
     case "gmail.objects.delete":
     case "embedding.backfill":
     case "memory.extract":
     case "memory.batch.retry":
+    case "label.historical.scan":
+    case "label.thread.scan":
       return "bulk";
     case "gmail.history.catchup":
     case "gmail.message.refresh":
@@ -306,7 +306,6 @@ export function tenantTaskQueueLaneForStepType(
     case "memory.batch.event":
     case "memory.feedback":
     case "label.thread.assign":
-    case "label.thread.scan":
     case "label.batch.submit":
     case "label.batch.event":
       return "live";
@@ -334,33 +333,33 @@ export function temporalCommandPriority(
   return 1;
 }
 
-export function createGmailSyncMessageBatchSteps(input: {
+export function createGmailSyncThreadBatchSteps(input: {
   runId: string;
   userId: string;
   accountId: string;
   pageNumber: number;
-  providerMessageIds: string[];
+  providerThreadIds: string[];
 }): WorkflowStepInput[] {
   const steps: WorkflowStepInput[] = [];
   for (
     let offset = 0;
-    offset < input.providerMessageIds.length;
-    offset += GMAIL_SYNC_MESSAGE_BATCH_SIZE
+    offset < input.providerThreadIds.length;
+    offset += GMAIL_SYNC_THREAD_BATCH_SIZE
   ) {
-    const batchNumber = Math.floor(offset / GMAIL_SYNC_MESSAGE_BATCH_SIZE) + 1;
+    const batchNumber = Math.floor(offset / GMAIL_SYNC_THREAD_BATCH_SIZE) + 1;
     steps.push({
       runId: input.runId,
       userId: input.userId,
       accountId: input.accountId,
-      stepType: "gmail.sync.message.batch",
+      stepType: "gmail.sync.thread.batch",
       payload: {
         runId: input.runId,
-        providerMessageIds: input.providerMessageIds.slice(
+        providerThreadIds: input.providerThreadIds.slice(
           offset,
-          offset + GMAIL_SYNC_MESSAGE_BATCH_SIZE,
+          offset + GMAIL_SYNC_THREAD_BATCH_SIZE,
         ),
       },
-      idempotencyKey: `gmail-message-batch:${input.runId}:${input.pageNumber}:${batchNumber}`,
+      idempotencyKey: `gmail-thread-batch:${input.runId}:${input.pageNumber}:${batchNumber}`,
     });
   }
   return steps;
@@ -718,9 +717,17 @@ export async function getMailSyncRunProviderMessageIds(
   database: Database = getDatabase(),
 ): Promise<string[]> {
   const rows = await database
-    .select({ providerMessageId: gmailSyncItems.providerMessageId })
+    .select({ providerMessageId: messages.providerMessageId })
     .from(gmailSyncItems)
     .innerJoin(mailSyncRuns, eq(mailSyncRuns.id, gmailSyncItems.runId))
+    .innerJoin(
+      threads,
+      and(
+        eq(threads.accountId, mailSyncRuns.accountId),
+        eq(threads.providerThreadId, gmailSyncItems.providerThreadId),
+      ),
+    )
+    .innerJoin(messages, eq(messages.threadId, threads.id))
     .where(
       and(
         eq(gmailSyncItems.runId, input.runId),
@@ -1420,20 +1427,24 @@ export async function recordMailSyncPage(
     pageNumber: number;
     pageToken: string | null;
     nextPageToken: string | null;
-    providerMessages: Array<{
-      providerMessageId: string;
-      providerThreadId: string;
-    }>;
+    providerThreadIds: string[];
   },
   database: Database = getDatabase(),
 ) {
   return database.transaction(async (transaction) => {
-    const executor = transaction as unknown as Database;
     const run = await lockMailSyncRun(
       { runId: input.runId, accountId: input.accountId },
-      executor,
+      transaction,
     );
     if (!run || run.userId !== input.userId) return false;
+    if (
+      input.providerThreadIds.some(
+        (providerThreadId) => !providerThreadId.trim(),
+      )
+    ) {
+      throw new Error("A Gmail synchronization page contains an invalid thread ID.");
+    }
+    const uniqueThreadIds = Array.from(new Set(input.providerThreadIds));
     const [insertedPage] = await transaction
       .insert(gmailSyncPages)
       .values({
@@ -1441,54 +1452,45 @@ export async function recordMailSyncPage(
         pageNumber: input.pageNumber,
         pageToken: input.pageToken,
         nextPageToken: input.nextPageToken,
-        discoveredMessageCount: input.providerMessages.length,
+        discoveredThreadCount: uniqueThreadIds.length,
       })
       .onConflictDoNothing({ target: [gmailSyncPages.runId, gmailSyncPages.pageNumber] })
       .returning({ id: gmailSyncPages.id });
     if (!insertedPage) return true;
 
-    const uniqueMessages = Array.from(
-      new Map(
-        input.providerMessages.map((message) => [
-          message.providerMessageId,
-          message,
-        ]),
-      ).values(),
-    );
-    const insertedItems = uniqueMessages.length
+    const insertedItems = uniqueThreadIds.length
       ? await transaction
           .insert(gmailSyncItems)
           .values(
-            uniqueMessages.map(({ providerMessageId, providerThreadId }) => ({
+            uniqueThreadIds.map((providerThreadId) => ({
               runId: input.runId,
-              providerMessageId,
               providerThreadId,
             })),
           )
           .onConflictDoNothing({
-            target: [gmailSyncItems.runId, gmailSyncItems.providerMessageId],
+            target: [gmailSyncItems.runId, gmailSyncItems.providerThreadId],
           })
-          .returning({ providerMessageId: gmailSyncItems.providerMessageId })
+          .returning({ providerThreadId: gmailSyncItems.providerThreadId })
       : [];
-    const insertedMessageIds = new Set(
-      insertedItems.map((item) => item.providerMessageId),
+    const insertedThreadIds = new Set(
+      insertedItems.map((item) => item.providerThreadId),
     );
 
     await enqueueWorkflowStepsWithExecutor(
-      createGmailSyncMessageBatchSteps({
+      createGmailSyncThreadBatchSteps({
         runId: input.runId,
         userId: input.userId,
         accountId: input.accountId,
         pageNumber: input.pageNumber,
-        providerMessageIds: uniqueMessages
-          .map((message) => message.providerMessageId)
-          .filter((providerMessageId) => insertedMessageIds.has(providerMessageId)),
+        providerThreadIds: uniqueThreadIds.filter((providerThreadId) =>
+          insertedThreadIds.has(providerThreadId),
+        ),
       }),
-      executor,
+      transaction,
     );
 
     if (input.nextPageToken) {
-      await enqueueWorkflowStep(
+      await enqueueWorkflowStepWithExecutor(
         {
           runId: input.runId,
           userId: input.userId,
@@ -1501,22 +1503,25 @@ export async function recordMailSyncPage(
           },
           idempotencyKey: `gmail-page:${input.runId}:${input.pageNumber + 1}`,
         },
-        executor,
+        transaction,
       );
     }
 
-    const [pageStats] = await transaction
-      .select({
-        pageCount: count(gmailSyncPages.id),
-        discoveredMessageCount: sql<number>`coalesce(sum(${gmailSyncPages.discoveredMessageCount}), 0)`.mapWith(Number),
-      })
-      .from(gmailSyncPages)
-      .where(eq(gmailSyncPages.runId, input.runId));
+    const [[pageStats], [itemStats]] = await Promise.all([
+      transaction
+        .select({ pageCount: count(gmailSyncPages.id) })
+        .from(gmailSyncPages)
+        .where(eq(gmailSyncPages.runId, input.runId)),
+      transaction
+        .select({ discoveredThreadCount: count(gmailSyncItems.id) })
+        .from(gmailSyncItems)
+        .where(eq(gmailSyncItems.runId, input.runId)),
+    ]);
     await transaction
       .update(mailSyncRuns)
       .set({
         pageCount: pageStats?.pageCount ?? 0,
-        discoveredMessageCount: pageStats?.discoveredMessageCount ?? 0,
+        discoveredThreadCount: itemStats?.discoveredThreadCount ?? 0,
         discoveryComplete: input.nextPageToken === null ? true : undefined,
         updatedAt: new Date(),
       })
@@ -1529,16 +1534,16 @@ export async function recordMailSyncPage(
     }
 
     if (input.nextPageToken === null && insertedItems.length === 0) {
-      await enqueueFinalizeIfReady(input.runId, executor);
+      await enqueueFinalizeIfReady(input.runId, transaction);
     }
     return true;
   });
 }
 
-export async function markMailSyncItemRunning(
+export async function markMailSyncThreadRunning(
   runId: string,
   accountId: string,
-  providerMessageId: string,
+  providerThreadId: string,
   attempt: number,
   database: Database = getDatabase(),
 ) {
@@ -1554,7 +1559,7 @@ export async function markMailSyncItemRunning(
     .where(
       and(
         eq(gmailSyncItems.runId, runId),
-        eq(gmailSyncItems.providerMessageId, providerMessageId),
+        eq(gmailSyncItems.providerThreadId, providerThreadId),
         inArray(gmailSyncItems.status, ["queued", "running"]),
         sql`exists (
           select 1
@@ -1569,38 +1574,31 @@ export async function markMailSyncItemRunning(
   return Boolean(item);
 }
 
-export async function getCompletedMailSyncItemThreadId(
+export async function isMailSyncThreadComplete(
   input: {
     runId: string;
     accountId: string;
-    providerMessageId: string;
+    providerThreadId: string;
   },
   database: Database = getDatabase(),
-): Promise<string | null> {
+): Promise<boolean> {
   const [item] = await database
-    .select({ threadId: threads.id })
+    .select({ id: gmailSyncItems.id })
     .from(gmailSyncItems)
     .innerJoin(mailSyncRuns, eq(mailSyncRuns.id, gmailSyncItems.runId))
-    .innerJoin(
-      threads,
-      and(
-        eq(threads.accountId, mailSyncRuns.accountId),
-        eq(threads.providerThreadId, gmailSyncItems.providerThreadId),
-      ),
-    )
     .where(
       and(
         eq(gmailSyncItems.runId, input.runId),
         eq(mailSyncRuns.accountId, input.accountId),
-        eq(gmailSyncItems.providerMessageId, input.providerMessageId),
+        eq(gmailSyncItems.providerThreadId, input.providerThreadId),
         eq(gmailSyncItems.status, "complete"),
       ),
     )
     .limit(1);
-  return item?.threadId ?? null;
+  return Boolean(item);
 }
 
-async function getItemCounts(runId: string, database: Database) {
+async function getItemCounts(runId: string, database: DatabaseExecutor) {
   const [counts] = await database
     .select({
       total: count(gmailSyncItems.id),
@@ -1616,7 +1614,10 @@ async function getItemCounts(runId: string, database: Database) {
   };
 }
 
-async function enqueueFinalizeIfReady(runId: string, database: Database) {
+async function enqueueFinalizeIfReady(
+  runId: string,
+  database: DatabaseExecutor,
+) {
   const [run] = await database
     .select({
       id: mailSyncRuns.id,
@@ -1624,7 +1625,7 @@ async function enqueueFinalizeIfReady(runId: string, database: Database) {
       accountId: mailSyncRuns.accountId,
       status: mailSyncRuns.status,
       discoveryComplete: mailSyncRuns.discoveryComplete,
-      processedMessageCount: mailSyncRuns.processedMessageCount,
+      processedThreadCount: mailSyncRuns.processedThreadCount,
     })
     .from(mailSyncRuns)
     .where(eq(mailSyncRuns.id, runId))
@@ -1641,18 +1642,18 @@ async function enqueueFinalizeIfReady(runId: string, database: Database) {
   await database
     .update(mailSyncRuns)
     .set({
-      discoveredMessageCount: counts.total,
-      processedMessageCount: counts.complete,
-      failedMessageCount: counts.failed,
+      discoveredThreadCount: counts.total,
+      processedThreadCount: counts.complete,
+      failedThreadCount: counts.failed,
       updatedAt: new Date(),
     })
     .where(eq(mailSyncRuns.id, runId));
   if (
     hasMailSyncProgressAdvanced({
       discoveryComplete: run.discoveryComplete,
-      discoveredMessageCount: counts.total,
-      previousProcessedMessageCount: run.processedMessageCount,
-      processedMessageCount: counts.complete,
+      discoveredThreadCount: counts.total,
+      previousProcessedThreadCount: run.processedThreadCount,
+      processedThreadCount: counts.complete,
     })
   ) {
     await database.execute(
@@ -1662,7 +1663,7 @@ async function enqueueFinalizeIfReady(runId: string, database: Database) {
   if (!run.discoveryComplete) return false;
   if (counts.failed > 0 || counts.complete !== counts.total) return false;
 
-  await enqueueWorkflowStep(
+  await enqueueWorkflowStepWithExecutor(
     {
       runId,
       userId: run.userId,
@@ -1692,30 +1693,24 @@ export async function enqueueReadyMailSyncFinalizers(
   let readyRunCount = 0;
   for (const run of runs) {
     const ready = await database.transaction((transaction) =>
-      enqueueFinalizeIfReady(run.id, transaction as unknown as Database),
+      enqueueFinalizeIfReady(run.id, transaction),
     );
     if (ready) readyRunCount += 1;
   }
   return readyRunCount;
 }
 
-export async function completeMailSyncItem(
+export async function completeMailSyncThreadWithExecutor(
   input: {
     runId: string;
-    providerMessageId: string;
-    providerThreadId?: string;
+    providerThreadId: string;
   },
-  database: Database = getDatabase(),
-) {
-  return database.transaction(async (transaction) => {
-    const executor = transaction as unknown as Database;
-    if (!(await lockMailSyncRun({ runId: input.runId }, executor))) return false;
-    const [item] = await transaction
+  database: DatabaseExecutor,
+): Promise<boolean> {
+    if (!(await lockMailSyncRun({ runId: input.runId }, database))) return false;
+    const [item] = await database
       .update(gmailSyncItems)
       .set({
-        ...(input.providerThreadId
-          ? { providerThreadId: input.providerThreadId }
-          : {}),
         status: "complete",
         lastError: null,
         completedAt: new Date(),
@@ -1724,21 +1719,32 @@ export async function completeMailSyncItem(
       .where(
         and(
           eq(gmailSyncItems.runId, input.runId),
-          eq(gmailSyncItems.providerMessageId, input.providerMessageId),
+          eq(gmailSyncItems.providerThreadId, input.providerThreadId),
           inArray(gmailSyncItems.status, ["queued", "running"]),
         ),
       )
       .returning({ id: gmailSyncItems.id });
     if (!item) return false;
-    await enqueueFinalizeIfReady(input.runId, executor);
+    await enqueueFinalizeIfReady(input.runId, database);
     return true;
-  });
 }
 
-export async function failMailSyncItem(
+export async function completeMailSyncThread(
   input: {
     runId: string;
-    providerMessageId: string;
+    providerThreadId: string;
+  },
+  database: Database = getDatabase(),
+): Promise<boolean> {
+  return database.transaction((transaction) =>
+    completeMailSyncThreadWithExecutor(input, transaction),
+  );
+}
+
+export async function failMailSyncThread(
+  input: {
+    runId: string;
+    providerThreadId: string;
     attempt: number;
     message: string;
     terminal: boolean;
@@ -1762,7 +1768,7 @@ export async function failMailSyncItem(
       .where(
         and(
           eq(gmailSyncItems.runId, input.runId),
-          eq(gmailSyncItems.providerMessageId, input.providerMessageId),
+          eq(gmailSyncItems.providerThreadId, input.providerThreadId),
           inArray(gmailSyncItems.status, ["queued", "running"]),
         ),
       )
@@ -1833,7 +1839,7 @@ export async function completeMailSyncRun(
     }
     const counts = await getItemCounts(input.runId, executor);
     if (!run.discoveryComplete || counts.failed > 0 || counts.complete !== counts.total) {
-      throw new Error("The Gmail synchronization run still has unfinished messages.");
+      throw new Error("The Gmail synchronization run still has unfinished threads.");
     }
 
     await transaction
@@ -1841,9 +1847,9 @@ export async function completeMailSyncRun(
       .set({
         status: "complete",
         finalHistoryCursor: input.finalHistoryCursor,
-        discoveredMessageCount: counts.total,
-        processedMessageCount: counts.complete,
-        failedMessageCount: counts.failed,
+        discoveredThreadCount: counts.total,
+        processedThreadCount: counts.complete,
+        failedThreadCount: counts.failed,
         completedAt: new Date(),
         lastError: null,
         updatedAt: new Date(),

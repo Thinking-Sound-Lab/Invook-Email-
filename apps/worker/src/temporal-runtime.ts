@@ -24,10 +24,10 @@ import {
 
 const gmailControlConcurrency = 5;
 const tenantWorkflowConcurrency = 4;
-export const gmailMessageConcurrency = parsePositiveInteger(
-  process.env.GMAIL_MESSAGE_CONCURRENCY,
+export const gmailContentConcurrency = parsePositiveInteger(
+  process.env.GMAIL_CONTENT_CONCURRENCY,
   5,
-  "GMAIL_MESSAGE_CONCURRENCY",
+  "GMAIL_CONTENT_CONCURRENCY",
 );
 const mailLabelConcurrency = parsePositiveInteger(
   process.env.MAIL_LABEL_CONCURRENCY,
@@ -186,7 +186,7 @@ export function tenantActivityConcurrency(lane: TenantTaskQueueLane): number {
       return Math.max(mailLabelConcurrency, 5);
     case "bulk":
       // Above one so a user's Gmail accounts synchronize in parallel; each
-      // account's per-message work is still bounded by GMAIL_MESSAGE_CONCURRENCY.
+      // account's provider content work is bounded by GMAIL_CONTENT_CONCURRENCY.
       return mailBulkConcurrency;
   }
 }

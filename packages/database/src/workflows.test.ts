@@ -7,9 +7,9 @@ import {
   createImmediateGmailRepairRecoveryStep,
 } from "./gmail-watch";
 import {
-  createGmailSyncMessageBatchSteps,
+  createGmailSyncThreadBatchSteps,
   createPostSyncDerivationSteps,
-  GMAIL_SYNC_MESSAGE_BATCH_SIZE,
+  GMAIL_SYNC_THREAD_BATCH_SIZE,
   TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE,
   temporalCommandJobFromRow,
   temporalCommandPriority,
@@ -21,18 +21,18 @@ test("live Gmail work dispatches ahead of bulk synchronization work", () => {
   assert.equal(TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE, 10);
   assert.ok(
     temporalCommandPriority("gmail.history.catchup") <
-      temporalCommandPriority("gmail.sync.message"),
+      temporalCommandPriority("gmail.sync.thread.batch"),
   );
   assert.ok(
     temporalCommandPriority("label.thread.assign") <
-    temporalCommandPriority("gmail.sync.message.batch"),
+    temporalCommandPriority("gmail.sync.thread.batch"),
   );
   assert.ok(
     temporalCommandPriority("label.batch.event") <
       temporalCommandPriority("label.batch.submit"),
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("gmail.sync.message.batch"),
+    tenantTaskQueueLaneForStepType("gmail.sync.thread.batch"),
     "bulk",
   );
   assert.equal(
@@ -45,7 +45,13 @@ test("live Gmail work dispatches ahead of bulk synchronization work", () => {
     tenantTaskQueueLaneForStep({
       stepType: "label.thread.scan",
     }),
-    "live",
+    "bulk",
+  );
+  assert.equal(
+    tenantTaskQueueLaneForStep({
+      stepType: "label.historical.scan",
+    }),
+    "bulk",
   );
   assert.equal(
     tenantTaskQueueLaneForStepType("label.batch.submit"),
@@ -97,36 +103,36 @@ test("Temporal command routing requires stable tenant ownership", () => {
   );
 });
 
-test("Gmail synchronization pages create stable bounded message batches", () => {
-  const providerMessageIds = Array.from(
-    { length: GMAIL_SYNC_MESSAGE_BATCH_SIZE * 2 + 3 },
-    (_, index) => `message-${index + 1}`,
+test("Gmail synchronization pages create stable bounded thread batches", () => {
+  const providerThreadIds = Array.from(
+    { length: GMAIL_SYNC_THREAD_BATCH_SIZE * 2 + 3 },
+    (_, index) => `thread-${index + 1}`,
   );
-  const steps = createGmailSyncMessageBatchSteps({
+  const steps = createGmailSyncThreadBatchSteps({
     runId: "11111111-1111-4111-8111-111111111111",
     userId: "22222222-2222-4222-8222-222222222222",
     accountId: "33333333-3333-4333-8333-333333333333",
     pageNumber: 4,
-    providerMessageIds,
+    providerThreadIds,
   });
 
   assert.deepEqual(
     steps.map((step) => step.idempotencyKey),
     [
-      "gmail-message-batch:11111111-1111-4111-8111-111111111111:4:1",
-      "gmail-message-batch:11111111-1111-4111-8111-111111111111:4:2",
-      "gmail-message-batch:11111111-1111-4111-8111-111111111111:4:3",
+      "gmail-thread-batch:11111111-1111-4111-8111-111111111111:4:1",
+      "gmail-thread-batch:11111111-1111-4111-8111-111111111111:4:2",
+      "gmail-thread-batch:11111111-1111-4111-8111-111111111111:4:3",
     ],
   );
   assert.deepEqual(
-    steps.map((step) => step.payload?.providerMessageIds),
+    steps.map((step) => step.payload?.providerThreadIds),
     [
-      providerMessageIds.slice(0, GMAIL_SYNC_MESSAGE_BATCH_SIZE),
-      providerMessageIds.slice(
-        GMAIL_SYNC_MESSAGE_BATCH_SIZE,
-        GMAIL_SYNC_MESSAGE_BATCH_SIZE * 2,
+      providerThreadIds.slice(0, GMAIL_SYNC_THREAD_BATCH_SIZE),
+      providerThreadIds.slice(
+        GMAIL_SYNC_THREAD_BATCH_SIZE,
+        GMAIL_SYNC_THREAD_BATCH_SIZE * 2,
       ),
-      providerMessageIds.slice(GMAIL_SYNC_MESSAGE_BATCH_SIZE * 2),
+      providerThreadIds.slice(GMAIL_SYNC_THREAD_BATCH_SIZE * 2),
     ],
   );
 });
@@ -229,6 +235,6 @@ test("ready-replica derivations fan out to independent Temporal Activity task qu
   );
   assert.equal(
     tenantTaskQueueLaneForStepType("label.thread.scan"),
-    "live",
+    "bulk",
   );
 });

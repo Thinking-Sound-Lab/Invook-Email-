@@ -160,12 +160,12 @@ test(
         accountId,
         status: "running",
         startingHistoryCursor: "100",
-        discoveredMessageCount: 2,
+        discoveredThreadCount: 2,
         idempotencyKey: `test-run-${runId}`,
       });
       await database.insert(gmailSyncItems).values([
-        { runId, providerMessageId: "message-1", status: "running" },
-        { runId, providerMessageId: "message-2", status: "queued" },
+        { runId, providerThreadId: "thread-1", status: "running" },
+        { runId, providerThreadId: "thread-2", status: "queued" },
       ]);
       await database.insert(workflowSteps).values([
         {
@@ -173,9 +173,9 @@ test(
           runId,
           userId,
           accountId,
-          stepType: "gmail.sync.message",
+          stepType: "gmail.sync.thread.batch",
           status: "running",
-          input: { runId, providerMessageId: "message-1" },
+          input: { runId, providerThreadIds: ["thread-1"] },
           idempotencyKey: `test-step-${stalledStepId}`,
         },
         {
@@ -183,8 +183,8 @@ test(
           runId,
           userId,
           accountId,
-          stepType: "gmail.sync.message",
-          input: { runId, providerMessageId: "message-2" },
+          stepType: "gmail.sync.thread.batch",
+          input: { runId, providerThreadIds: ["thread-2"] },
           idempotencyKey: `test-step-${remainingStepId}`,
         },
       ]);
@@ -197,8 +197,8 @@ test(
               runId,
               userId,
               accountId,
-              stepType: "gmail.sync.message",
-              payload: { runId, providerMessageId: "message-1" },
+              stepType: "gmail.sync.thread.batch",
+              payload: { runId, providerThreadIds: ["thread-1"] },
               attempts: 1,
               maxAttempts: 5,
             },
@@ -217,8 +217,8 @@ test(
               runId,
               userId,
               accountId,
-              stepType: "gmail.sync.message",
-              payload: { runId, providerMessageId: "message-1" },
+              stepType: "gmail.sync.thread.batch",
+              payload: { runId, providerThreadIds: ["thread-1"] },
               attempts: 1,
               maxAttempts: 5,
             },
@@ -238,7 +238,7 @@ test(
         .select()
         .from(gmailSyncItems)
         .where(eq(gmailSyncItems.runId, runId))
-        .orderBy(asc(gmailSyncItems.providerMessageId));
+        .orderBy(asc(gmailSyncItems.providerThreadId));
       const steps = await database
         .select()
         .from(workflowSteps)
@@ -271,8 +271,8 @@ test(
         );
 
       assert.equal(run?.status, "failed");
-      assert.equal(run?.processedMessageCount, 0);
-      assert.equal(run?.failedMessageCount, 2);
+      assert.equal(run?.processedThreadCount, 0);
+      assert.equal(run?.failedThreadCount, 2);
       assert.deepEqual(items.map((item) => item.status), ["failed", "failed"]);
       assert.deepEqual(steps.map((step) => step.status), ["failed", "failed"]);
       assert.equal(account?.status, "connected");

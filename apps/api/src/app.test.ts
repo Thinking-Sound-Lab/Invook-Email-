@@ -6,6 +6,11 @@ import type { FastifyInstance } from "fastify";
 import { validate as validateUuid } from "uuid";
 
 import type { InvookSession } from "@invook/auth";
+import { LABEL_PREVIEW_STALE_ERROR } from "@invook/contracts";
+import {
+  LabelMutationError,
+  LabelPreviewReceiptConflictError,
+} from "@invook/database";
 import { composePlainTextGmailReply } from "@invook/gmail";
 import { ObjectStorageObjectNotFoundError } from "@invook/object-storage";
 
@@ -280,6 +285,176 @@ test("custom label creation accepts only supported historical windows", async ()
 
   assert.equal(response.statusCode, 400);
   assert.equal(response.json().title, "Past-email window must be 7, 30, or 90 days");
+});
+
+test("custom label creation validates and forwards the preview receipt", async () => {
+  const previewReceiptId = "33333333-3333-4333-8333-333333333333";
+  let admittedPreviewReceiptId: string | null | undefined;
+  const receiptApi = await buildApi({
+    auth: testAuth,
+    labelRoutes: {
+      createLabel: async (input) => {
+        admittedPreviewReceiptId = input.previewReceiptId;
+        return {
+          id: "44444444-4444-4444-8444-444444444444",
+          name: input.name,
+          description: input.description,
+          systemKey: null,
+          definitionVersion: 1,
+          isEnabled: true,
+          historicalAnalysis: { windowDays: 90, status: "queued" },
+        };
+      },
+    },
+  });
+  try {
+    const response = await receiptApi.inject({
+      method: "POST",
+      url: "/v1/labels",
+      headers: { cookie: await sessionCookie(attachmentOwnerId) },
+      payload: {
+        name: "Security",
+        description: "Account security notices",
+        applyToPastDays: 90,
+        previewReceiptId,
+      },
+    });
+    assert.equal(response.statusCode, 201);
+    assert.equal(admittedPreviewReceiptId, previewReceiptId);
+
+    const invalid = await receiptApi.inject({
+      method: "POST",
+      url: "/v1/labels",
+      headers: { cookie: await sessionCookie(attachmentOwnerId) },
+      payload: {
+        name: "Security",
+        description: "Account security notices",
+        applyToPastDays: 90,
+        previewReceiptId: "not-a-uuid",
+      },
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(invalid.json().title, "Label preview ID must be valid");
+  } finally {
+    await receiptApi.close();
+  }
+});
+
+test("label previews return their reusable receipt contract", async () => {
+  const previewReceiptId = "55555555-5555-4555-8555-555555555555";
+  const previewApi = await buildApi({
+    auth: testAuth,
+    labelRoutes: {
+      previewLabel: async () => ({
+        previewReceiptId,
+        expiresAt: "2026-08-24T12:15:00.000Z",
+        scannedThreadCount: 1,
+        matches: [{
+          threadId: "66666666-6666-4666-8666-666666666666",
+          sender: "billing@example.com",
+          subject: "Invoice",
+          sentAt: "2026-08-24T12:00:00.000Z",
+          confidence: 96,
+        }],
+      }),
+    },
+  });
+  try {
+    const response = await previewApi.inject({
+      method: "POST",
+      url: "/v1/labels/preview",
+      headers: { cookie: await sessionCookie(attachmentOwnerId) },
+      payload: {
+        name: "Billing",
+        description: "Invoices and purchase receipts",
+      },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().previewReceiptId, previewReceiptId);
+    assert.equal(response.json().scannedThreadCount, 1);
+  } finally {
+    await previewApi.close();
+  }
+});
+
+test("a stale preview returns a stable conflict without exposing database detail", async () => {
+  const staleApi = await buildApi({
+    auth: testAuth,
+    labelRoutes: {
+      createLabel: async () => {
+        throw new LabelPreviewReceiptConflictError();
+      },
+    },
+  });
+  try {
+    const response = await staleApi.inject({
+      method: "POST",
+      url: "/v1/labels",
+      headers: { cookie: await sessionCookie(attachmentOwnerId) },
+      payload: {
+        name: "Security",
+        description: "Account security notices",
+        applyToPastDays: 7,
+        previewReceiptId: "77777777-7777-4777-8777-777777777777",
+      },
+    });
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.json().title, LABEL_PREVIEW_STALE_ERROR);
+    assert.equal(response.json().requestId, response.headers["x-request-id"]);
+  } finally {
+    await staleApi.close();
+  }
+});
+
+test("label admission failures return a stable problem and private request log", async () => {
+  const privateLogs: unknown[][] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => {
+    privateLogs.push(values);
+  };
+  const failingApi = await buildApi({
+    auth: testAuth,
+    labelRoutes: {
+      createLabel: async () => {
+        throw new LabelMutationError(
+          "create",
+          new Error("raw database detail must stay private"),
+        );
+      },
+    },
+  });
+  try {
+    const response = await failingApi.inject({
+      method: "POST",
+      url: "/v1/labels",
+      headers: { cookie: await sessionCookie(attachmentOwnerId) },
+      payload: {
+        name: "Security",
+        description: "Account security notices",
+        applyToPastDays: 7,
+      },
+    });
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json().title, "Label change could not be completed");
+    assert.equal(response.json().requestId, response.headers["x-request-id"]);
+    assert.equal(response.body.includes("raw database detail"), false);
+
+    const privateLog = privateLogs.find(
+      (entry) => entry[0] === "api: label mutation failed",
+    );
+    assert.ok(privateLog);
+    const details = privateLog[1];
+    assert.ok(details && typeof details === "object");
+    assert.equal(
+      "requestId" in details ? details.requestId : null,
+      response.headers["x-request-id"],
+    );
+    assert.equal("operation" in details ? details.operation : null, "create");
+    assert.equal("causeName" in details ? details.causeName : null, "Error");
+  } finally {
+    await failingApi.close();
+    console.error = originalConsoleError;
+  }
 });
 
 test("label re-enablement accepts only supported historical windows", async () => {
