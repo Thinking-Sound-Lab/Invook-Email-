@@ -59,6 +59,7 @@ import {
   enqueuePostSyncWorkflowSteps,
   enqueueReadyMailSyncFinalizers,
   enqueueStartupThreadLabelBatchSubmissions,
+  enqueueInitialSyncLiveThreadLabelAnalyses,
   enqueueInitialThreadLabelBatchIfReady,
   enqueueThreadLabelBatchSubmission,
   failMailSyncThread,
@@ -158,6 +159,7 @@ import type {
 
 import {
   gmailContentConcurrency,
+  parseNonNegativeInteger,
   TemporalRuntime,
 } from "./temporal-runtime";
 import { classifyGmailWorkflowFailure } from "./gmail-workflow-failure";
@@ -189,6 +191,16 @@ import {
 const encryptionKey = process.env.TOKEN_ENCRYPTION_KEY ?? "";
 const googleClientId = process.env.GMAIL_GOOGLE_CLIENT_ID ?? "";
 const googleClientSecret = process.env.GMAIL_GOOGLE_CLIENT_SECRET ?? "";
+const mailLabelHotWindowDays = parseNonNegativeInteger(
+  process.env.MAIL_LABEL_HOT_WINDOW_DAYS,
+  14,
+  "MAIL_LABEL_HOT_WINDOW_DAYS",
+);
+const mailLabelHotWindowMaxThreads = parseNonNegativeInteger(
+  process.env.MAIL_LABEL_HOT_WINDOW_MAX_THREADS,
+  1_000,
+  "MAIL_LABEL_HOT_WINDOW_MAX_THREADS",
+);
 const feedbackBatchSize = 24;
 const embeddingBatchRequestLimit = 2_000;
 const embeddingBatchAttemptLimit = 3;
@@ -879,6 +891,27 @@ async function runGmailThreadBatch(job: WorkflowStepJob) {
     accountId: account.id,
     threadIds: changedThreadIds,
   });
+  // Hot-window threads reserve the live lane before Batch admission runs, so
+  // recent inbox threads get labels without waiting on an OpenAI Batch. This
+  // runs before failure classification so partial batches still label.
+  let hotWindowEnqueuedCount = 0;
+  if (
+    mailLabelHotWindowDays > 0 &&
+    isAiConfigured() &&
+    changedThreadIds.length > 0
+  ) {
+    const hotWindow = await enqueueInitialSyncLiveThreadLabelAnalyses({
+      runId,
+      userId: account.userId,
+      accountId: account.id,
+      threadIds: changedThreadIds,
+      hotWindowDays: mailLabelHotWindowDays,
+      maxThreads: mailLabelHotWindowMaxThreads,
+    });
+    if (hotWindow.status === "enqueued") {
+      hotWindowEnqueuedCount = hotWindow.enqueuedCount;
+    }
+  }
   if (outcome.failures.length > 0) {
     const classifiedFailures = outcome.failures.map((failure) => ({
       ...failure,
@@ -915,6 +948,7 @@ async function runGmailThreadBatch(job: WorkflowStepJob) {
     status: "complete",
     runId,
     threadCount: providerThreadIds.length,
+    hotWindowLiveLabelCount: hotWindowEnqueuedCount,
     labelBatchAdmission: labelBatchAdmission.status,
   };
 }

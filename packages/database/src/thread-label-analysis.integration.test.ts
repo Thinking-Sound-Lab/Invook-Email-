@@ -12,6 +12,7 @@ import {
   beginThreadLabelAnalysis,
   claimThreadLabelBatchSubmission,
   completeThreadLabelAnalysis,
+  enqueueInitialSyncLiveThreadLabelAnalyses,
   enqueueInitialThreadLabelBatchIfReady,
   enqueueLiveInboxThreadLabelAnalyses,
   enqueueThreadLabelBatchSubmission,
@@ -482,6 +483,369 @@ test(
         database,
       );
       assert.equal(remainder?.candidates.length, 1);
+    } finally {
+      await database.delete(profiles).where(eq(profiles.id, userId));
+      await client.end();
+    }
+  },
+);
+
+test(
+  "initial sync hot window live-labels recent threads exactly once within budget",
+  { skip: !testDatabaseUrl },
+  async () => {
+    if (!testDatabaseUrl) return;
+    const client = postgres(testDatabaseUrl, { max: 1 });
+    const database = drizzle(client, { schema }) as Database;
+    const userId = uuidv4();
+    const accountId = uuidv4();
+    const runId = uuidv4();
+    const runCreatedAt = new Date("2026-08-25T08:00:00.000Z");
+
+    try {
+      await database.insert(profiles).values({
+        id: userId,
+        email: `${userId}@example.test`,
+        displayName: "Hot window label test",
+      });
+      await database.insert(connectedAccounts).values({
+        id: accountId,
+        userId,
+        providerAccountId: `provider-${accountId}`,
+        email: "owner@example.test",
+        memoryAcknowledgedAt: runCreatedAt,
+      });
+      const [inboxLabel] = await database
+        .insert(labels)
+        .values({
+          userId,
+          accountId,
+          kind: "gmail",
+          providerLabelId: "INBOX",
+          name: "Inbox",
+          normalizedName: "inbox",
+          providerType: "system",
+        })
+        .returning({ id: labels.id });
+      assert.ok(inboxLabel);
+      await database.insert(mailSyncRuns).values({
+        id: runId,
+        userId,
+        accountId,
+        status: "running",
+        discoveryComplete: false,
+        startingHistoryCursor: "100",
+        idempotencyKey: `hot-window:${runId}`,
+        createdAt: runCreatedAt,
+      });
+
+      const seedInboxThread = async (latestMessageAt: Date): Promise<string> => {
+        const threadId = uuidv4();
+        const messageId = uuidv4();
+        await database.insert(threads).values({
+          id: threadId,
+          userId,
+          accountId,
+          providerThreadId: `provider-thread-${threadId}`,
+          subject: `Hot window ${threadId}`,
+          snippet: "Stored Inbox candidate",
+          participants: ["sender@example.test"],
+          latestMessageAt,
+          messageCount: 1,
+        });
+        await database.insert(messages).values({
+          id: messageId,
+          userId,
+          accountId,
+          threadId,
+          providerMessageId: `provider-message-${messageId}`,
+          direction: "incoming",
+          sender: {
+            raw: "Sender <sender@example.test>",
+            email: "sender@example.test",
+          },
+          recipients: ["owner@example.test"],
+          internalDate: latestMessageAt,
+          headerLines: [],
+          subject: `Hot window ${threadId}`,
+          snippet: "Stored Inbox candidate",
+          bodyText: "Please classify this stored Inbox thread.",
+          embeddingContentHash: "f".repeat(64),
+          sentAt: latestMessageAt,
+        });
+        await database.insert(messageLabels).values({
+          userId,
+          accountId,
+          messageId,
+          labelId: inboxLabel.id,
+          source: "gmail",
+        });
+        await database.insert(gmailSyncItems).values({
+          runId,
+          providerThreadId: `provider-thread-${threadId}`,
+          status: "complete",
+          completedAt: latestMessageAt,
+        });
+        return threadId;
+      };
+
+      const inWindowThreadIds: string[] = [];
+      for (let dayOffset = 1; dayOffset <= 5; dayOffset += 1) {
+        inWindowThreadIds.push(
+          await seedInboxThread(
+            new Date(runCreatedAt.getTime() - dayOffset * 24 * 60 * 60 * 1000),
+          ),
+        );
+      }
+      const outOfWindowThreadIds = [
+        await seedInboxThread(
+          new Date(runCreatedAt.getTime() - 20 * 24 * 60 * 60 * 1000),
+        ),
+        await seedInboxThread(
+          new Date(runCreatedAt.getTime() - 40 * 24 * 60 * 60 * 1000),
+        ),
+      ];
+      const allThreadIds = [...inWindowThreadIds, ...outOfWindowThreadIds];
+
+      assert.deepEqual(
+        await enqueueInitialSyncLiveThreadLabelAnalyses(
+          {
+            runId,
+            userId,
+            accountId,
+            threadIds: [...allThreadIds, ...allThreadIds],
+            hotWindowDays: 14,
+            maxThreads: 3,
+          },
+          database,
+        ),
+        { status: "enqueued", enqueuedCount: 3, remainingBudget: 0 },
+      );
+      const reservedSteps = await database
+        .select({ runId: workflowSteps.runId, input: workflowSteps.input })
+        .from(workflowSteps)
+        .where(
+          and(
+            eq(workflowSteps.accountId, accountId),
+            eq(workflowSteps.stepType, "label.thread.assign"),
+          ),
+        );
+      assert.equal(reservedSteps.length, 3);
+      assert.ok(reservedSteps.every((step) => step.runId === runId));
+      assert.deepEqual(
+        new Set(reservedSteps.map((step) => String(step.input.threadId))),
+        new Set(inWindowThreadIds.slice(0, 3)),
+      );
+
+      assert.deepEqual(
+        await enqueueInitialSyncLiveThreadLabelAnalyses(
+          {
+            runId,
+            userId,
+            accountId,
+            threadIds: allThreadIds,
+            hotWindowDays: 14,
+            maxThreads: 3,
+          },
+          database,
+        ),
+        { status: "enqueued", enqueuedCount: 0, remainingBudget: 0 },
+      );
+
+      assert.deepEqual(
+        await enqueueInitialThreadLabelBatchIfReady(
+          {
+            runId,
+            userId,
+            accountId,
+            sourceKey: `hot-window-admission:${runId}`,
+          },
+          database,
+        ),
+        { status: "below_threshold", candidateCount: 4 },
+      );
+
+      const batchClaimedThreadId = inWindowThreadIds[3];
+      assert.ok(batchClaimedThreadId);
+      const batchStepId = await enqueueThreadLabelBatchSubmission(
+        {
+          userId,
+          accountId,
+          sourceKey: `hot-window-batch:${runId}`,
+          flushRemainder: false,
+          threadIds: [batchClaimedThreadId],
+        },
+        database,
+      );
+      const batchClaim = await claimThreadLabelBatchSubmission(
+        {
+          workflowStepId: batchStepId,
+          userId,
+          accountId,
+          flushRemainder: false,
+          modelId: "test-label-batch-model",
+          threadIds: [batchClaimedThreadId],
+        },
+        database,
+      );
+      assert.deepEqual(
+        batchClaim?.candidates.map((candidate) => candidate.threadId),
+        [batchClaimedThreadId],
+      );
+
+      assert.deepEqual(
+        await enqueueInitialSyncLiveThreadLabelAnalyses(
+          {
+            runId,
+            userId,
+            accountId,
+            threadIds: allThreadIds,
+            hotWindowDays: 14,
+            maxThreads: 10,
+          },
+          database,
+        ),
+        { status: "enqueued", enqueuedCount: 1, remainingBudget: 6 },
+      );
+
+      await database
+        .update(mailSyncRuns)
+        .set({ status: "complete", completedAt: runCreatedAt })
+        .where(eq(mailSyncRuns.id, runId));
+      assert.deepEqual(
+        await enqueueInitialSyncLiveThreadLabelAnalyses(
+          {
+            runId,
+            userId,
+            accountId,
+            threadIds: allThreadIds,
+            hotWindowDays: 14,
+            maxThreads: 10,
+          },
+          database,
+        ),
+        { status: "inactive" },
+      );
+    } finally {
+      await database.delete(profiles).where(eq(profiles.id, userId));
+      await client.end();
+    }
+  },
+);
+
+test(
+  "thread-label Batch claims candidates newest-first across keyset pages",
+  { skip: !testDatabaseUrl },
+  async () => {
+    if (!testDatabaseUrl) return;
+    const client = postgres(testDatabaseUrl, { max: 1 });
+    const database = drizzle(client, { schema }) as Database;
+    const userId = uuidv4();
+    const accountId = uuidv4();
+    const baseSentAt = new Date("2026-08-25T10:00:00.000Z");
+    // Spans more than one 500-row candidate keyset page.
+    const seededThreadCount = 510;
+
+    try {
+      await database.insert(profiles).values({
+        id: userId,
+        email: `${userId}@example.test`,
+        displayName: "Batch ordering test",
+      });
+      await database.insert(connectedAccounts).values({
+        id: accountId,
+        userId,
+        providerAccountId: `provider-${accountId}`,
+        email: "owner@example.test",
+        memoryAcknowledgedAt: baseSentAt,
+      });
+      const [inboxLabel] = await database
+        .insert(labels)
+        .values({
+          userId,
+          accountId,
+          kind: "gmail",
+          providerLabelId: "INBOX",
+          name: "Inbox",
+          normalizedName: "inbox",
+          providerType: "system",
+        })
+        .returning({ id: labels.id });
+      assert.ok(inboxLabel);
+
+      const seeded = Array.from({ length: seededThreadCount }, (_, index) => ({
+        threadId: uuidv4(),
+        messageId: uuidv4(),
+        sentAt: new Date(baseSentAt.getTime() - index * 1_000),
+      }));
+      await database.insert(threads).values(
+        seeded.map(({ threadId, sentAt }) => ({
+          id: threadId,
+          userId,
+          accountId,
+          providerThreadId: `provider-thread-${threadId}`,
+          subject: `Ordered ${threadId}`,
+          snippet: "Stored Inbox candidate",
+          participants: ["sender@example.test"],
+          latestMessageAt: sentAt,
+          messageCount: 1,
+        })),
+      );
+      await database.insert(messages).values(
+        seeded.map(({ threadId, messageId, sentAt }) => ({
+          id: messageId,
+          userId,
+          accountId,
+          threadId,
+          providerMessageId: `provider-message-${messageId}`,
+          direction: "incoming" as const,
+          sender: {
+            raw: "Sender <sender@example.test>",
+            email: "sender@example.test",
+          },
+          recipients: ["owner@example.test"],
+          internalDate: sentAt,
+          headerLines: [],
+          subject: `Ordered ${threadId}`,
+          snippet: "Stored Inbox candidate",
+          bodyText: "Please classify this stored Inbox thread.",
+          embeddingContentHash: "0".repeat(64),
+          sentAt,
+        })),
+      );
+      await database.insert(messageLabels).values(
+        seeded.map(({ messageId }) => ({
+          userId,
+          accountId,
+          messageId,
+          labelId: inboxLabel.id,
+          source: "gmail" as const,
+        })),
+      );
+
+      const stepId = await enqueueThreadLabelBatchSubmission(
+        {
+          userId,
+          accountId,
+          sourceKey: `newest-first:${accountId}`,
+          flushRemainder: true,
+        },
+        database,
+      );
+      const claimed = await claimThreadLabelBatchSubmission(
+        {
+          workflowStepId: stepId,
+          userId,
+          accountId,
+          flushRemainder: true,
+          modelId: "test-label-batch-model",
+        },
+        database,
+      );
+      assert.deepEqual(
+        claimed?.candidates.map((candidate) => candidate.threadId),
+        seeded.map(({ threadId }) => threadId),
+      );
     } finally {
       await database.delete(profiles).where(eq(profiles.id, userId));
       await client.end();

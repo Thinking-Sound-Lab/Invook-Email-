@@ -405,13 +405,17 @@ async function enqueueThreadLabelAnalysisWithExecutor(
   return { stepId, definitionHash: snapshot.definitionHash };
 }
 
-export async function enqueueLiveInboxThreadLabelAnalyses(
-  input: { userId: string; accountId: string; threadIds: string[] },
+async function listLiveThreadLabelCandidates(
+  input: {
+    userId: string;
+    accountId: string;
+    threadIds: string[];
+    latestMessageAtCutoff?: Date;
+    limit?: number;
+  },
   database: DatabaseExecutor,
-): Promise<number> {
-  const threadIds = Array.from(new Set(input.threadIds));
-  if (threadIds.length === 0) return 0;
-  const candidates = await database
+): Promise<Array<{ threadId: string; analysisVersion: number }>> {
+  const query = database
     .select({
       threadId: threads.id,
       analysisVersion: threads.labelAnalysisVersion,
@@ -425,13 +429,29 @@ export async function enqueueLiveInboxThreadLabelAnalyses(
       and(
         eq(threads.userId, input.userId),
         eq(threads.accountId, input.accountId),
-        inArray(threads.id, threadIds),
+        inArray(threads.id, input.threadIds),
         eq(threads.labelAnalysisState, "pending"),
         automaticThreadLabelAssignmentAllowed(),
         inboxThreadConditionForBatch(),
+        input.latestMessageAtCutoff
+          ? gte(threads.latestMessageAt, input.latestMessageAtCutoff)
+          : undefined,
       ),
     )
     .orderBy(desc(threads.latestMessageAt), desc(threads.id));
+  return input.limit === undefined ? query : query.limit(input.limit);
+}
+
+export async function enqueueLiveInboxThreadLabelAnalyses(
+  input: { userId: string; accountId: string; threadIds: string[] },
+  database: DatabaseExecutor,
+): Promise<number> {
+  const threadIds = Array.from(new Set(input.threadIds));
+  if (threadIds.length === 0) return 0;
+  const candidates = await listLiveThreadLabelCandidates(
+    { userId: input.userId, accountId: input.accountId, threadIds },
+    database,
+  );
   let enqueuedCount = 0;
   for (const candidate of candidates) {
     const enqueued = await enqueueThreadLabelAnalysisWithExecutor(
@@ -1312,7 +1332,7 @@ async function listThreadLabelBatchCandidateRows(
     subject: string;
     analysisVersion: number;
   }> = [];
-  let afterThreadId: string | null = null;
+  let cursor: { latestMessageAt: Date; threadId: string } | null = null;
   while (candidates.length < input.limit) {
     const pageLimit = Math.min(
       THREAD_LABEL_CANDIDATE_PAGE_SIZE,
@@ -1323,6 +1343,7 @@ async function listThreadLabelBatchCandidateRows(
         threadId: threads.id,
         subject: threads.subject,
         analysisVersion: threads.labelAnalysisVersion,
+        latestMessageAt: threads.latestMessageAt,
       })
       .from(threads)
       .leftJoin(
@@ -1338,7 +1359,9 @@ async function listThreadLabelBatchCandidateRows(
           input.candidateThreadIds
             ? inArray(threads.id, input.candidateThreadIds)
             : undefined,
-          afterThreadId ? gt(threads.id, afterThreadId) : undefined,
+          cursor
+            ? sql<boolean>`(${threads.latestMessageAt}, ${threads.id}) < (${cursor.latestMessageAt.toISOString()}::timestamptz, ${cursor.threadId}::uuid)`
+            : undefined,
           inboxThreadConditionForBatch(),
           input.activeRunId
             ? sql<boolean>`exists (
@@ -1357,13 +1380,21 @@ async function listThreadLabelBatchCandidateRows(
             : undefined,
         ),
       )
-      .orderBy(asc(threads.id))
+      .orderBy(sql`${threads.latestMessageAt} desc nulls last`, desc(threads.id))
       .limit(pageLimit)
       .for("update", { of: threads, skipLocked: true });
-    candidates.push(...page);
+    candidates.push(
+      ...page.map(({ latestMessageAt: _latestMessageAt, ...candidate }) => candidate),
+    );
     if (page.length < pageLimit) break;
-    afterThreadId = page.at(-1)?.threadId ?? null;
-    if (!afterThreadId) break;
+    const lastRow = page.at(-1);
+    // Eligible threads always carry latestMessageAt; a null cursor cannot
+    // order the next keyset page, so stop instead of looping unordered.
+    if (!lastRow || lastRow.latestMessageAt === null) break;
+    cursor = {
+      latestMessageAt: lastRow.latestMessageAt,
+      threadId: lastRow.threadId,
+    };
   }
   return candidates;
 }
@@ -1457,6 +1488,96 @@ export async function enqueueInitialThreadLabelBatchIfReady(
       status: "enqueued",
       candidateCount: candidates.length,
       stepId,
+    };
+  });
+}
+
+export type InitialSyncLiveThreadLabelResult =
+  | { status: "inactive" }
+  | { status: "enqueued"; enqueuedCount: number; remainingBudget: number };
+
+export async function enqueueInitialSyncLiveThreadLabelAnalyses(
+  input: {
+    runId: string;
+    userId: string;
+    accountId: string;
+    threadIds: string[];
+    hotWindowDays: number;
+    maxThreads: number;
+  },
+  database: Database = getDatabase(),
+): Promise<InitialSyncLiveThreadLabelResult> {
+  const threadIds = Array.from(new Set(input.threadIds));
+  return database.transaction(async (transaction) => {
+    await lockThreadLabelBatchAccount(input.accountId, transaction);
+    const [activeRun] = await transaction
+      .select({ id: mailSyncRuns.id, createdAt: mailSyncRuns.createdAt })
+      .from(mailSyncRuns)
+      .where(
+        and(
+          eq(mailSyncRuns.id, input.runId),
+          eq(mailSyncRuns.userId, input.userId),
+          eq(mailSyncRuns.accountId, input.accountId),
+          inArray(mailSyncRuns.status, ["queued", "running"]),
+        ),
+      )
+      .limit(1);
+    if (!activeRun) return { status: "inactive" };
+
+    const [usedBudget] = await transaction
+      .select({ count: sql<number>`count(*)::int` })
+      .from(workflowSteps)
+      .where(
+        and(
+          eq(workflowSteps.runId, input.runId),
+          eq(workflowSteps.accountId, input.accountId),
+          eq(workflowSteps.stepType, "label.thread.assign"),
+        ),
+      );
+    const budget = input.maxThreads - (usedBudget?.count ?? 0);
+    if (budget <= 0 || threadIds.length === 0) {
+      return {
+        status: "enqueued",
+        enqueuedCount: 0,
+        remainingBudget: Math.max(budget, 0),
+      };
+    }
+
+    // The cutoff anchors to the run's creation time, not now(), so step
+    // retries reserve a deterministic hot window.
+    const cutoff = new Date(
+      activeRun.createdAt.getTime() -
+        input.hotWindowDays * 24 * 60 * 60 * 1000,
+    );
+    const candidates = await listLiveThreadLabelCandidates(
+      {
+        userId: input.userId,
+        accountId: input.accountId,
+        threadIds,
+        latestMessageAtCutoff: cutoff,
+        limit: budget,
+      },
+      transaction,
+    );
+    let enqueuedCount = 0;
+    for (const candidate of candidates) {
+      const enqueued = await enqueueThreadLabelAnalysisWithExecutor(
+        {
+          userId: input.userId,
+          accountId: input.accountId,
+          threadId: candidate.threadId,
+          analysisVersion: candidate.analysisVersion,
+          lane: "live",
+          runId: input.runId,
+        },
+        transaction,
+      );
+      if (enqueued) enqueuedCount += 1;
+    }
+    return {
+      status: "enqueued",
+      enqueuedCount,
+      remainingBudget: budget - enqueuedCount,
     };
   });
 }
