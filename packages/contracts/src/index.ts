@@ -58,10 +58,12 @@ export type InvookLabel = {
 /**
  * Invook labels are stored once per connected account, so the normalized name
  * is the identity shared by the sibling labels that represent one user-facing
- * label across accounts.
+ * label across accounts. Case folding stays locale-independent because the
+ * server persists this value while the browser recomputes it, and a
+ * locale-sensitive rule would split one label into separate identities.
  */
 export function normalizeInvookLabelName(name: string): string {
-  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 export type LabelHistoryWindowDays = 7 | 30 | 90;

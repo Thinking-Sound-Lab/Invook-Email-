@@ -1,18 +1,17 @@
-import {
-  normalizeInvookLabelName,
-  type InvookLabel,
-  type InvookThreadLabel,
-  type MailboxAccount,
-  type MailboxPagination,
-  type MailboxSelectedThread,
-  type MailboxSettings,
-  type MailboxScopeSidebarCounts,
-  type MailboxSidebarCounts,
-  type MailboxThreadDetail,
-  type MailboxThreadPage,
-  type MailboxThreadSummary,
-  type MailboxView,
-  type StaticMailboxView,
+import type {
+  InvookLabel,
+  InvookThreadLabel,
+  MailboxAccount,
+  MailboxPagination,
+  MailboxSelectedThread,
+  MailboxSettings,
+  MailboxScopeSidebarCounts,
+  MailboxSidebarCounts,
+  MailboxThreadDetail,
+  MailboxThreadPage,
+  MailboxThreadSummary,
+  MailboxView,
+  StaticMailboxView,
 } from "@invook/contracts";
 import {
   and,
@@ -205,7 +204,10 @@ async function listInvookLabels(
   return rows.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-type AccountInvookLabel = InvookLabel & { accountId: string };
+type AccountInvookLabel = InvookLabel & {
+  accountId: string;
+  normalizedName: string;
+};
 
 async function listInvookLabelsForAccounts(
   input: { userId: string; accountIds: string[] },
@@ -217,6 +219,7 @@ async function listInvookLabelsForAccounts(
       accountId: labels.accountId,
       id: labels.id,
       name: labels.name,
+      normalizedName: labels.normalizedName,
       description: labels.description,
       systemKey: labels.systemKey,
       definitionVersion: labels.definitionVersion,
@@ -349,7 +352,10 @@ export async function getMailboxShellData(
       accountId: account.id,
       labels: invookLabels
         .filter((label) => label.accountId === account.id)
-        .map(({ accountId: _accountId, ...label }) => label),
+        .map(
+          ({ accountId: _accountId, normalizedName: _normalizedName, ...label }) =>
+            label,
+        ),
     })),
   };
 }
@@ -471,21 +477,20 @@ export async function getMailboxSidebarCounts(
       all.views[view] += counts.views[view];
     }
   }
-  // Sibling labels share one name across accounts, so the All scope reports the
-  // combined total under each account label id that carries that name.
+  // Sibling labels share one stored normalized name across accounts, the same
+  // identity a label view matches, so the All scope reports the combined total
+  // under each account label id that carries that name.
   const labelTotalsByName = new Map<string, number>();
   for (const label of invookLabels) {
-    const labelName = normalizeInvookLabelName(label.name);
     const accountCount =
       countsByAccountId.get(label.accountId)?.labels[label.id] ?? 0;
     labelTotalsByName.set(
-      labelName,
-      (labelTotalsByName.get(labelName) ?? 0) + accountCount,
+      label.normalizedName,
+      (labelTotalsByName.get(label.normalizedName) ?? 0) + accountCount,
     );
   }
   for (const label of invookLabels) {
-    all.labels[label.id] =
-      labelTotalsByName.get(normalizeInvookLabelName(label.name)) ?? 0;
+    all.labels[label.id] = labelTotalsByName.get(label.normalizedName) ?? 0;
   }
   return {
     all,
