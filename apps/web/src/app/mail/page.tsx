@@ -110,7 +110,7 @@ export default async function MailPage({ searchParams }: MailPageProps) {
       />
     );
   } else if (currentSurface === "compose") {
-    centerPane = <ComposeSurface key={accountSelection} />;
+    centerPane = <ComposeSurface />;
   } else if (currentSurface === "search" && !query) {
     centerPane = <SearchSurface accountSelection={accountSelection} />;
   } else if (currentSurface === "search" && query) {
