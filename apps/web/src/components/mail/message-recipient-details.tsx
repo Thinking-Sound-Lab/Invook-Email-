@@ -8,24 +8,22 @@ import {
   formatRecipientDetails,
   formatRecipientSummary,
 } from "./mail-format";
-import { useMailShell } from "./mail-shell-provider";
-
 export interface MessageRecipientDetailsProps {
+  accountEmail: string;
   recipients: string[];
   sender: string;
 }
 
 export function MessageRecipientDetails({
+  accountEmail,
   recipients,
   sender,
 }: MessageRecipientDetailsProps) {
-  const { account } = useMailShell();
-
   return (
     <details className="group relative min-w-0">
       <summary className="flex cursor-pointer list-none items-center gap-1 rounded-sm text-xs leading-5 text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
         <span className="truncate">
-          To: {formatRecipientSummary(recipients, account.email)}
+          To: {formatRecipientSummary(recipients, accountEmail)}
         </span>
         <HugeiconsIcon
           icon={ArrowDown01Icon}
@@ -39,7 +37,7 @@ export function MessageRecipientDetails({
           <dd className="break-words">{formatMailText(sender)}</dd>
           <dt className="text-muted-foreground">To</dt>
           <dd className="break-words">
-            {formatRecipientDetails(recipients, account.email)}
+            {formatRecipientDetails(recipients, accountEmail)}
           </dd>
         </dl>
       </div>

@@ -11,6 +11,10 @@ import {
 } from "@invook/database";
 
 import { mutationAccessHooks, requireSession, requireUuidParameter } from "../access";
+import {
+  type MailboxAccountQuery,
+  parseRequiredMailboxAccountId,
+} from "../mailbox-account-scope";
 import { sendJson, sendProblem } from "../responses";
 import { serializeMemoryEntry } from "../serializers";
 
@@ -76,13 +80,21 @@ async function requirePayload(
 }
 
 export const registerMemoryRoutes: FastifyPluginAsync = async (api) => {
-  api.get(
+  api.get<{ Querystring: MailboxAccountQuery }>(
     "/",
     { onRequest: requireSession },
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
-      const result = await getMemoriesForUser(session.userId);
+      const accountId = parseRequiredMailboxAccountId(request.query.account);
+      if (!accountId) {
+        await sendProblem(request, reply, 400, "A valid mailbox account is required");
+        return;
+      }
+      const result = await getMemoriesForUser({
+        userId: session.userId,
+        accountId,
+      });
       if (!result) {
         await sendProblem(
           request,
@@ -110,7 +122,19 @@ export const registerMemoryRoutes: FastifyPluginAsync = async (api) => {
       if (!session) return;
       const payload = await requirePayload(request, reply);
       if (!payload) return;
-      const memory = await createUserMemory({ userId: session.userId, ...payload });
+      const accountId =
+        request.body && typeof request.body === "object" && "accountId" in request.body
+          ? parseRequiredMailboxAccountId(request.body.accountId)
+          : null;
+      if (!accountId) {
+        await sendProblem(request, reply, 400, "A valid mailbox account is required");
+        return;
+      }
+      const memory = await createUserMemory({
+        userId: session.userId,
+        accountId,
+        ...payload,
+      });
       if (!memory) {
         await sendProblem(
           request,

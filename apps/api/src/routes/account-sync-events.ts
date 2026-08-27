@@ -3,12 +3,13 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { AccountSyncStatusEvent } from "@invook/contracts";
 import {
   getAccountSyncStateForAccount,
-  getAccountSyncStateForUser,
+  getGmailConnectionForUser,
   getMailSyncProgressForAccount,
   listenForAccountSyncNotifications,
 } from "@invook/database";
 
 import { requireSession } from "../access";
+import { parseRequiredMailboxAccountId } from "../mailbox-account-scope";
 import { sendProblem } from "../responses";
 
 function parseNotification(payload: string): string | null {
@@ -68,22 +69,28 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
     await stopListening?.();
   });
 
-  api.get(
+  api.get<{ Querystring: { accountId?: unknown } }>(
     "/v1/account-sync/events",
     { onRequest: requireSession },
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
-      const account = await getAccountSyncStateForUser({
+      const accountId = parseRequiredMailboxAccountId(request.query.accountId);
+      if (!accountId) {
+        await sendProblem(request, reply, 400, "A valid mailbox account is required");
+        return;
+      }
+      const account = await getGmailConnectionForUser({
         userId: session.userId,
+        accountId,
       });
-      if (!account) {
+      if (!account || account.status === "disconnected") {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
         return;
       }
       const [mailSync, syncState] = await Promise.all([
-        getMailSyncProgressForAccount({ accountId: account.accountId }),
-        getAccountSyncStateForAccount({ accountId: account.accountId }),
+        getMailSyncProgressForAccount({ accountId }),
+        getAccountSyncStateForAccount({ accountId }),
       ]);
       if (!mailSync || !syncState) {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
@@ -100,12 +107,12 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
       reply.raw.setHeader("x-request-id", request.id);
       reply.raw.flushHeaders();
 
-      const accountStreams = streams.get(account.accountId) ?? new Set();
+      const accountStreams = streams.get(accountId) ?? new Set();
       accountStreams.add(reply.raw);
-      streams.set(account.accountId, accountStreams);
+      streams.set(accountId, accountStreams);
       const removeStream = () => {
         accountStreams.delete(reply.raw);
-        if (accountStreams.size === 0) streams.delete(account.accountId);
+        if (accountStreams.size === 0) streams.delete(accountId);
       };
       request.raw.once("close", removeStream);
       reply.raw.once("close", removeStream);

@@ -14,8 +14,8 @@ export function serializeMailboxShell(
   return {
     aiConfigured: isAiConfigured(),
     user,
-    account: shell.account,
-    invookLabels: shell.invookLabels,
+    accounts: shell.accounts,
+    accountLabels: shell.accountLabels,
   };
 }
 

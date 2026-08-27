@@ -198,7 +198,7 @@ export const registerMailboxEventRoutes: FastifyPluginAsync = async (api) => {
         stream.isReady = true;
         writeEvent(stream.response, "mailbox-ready", {
           type: "mailbox_stream_ready",
-          accountId: recovery.accountId,
+          accountIds: recovery.accountIds,
         });
       } catch (error: unknown) {
         health.invalidateUser(session.userId);

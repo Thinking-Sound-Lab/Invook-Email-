@@ -18,12 +18,14 @@ export type GmailComposeDraftValidationResult =
   | { valid: false; error: GmailComposeDraftValidationError };
 
 export type CreateGmailComposeDraftRequest = GmailComposeDraftFields & {
+  accountId: string;
   idempotencyKey: string;
 };
 
 export type UpdateGmailComposeDraftRequest = CreateGmailComposeDraftRequest;
 
 export type SendGmailComposeDraftRequest = {
+  accountId: string;
   idempotencyKey: string;
 };
 

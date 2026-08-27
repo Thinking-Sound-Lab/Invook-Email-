@@ -20,6 +20,7 @@ import { apiErrorMessage } from "@/lib/http-error";
 import { memoryDefinitions } from "./memory-definitions";
 
 export interface MemoryEditorDialogProps {
+  accountId: string;
   type: MemoryType;
   memoryId?: string;
   initialStatement: string;
@@ -29,6 +30,7 @@ export interface MemoryEditorDialogProps {
 }
 
 export function MemoryEditorDialog({
+  accountId,
   type,
   memoryId,
   initialStatement,
@@ -47,6 +49,7 @@ export function MemoryEditorDialog({
     setError(null);
     try {
       await saveMemory({
+        accountId,
         memoryId,
         type,
         contactEmail: type === "contact" ? contactEmail : null,

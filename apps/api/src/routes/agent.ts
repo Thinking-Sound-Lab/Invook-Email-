@@ -4,16 +4,21 @@ import { createMailAgent, isAiConfigured } from "@invook/ai";
 import {
   getMailboxThreadForAgent,
   listMailboxThreadAttachments,
+  resolveMailboxAccountIds,
 } from "@invook/database";
 import { pipeAgentUIStreamToResponse } from "ai";
 
 import { mutationAccessHooks, requireSession } from "../access";
+import {
+  type MailboxAccountQuery,
+  parseMailboxAccountScope,
+} from "../mailbox-account-scope";
 import { sendJson, sendProblem } from "../responses";
 import { generateDraftForUser } from "../services/drafts";
 import { queryMailboxForUser } from "../services/mailbox-query";
 import { searchMailForUser } from "../services/search";
 
-type SearchQuery = { q?: unknown };
+type SearchQuery = MailboxAccountQuery & { q?: unknown };
 
 function parseMessages(body: unknown) {
   const suppliedMessages =
@@ -57,6 +62,19 @@ export const registerAgentRoutes: FastifyPluginAsync = async (api) => {
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
+      const accountScope = parseMailboxAccountScope(request.query.account);
+      if (!accountScope.valid) {
+        await sendProblem(request, reply, 400, "Invalid mailbox account");
+        return;
+      }
+      const accountIds = await resolveMailboxAccountIds({
+        userId: session.userId,
+        accountId: accountScope.accountId,
+      });
+      if (!accountIds) {
+        await sendProblem(request, reply, 404, "Connected Gmail account not found");
+        return;
+      }
       const query = typeof request.query.q === "string" ? request.query.q.trim() : "";
       if (!query || query.length > 1_000) {
         await sendProblem(request, reply, 400, "A valid mail search query is required");
@@ -64,6 +82,7 @@ export const registerAgentRoutes: FastifyPluginAsync = async (api) => {
       }
       const results = await searchMailForUser({
         userId: session.userId,
+        accountId: accountScope.accountId,
         query,
       });
       await sendJson(reply, 200, { results });
@@ -92,15 +111,44 @@ export const registerAgentRoutes: FastifyPluginAsync = async (api) => {
         typeof request.body.currentThreadId === "string"
           ? request.body.currentThreadId
           : null;
+      const requestedAccount =
+        request.body &&
+        typeof request.body === "object" &&
+        "account" in request.body
+          ? request.body.account
+          : undefined;
+      const accountScope = parseMailboxAccountScope(requestedAccount);
+      if (!accountScope.valid) {
+        await sendProblem(request, reply, 400, "Invalid mailbox account");
+        return;
+      }
+      const accountIds = await resolveMailboxAccountIds({
+        userId: session.userId,
+        accountId: accountScope.accountId,
+      });
+      if (!accountIds) {
+        await sendProblem(request, reply, 404, "Connected Gmail account not found");
+        return;
+      }
+      const isInScope = (accountId: string): boolean =>
+        accountScope.accountId === null || accountId === accountScope.accountId;
+      const loadScopedThread = async (threadId: string) => {
+        const thread = await getMailboxThreadForAgent(session.userId, threadId);
+        return thread && isInScope(thread.accountId) ? thread : null;
+      };
       const currentThread = requestedThreadId
-        ? await getMailboxThreadForAgent(session.userId, requestedThreadId)
+        ? await loadScopedThread(requestedThreadId)
         : null;
       const agent = createMailAgent(
         {
           searchMail: (query) =>
-            searchMailForUser({ userId: session.userId, query }),
+            searchMailForUser({
+              userId: session.userId,
+              accountId: accountScope.accountId,
+              query,
+            }),
           getThread: async (threadId) => {
-            const thread = await getMailboxThreadForAgent(session.userId, threadId);
+            const thread = await loadScopedThread(threadId);
             return thread
               ? {
                   ...thread,
@@ -111,9 +159,15 @@ export const registerAgentRoutes: FastifyPluginAsync = async (api) => {
                 }
               : null;
           },
-          listAttachments: (threadId) =>
-            listMailboxThreadAttachments(session.userId, threadId),
+          listAttachments: async (threadId) => {
+            const thread = await loadScopedThread(threadId);
+            return thread
+              ? listMailboxThreadAttachments(session.userId, threadId)
+              : [];
+          },
           draftReply: async (threadId, instruction) => {
+            const thread = await loadScopedThread(threadId);
+            if (!thread) throw new Error("The email thread was not found.");
             const draft = await generateDraftForUser({
               userId: session.userId,
               threadId,
@@ -123,7 +177,11 @@ export const registerAgentRoutes: FastifyPluginAsync = async (api) => {
             return { draftId: draft.id, threadId: draft.threadId, text: draft.currentText };
           },
           queryInvookMailbox: (input) =>
-            queryMailboxForUser({ userId: session.userId, ...input }),
+            queryMailboxForUser({
+              userId: session.userId,
+              accountId: accountScope.accountId,
+              ...input,
+            }),
         },
         currentThread ? { currentThreadId: currentThread.id } : undefined,
       );

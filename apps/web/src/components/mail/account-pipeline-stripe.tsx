@@ -1,19 +1,34 @@
 "use client";
 
+import type { MailboxAccount } from "@invook/contracts";
+import { useSearchParams } from "next/navigation";
+
 import { Progress } from "@/components/ui/progress";
 import { useAccountSyncEvents } from "@/hooks/use-account-sync-events";
 import { cn } from "@/lib/utils";
 
+import {
+  resolveMailboxAccountSelection,
+  selectedMailboxAccount,
+} from "./mail-account-scope";
 import { getAccountPipelinePresentation } from "./account-pipeline-state";
 
 export interface AccountPipelineStripeProps {
-  accountEmail: string;
+  accounts: MailboxAccount[];
 }
 
 export function AccountPipelineStripe({
-  accountEmail,
+  accounts,
 }: AccountPipelineStripeProps) {
-  const stream = useAccountSyncEvents();
+  const searchParams = useSearchParams();
+  const selection = resolveMailboxAccountSelection(
+    searchParams.get("account"),
+    accounts,
+  );
+  const account = selectedMailboxAccount(selection, accounts);
+  const stream = useAccountSyncEvents(account?.id ?? null);
+  if (!account) return null;
+  const accountEmail = account.email;
   if (stream.status !== "available") {
     return (
       <div role={stream.status === "unavailable" ? "alert" : "status"} className="flex h-10 shrink-0 items-center justify-center bg-sidebar px-4 text-xs text-sidebar-foreground/70">

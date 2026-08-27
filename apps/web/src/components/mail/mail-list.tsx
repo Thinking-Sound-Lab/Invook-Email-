@@ -2,7 +2,11 @@
 
 import { StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { MailboxThreadPage } from "@invook/contracts";
+import type {
+  MailboxAccount,
+  MailboxThreadPage,
+  SignedInUser,
+} from "@invook/contracts";
 import axios from "axios";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -12,6 +16,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 import { createMailDateSections } from "./mail-date-sections";
+import { MailAccountAvatar } from "./mail-account-avatar";
 import { formatMailText, threadPeople } from "./mail-format";
 import { mailLabelColorClassName } from "./mail-label-colors";
 import { LocalMailDate } from "./local-mail-date";
@@ -40,18 +45,22 @@ const viewTitles: Record<StaticMailboxView, string> = {
 };
 
 function mailboxHref(
+  accountSelection: string,
   currentView: MailboxView,
   threadId?: string,
 ): string {
-  const query = new URLSearchParams({ view: currentView });
+  const query = new URLSearchParams({ account: accountSelection, view: currentView });
   if (threadId) query.set("thread", threadId);
   return `/mail?${query.toString()}`;
 }
 
 interface MailRowProps {
   thread: MailThreadSummary;
-  accountEmail: string;
+  account: MailboxAccount;
+  accounts: MailboxAccount[];
+  accountSelection: string;
   currentView: MailboxView;
+  user: SignedInUser;
 }
 
 interface MailLabelChipProps {
@@ -75,10 +84,13 @@ function MailLabelChip({ label }: MailLabelChipProps) {
 
 function MailRow({
   thread,
-  accountEmail,
+  account,
+  accounts,
+  accountSelection,
   currentView,
+  user,
 }: MailRowProps) {
-  const people = threadPeople(thread.participants, accountEmail);
+  const people = threadPeople(thread.participants, account.email);
   const isUnread = thread.gmailLabels.some(
     (label) => label.providerLabelId === "UNREAD",
   );
@@ -89,10 +101,10 @@ function MailRow({
 
   return (
     <Link
-      href={mailboxHref(currentView, thread.id)}
+      href={mailboxHref(accountSelection, currentView, thread.id)}
       scroll={false}
       className={cn(
-        "group relative grid min-h-12 grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_4.5rem] items-center gap-3 border-b border-border/40 px-4 py-2 transition-colors [contain-intrinsic-size:48px] [content-visibility:auto] lg:grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_6.5rem_1rem_4.5rem] lg:gap-2.5",
+        "group relative grid min-h-12 grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_6.5rem] items-center gap-3 border-b border-border/40 px-4 py-2 transition-colors [contain-intrinsic-size:48px] [content-visibility:auto] lg:grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_6.5rem_1rem_7rem] lg:gap-2.5",
         "hover:bg-accent/55 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         isUnread && "bg-card/45",
       )}
@@ -168,24 +180,36 @@ function MailRow({
         ) : null}
       </div>
 
-      <LocalMailDate
-        className="w-full whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground"
-        value={thread.latestMessageAt}
-      />
+      <div className="flex min-w-0 items-center justify-end gap-2">
+        <MailAccountAvatar
+          account={account}
+          accounts={accounts}
+          user={user}
+          className="size-4.5"
+        />
+        <LocalMailDate
+          className="min-w-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground"
+          value={thread.latestMessageAt}
+        />
+      </div>
     </Link>
   );
 }
 
 interface MailRowsProps {
   threads: MailThreadSummary[];
-  accountEmail: string;
+  accounts: MailboxAccount[];
+  accountSelection: string;
   currentView: MailboxView;
+  user: SignedInUser;
 }
 
 function MailRows({
   threads,
-  accountEmail,
+  accounts,
+  accountSelection,
   currentView,
+  user,
 }: MailRowsProps) {
   const sections = createMailDateSections(threads);
 
@@ -200,19 +224,28 @@ function MailRows({
           {section.label}
         </h2>
       ) : null}
-      {section.threads.map((thread) => (
-        <MailRow
-          key={thread.id}
-          thread={thread}
-          accountEmail={accountEmail}
-          currentView={currentView}
-        />
-      ))}
+      {section.threads.flatMap((thread) => {
+        const account = accounts.find((candidate) => candidate.id === thread.accountId);
+        return account
+          ? [
+              <MailRow
+                key={thread.id}
+                thread={thread}
+                account={account}
+                accounts={accounts}
+                accountSelection={accountSelection}
+                currentView={currentView}
+                user={user}
+              />,
+            ]
+          : [];
+      })}
     </section>
   ));
 }
 
 export interface MailListProps {
+  accountSelection: string;
   canonicalPageVersion: string;
   currentView: MailboxView;
   initialOlderCursor: string | null;
@@ -221,15 +254,15 @@ export interface MailListProps {
 }
 
 export function MailList({
+  accountSelection,
   canonicalPageVersion,
   currentView,
   initialOlderCursor,
   threads,
   query,
 }: MailListProps) {
-  const { account, invookLabels } = useMailShell();
-  const accountEmail = account.email;
-  const mailSyncState = account.syncState.mailSync;
+  const { accountLabels, accounts, user } = useMailShell();
+  const invookLabels = accountLabels.flatMap((entry) => entry.labels);
   const title = currentView.startsWith("label:")
     ? invookLabels.find((label) => label.id === currentView.slice(6))?.name
     : undefined;
@@ -256,7 +289,15 @@ export function MailList({
   const requestControllerRef = useRef<AbortController | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const noMail = loadedThreads.length === 0;
-  const syncing = mailSyncState === "pending" || mailSyncState === "running";
+  const scopedAccounts =
+    accountSelection === "all"
+      ? accounts
+      : accounts.filter((account) => account.id === accountSelection);
+  const syncing = scopedAccounts.some(
+    (account) =>
+      account.syncState.mailSync === "pending" ||
+      account.syncState.mailSync === "running",
+  );
 
   useEffect(
     () => () => {
@@ -286,7 +327,11 @@ export function MailList({
 
     try {
       const response = await axios.get<MailboxThreadPage>("/v1/mailbox/threads", {
-        params: { view: currentView, cursor: requestedCursor },
+        params: {
+          account: accountSelection,
+          view: currentView,
+          cursor: requestedCursor,
+        },
         signal: requestController.signal,
       });
       if (requestController.signal.aborted) return;
@@ -314,7 +359,7 @@ export function MailList({
         isLoadingRef.current = false;
       }
     }
-  }, [canonicalPageVersion, currentView, olderCursor, paginationState]);
+  }, [accountSelection, canonicalPageVersion, currentView, olderCursor, paginationState]);
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -358,8 +403,10 @@ export function MailList({
       >
         <MailRows
           threads={loadedThreads}
-          accountEmail={accountEmail}
+          accounts={accounts}
+          accountSelection={accountSelection}
           currentView={currentView}
+          user={user}
         />
 
         {noMail ? (

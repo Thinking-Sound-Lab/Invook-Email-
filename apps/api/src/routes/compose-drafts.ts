@@ -27,7 +27,7 @@ import {
   sendComposeDraft,
 } from "../services/compose-send";
 import {
-  getGmailProviderAccessForRequest,
+  getGmailProviderAccessForAccountRequest,
   sendGmailWriteProblem,
 } from "./gmail-provider-access";
 
@@ -42,6 +42,7 @@ export function parseGmailComposeDraftRequest(
 ): CreateGmailComposeDraftRequest | null {
   if (!isRecord(body)) return null;
   const allowedKeys = new Set([
+    "accountId",
     "idempotencyKey",
     "recipients",
     "subject",
@@ -51,6 +52,8 @@ export function parseGmailComposeDraftRequest(
   if (
     typeof body.idempotencyKey !== "string" ||
     !validateUuid(body.idempotencyKey) ||
+    typeof body.accountId !== "string" ||
+    !validateUuid(body.accountId) ||
     !Array.isArray(body.recipients) ||
     body.recipients.some((recipient) => typeof recipient !== "string") ||
     typeof body.subject !== "string" ||
@@ -67,6 +70,7 @@ export function parseGmailComposeDraftRequest(
   });
   if (!validation.valid) return null;
   return {
+    accountId: body.accountId,
     idempotencyKey: body.idempotencyKey,
     ...validation.fields,
   };
@@ -77,13 +81,17 @@ export function parseGmailComposeSendRequest(
 ): SendGmailComposeDraftRequest | null {
   if (
     !isRecord(body) ||
-    Object.keys(body).some((key) => key !== "idempotencyKey") ||
+    Object.keys(body).some(
+      (key) => key !== "accountId" && key !== "idempotencyKey",
+    ) ||
+    typeof body.accountId !== "string" ||
+    !validateUuid(body.accountId) ||
     typeof body.idempotencyKey !== "string" ||
     !validateUuid(body.idempotencyKey)
   ) {
     return null;
   }
-  return { idempotencyKey: body.idempotencyKey };
+  return { accountId: body.accountId, idempotencyKey: body.idempotencyKey };
 }
 
 function isProviderDraftId(value: string): boolean {
@@ -135,7 +143,11 @@ export const registerComposeDraftRoutes: FastifyPluginAsync = async (api) => {
         await sendProblem(request, reply, 400, "Gmail compose draft input is invalid");
         return;
       }
-      const access = await getGmailProviderAccessForRequest(request, reply);
+      const access = await getGmailProviderAccessForAccountRequest(
+        request,
+        reply,
+        draft.accountId,
+      );
       if (!access) return;
       try {
         const result = await saveComposeDraft({
@@ -172,7 +184,11 @@ export const registerComposeDraftRoutes: FastifyPluginAsync = async (api) => {
         await sendProblem(request, reply, 400, "Gmail compose draft input is invalid");
         return;
       }
-      const access = await getGmailProviderAccessForRequest(request, reply);
+      const access = await getGmailProviderAccessForAccountRequest(
+        request,
+        reply,
+        draft.accountId,
+      );
       if (!access) return;
       try {
         const result = await saveComposeDraft({
@@ -210,7 +226,11 @@ export const registerComposeDraftRoutes: FastifyPluginAsync = async (api) => {
         await sendProblem(request, reply, 400, "Gmail compose send input is invalid");
         return;
       }
-      const access = await getGmailProviderAccessForRequest(request, reply);
+      const access = await getGmailProviderAccessForAccountRequest(
+        request,
+        reply,
+        send.accountId,
+      );
       if (!access) return;
       try {
         const result = await sendComposeDraft({

@@ -845,7 +845,7 @@ export async function failThreadLabelAnalysis(
 }
 
 export async function listInvookLabelPreviewCandidates(
-  input: { userId: string; limit?: number },
+  input: { userId: string; accountId: string; limit?: number },
   database: Database = getDatabase(),
 ): Promise<Array<{
   threadId: string;
@@ -861,10 +861,10 @@ export async function listInvookLabelPreviewCandidates(
     .where(
       and(
         eq(connectedAccounts.userId, input.userId),
+        eq(connectedAccounts.id, input.accountId),
         eq(connectedAccounts.status, "connected"),
       ),
     )
-    .orderBy(desc(connectedAccounts.createdAt))
     .limit(1);
   if (!account) return [];
   const candidates = await database

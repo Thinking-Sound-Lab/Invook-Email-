@@ -23,6 +23,7 @@ interface MemoryEditorState {
 }
 
 export interface MemorySettingsProps {
+  accountId: string;
   memories: MemoryEntry[];
   syncState: AccountSyncStage;
   aiConfigured: boolean;
@@ -34,6 +35,7 @@ function isMemoryType(value: string): value is MemoryType {
 }
 
 export function MemorySettings({
+  accountId,
   memories,
   syncState,
   aiConfigured,
@@ -173,6 +175,7 @@ export function MemorySettings({
 
       {editor ? (
         <MemoryEditorDialog
+          accountId={accountId}
           key={editor.key}
           type={editor.type}
           memoryId={editor.memoryId}

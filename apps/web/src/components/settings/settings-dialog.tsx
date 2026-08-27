@@ -13,7 +13,7 @@ import type {
   MailboxSettings,
 } from "@invook/contracts";
 import axios from "axios";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { Button } from "@/components/ui/button";
@@ -89,6 +89,15 @@ function AccountSettings({ account, aiConfigured }: AccountSettingsProps) {
       </div>
 
       <div className="mt-6 flex flex-wrap gap-3">
+        {account.status === "reconnect_required" ? (
+          <Button asChild>
+            <a
+              href={`/v1/connections/gmail/start?accountId=${encodeURIComponent(account.id)}`}
+            >
+              Reconnect Gmail
+            </a>
+          </Button>
+        ) : null}
         <Button asChild variant="outline">
           <a href="/v1/connections/gmail/start">Connect another Gmail account</a>
         </Button>
@@ -120,17 +129,26 @@ function BillingSettings() {
 }
 
 export interface SettingsDialogProps {
-  account: MailboxAccount;
+  accounts: MailboxAccount[];
+  selectedAccountId: string | null;
   aiConfigured: boolean;
   triggerClassName?: string;
 }
 
 export function SettingsDialog({
-  account,
+  accounts,
+  selectedAccountId,
   aiConfigured,
   triggerClassName,
 }: SettingsDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [settingsAccountId, setSettingsAccountId] = useState(
+    selectedAccountId ?? accounts[0]?.id ?? "",
+  );
+  const settingsAccountIdRef = useRef(settingsAccountId);
+  const account =
+    accounts.find((candidate) => candidate.id === settingsAccountId) ??
+    accounts[0];
   const [settings, setSettings] = useState<MailboxSettings | null>(null);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "available" | "error">(
     "idle",
@@ -138,17 +156,30 @@ export function SettingsDialog({
   const liveMemoryState = useAccountSyncStore(
     (state) => state.progress?.memory,
   );
-  const loadSettings = useCallback(async (): Promise<void> => {
+  const loadSettings = useCallback(async (
+    accountId = settingsAccountIdRef.current,
+  ): Promise<void> => {
     setLoadState("loading");
     try {
-      const response = await axios.get<MailboxSettings>("/v1/mailbox/settings");
+      const response = await axios.get<MailboxSettings>("/v1/mailbox/settings", {
+        params: { account: accountId },
+      });
+      if (settingsAccountIdRef.current !== accountId) return;
       setSettings(response.data);
       setLoadState("available");
     } catch {
+      if (settingsAccountIdRef.current !== accountId) return;
       setSettings(null);
       setLoadState("error");
     }
   }, []);
+
+  const handleSettingsAccountChange = useCallback((accountId: string): void => {
+    settingsAccountIdRef.current = accountId;
+    setSettingsAccountId(accountId);
+    setSettings(null);
+    void loadSettings(accountId);
+  }, [loadSettings]);
 
   const handleOpenChange = useCallback(
     (nextIsOpen: boolean): void => {
@@ -170,6 +201,8 @@ export function SettingsDialog({
       }
     });
   }, [isOpen, loadSettings, settings]);
+
+  if (!account) return null;
 
   const settingsUnavailable = (
     <div className="mx-auto max-w-sm px-6 py-16 text-center" role={loadState === "error" ? "alert" : "status"}>
@@ -229,6 +262,23 @@ export function SettingsDialog({
                 {account.email}
               </p>
             </div>
+            {accounts.length > 1 ? (
+              <div className="mb-4 hidden space-y-1 sm:block" aria-label="Settings account">
+                {accounts.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    onClick={() => handleSettingsAccountChange(candidate.id)}
+                    className={cn(
+                      "w-full truncate rounded-md px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground",
+                      candidate.id === account.id && "bg-background/80 font-medium text-foreground",
+                    )}
+                  >
+                    {candidate.email}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <TabsList
               variant="line"
               aria-label="Settings sections"
@@ -255,7 +305,12 @@ export function SettingsDialog({
             {settings ? (
               <MemorySettings
                 memories={settings.memories}
-                syncState={liveMemoryState ?? account.syncState.memory}
+                accountId={account.id}
+                syncState={
+                  account.id === selectedAccountId
+                    ? liveMemoryState ?? account.syncState.memory
+                    : account.syncState.memory
+                }
                 aiConfigured={aiConfigured}
                 onChanged={loadSettings}
               />
@@ -264,6 +319,7 @@ export function SettingsDialog({
           <TabsContent value="labels" className="min-h-0 overflow-y-auto">
             {settings ? (
               <LabelSettings
+                accountId={account.id}
                 invookLabels={settings.invookLabels}
                 onChanged={loadSettings}
               />

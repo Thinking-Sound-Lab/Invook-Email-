@@ -639,6 +639,7 @@ export async function getMailboxSetupSummary(
 }
 
 type SearchRow = {
+  accountId: string;
   messageId: string;
   threadId: string;
   subject: string;
@@ -657,6 +658,7 @@ type RankedSearchRow = SearchRow & {
 export async function searchMailbox(
   input: {
     userId: string;
+    accountId?: string | null;
     query: string;
     limit?: number;
   },
@@ -672,6 +674,7 @@ export async function searchMailbox(
 
   const lexicalRows = await database
     .select({
+      accountId: messages.accountId,
       messageId: messages.id,
       threadId: threads.id,
       subject: messages.subject,
@@ -694,8 +697,9 @@ export async function searchMailbox(
         eq(messages.userId, input.userId),
         eq(threads.userId, input.userId),
         eq(connectedAccounts.userId, input.userId),
+        input.accountId ? eq(connectedAccounts.id, input.accountId) : undefined,
         eq(threads.accountId, connectedAccounts.id),
-        eq(connectedAccounts.status, "connected"),
+        not(eq(connectedAccounts.status, "disconnected")),
         visibleMessageCondition,
         or(fullTextMatch, metadataMatch),
       ),
@@ -711,6 +715,7 @@ export async function searchMailbox(
 
   const attachmentRows = await database
     .select({
+      accountId: messages.accountId,
       messageId: messages.id,
       threadId: threads.id,
       subject: messages.subject,
@@ -729,9 +734,10 @@ export async function searchMailbox(
         eq(messages.userId, input.userId),
         eq(threads.userId, input.userId),
         eq(connectedAccounts.userId, input.userId),
+        input.accountId ? eq(connectedAccounts.id, input.accountId) : undefined,
         eq(messageAttachments.accountId, connectedAccounts.id),
         eq(threads.accountId, connectedAccounts.id),
-        eq(connectedAccounts.status, "connected"),
+        not(eq(connectedAccounts.status, "disconnected")),
         visibleMessageCondition,
         sql`${messageAttachments.filenameSearchDocument} @@ ${tsQuery}`,
       ),
@@ -797,6 +803,7 @@ export async function searchMailbox(
       : [];
 
   return ranked.map((row) => ({
+    accountId: row.accountId,
     messageId: row.messageId,
     threadId: row.threadId,
     subject: row.subject,
@@ -819,6 +826,7 @@ export async function getMailboxThreadForAgent(
 ) {
   const [thread] = await database
     .select({
+      accountId: threads.accountId,
       id: threads.id,
       subject: threads.subject,
       participants: threads.participants,
@@ -830,7 +838,7 @@ export async function getMailboxThreadForAgent(
         eq(threads.id, threadId),
         eq(threads.userId, userId),
         eq(connectedAccounts.userId, userId),
-        eq(connectedAccounts.status, "connected"),
+        not(eq(connectedAccounts.status, "disconnected")),
         visibleThreadCondition(),
       ),
     )
@@ -1807,6 +1815,7 @@ function isUniqueViolation(error: unknown) {
 export async function createInvookLabel(
   input: {
     userId: string;
+    accountId: string;
     name: string;
     description: string;
     applyToPastDays?: LabelHistoryWindowDays | null;
@@ -1823,10 +1832,10 @@ export async function createInvookLabel(
         .where(
           and(
             eq(connectedAccounts.userId, input.userId),
+            eq(connectedAccounts.id, input.accountId),
             eq(connectedAccounts.status, "connected"),
           ),
         )
-        .orderBy(desc(connectedAccounts.createdAt))
         .limit(1);
       if (!account) return null;
 
@@ -2143,7 +2152,7 @@ export async function getUserAuthoredMemories(
 }
 
 export async function getMemoriesForUser(
-  userId: string,
+  input: { userId: string; accountId: string },
   database: Database = getDatabase(),
 ) {
   const [account] = await database
@@ -2151,11 +2160,11 @@ export async function getMemoriesForUser(
     .from(connectedAccounts)
     .where(
       and(
-        eq(connectedAccounts.userId, userId),
+        eq(connectedAccounts.userId, input.userId),
+        eq(connectedAccounts.id, input.accountId),
         not(eq(connectedAccounts.status, "disconnected")),
       ),
     )
-    .orderBy(desc(connectedAccounts.createdAt))
     .limit(1);
   if (!account) return null;
 
@@ -2174,7 +2183,10 @@ export async function getMemoriesForUser(
     })
     .from(memoryEntries)
     .where(
-      and(eq(memoryEntries.userId, userId), eq(memoryEntries.accountId, account.id)),
+      and(
+        eq(memoryEntries.userId, input.userId),
+        eq(memoryEntries.accountId, account.id),
+      ),
     )
     .orderBy(
       asc(memoryEntries.memoryType),
@@ -2215,7 +2227,7 @@ export class MemoryConflictError extends Error {
 }
 
 export async function createUserMemory(
-  input: { userId: string } & MemoryEntryInput,
+  input: { userId: string; accountId: string } & MemoryEntryInput,
   database: Database = getDatabase(),
 ) {
   const value = memoryValues(input);
@@ -2230,10 +2242,10 @@ export async function createUserMemory(
       .where(
         and(
           eq(connectedAccounts.userId, input.userId),
+          eq(connectedAccounts.id, input.accountId),
           not(eq(connectedAccounts.status, "disconnected")),
         ),
       )
-      .orderBy(desc(connectedAccounts.createdAt))
       .limit(1);
     if (!account) return null;
 

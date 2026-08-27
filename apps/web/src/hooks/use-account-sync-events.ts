@@ -10,7 +10,7 @@ export type AccountSyncStreamState =
   | { status: "connecting" | "unavailable"; progress: null }
   | { status: "available"; progress: AccountSyncStatusEvent };
 
-export function useAccountSyncEvents(): AccountSyncStreamState {
+export function useAccountSyncEvents(accountId: string | null): AccountSyncStreamState {
   const connectionStatus = useAccountSyncStore((state) => state.connectionStatus);
   const storedProgress = useAccountSyncStore((state) => state.progress);
   const setConnectionStatus = useAccountSyncStore(
@@ -20,7 +20,10 @@ export function useAccountSyncEvents(): AccountSyncStreamState {
   const reset = useAccountSyncStore((state) => state.reset);
 
   useEffect(() => {
-    const eventSource = new EventSource("/v1/account-sync/events");
+    reset();
+    if (!accountId) return;
+    const query = new URLSearchParams({ accountId });
+    const eventSource = new EventSource(`/v1/account-sync/events?${query.toString()}`);
     const updateAccountSyncState = (event: Event) => {
       if (!(event instanceof MessageEvent) || typeof event.data !== "string") return;
       const nextProgress = parseAccountSyncStatusEvent(event.data);
@@ -37,7 +40,7 @@ export function useAccountSyncEvents(): AccountSyncStreamState {
       eventSource.removeEventListener("error", markUnavailable);
       eventSource.close();
     };
-  }, [setConnectionStatus, setProgress]);
+  }, [accountId, reset, setConnectionStatus, setProgress]);
 
   useEffect(() => () => reset(), [reset]);
 
