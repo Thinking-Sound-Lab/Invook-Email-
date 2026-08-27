@@ -2,7 +2,6 @@ export type AccountSyncStage = "pending" | "running" | "complete" | "failed";
 
 export type AccountSyncState = {
   mailSync: AccountSyncStage;
-  indexing: AccountSyncStage;
   memory: AccountSyncStage;
 };
 

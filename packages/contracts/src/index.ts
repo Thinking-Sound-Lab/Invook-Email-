@@ -3,19 +3,9 @@ export * from "./mailbox-events";
 
 export type AccountSyncStage = "pending" | "running" | "complete" | "failed";
 
-export const MAIL_EMBEDDING_DIMENSIONS = 1_536;
-
 export type AccountSyncState = {
   mailSync: AccountSyncStage;
-  indexing: AccountSyncStage;
   memory: AccountSyncStage;
-};
-
-export type IndexingProgress = {
-  state: AccountSyncStage;
-  completedMessageCount: number;
-  failedMessageCount: number;
-  totalMessageCount: number;
 };
 
 export type MailSyncProgress = {
@@ -28,7 +18,6 @@ export type MailSyncProgress = {
 
 export type AccountSyncStatusEvent = {
   mailSync: MailSyncProgress;
-  indexing: IndexingProgress;
   memory: AccountSyncStage;
 };
 
@@ -295,8 +284,7 @@ export type MailboxAttachment = {
 export type MailSearchMatch =
   | "full_text"
   | "metadata"
-  | "attachment"
-  | "semantic";
+  | "attachment";
 
 export type MailSearchResult = {
   accountId: string;

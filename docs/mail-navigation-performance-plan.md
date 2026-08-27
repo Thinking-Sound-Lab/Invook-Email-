@@ -33,11 +33,10 @@ The following were read directly from the repository. They are structural facts,
 - A list navigation executes 13 mailbox queries excluding authentication: 9 in `getMailboxWorkspace` (`packages/database/src/repositories.ts:1185`, `1292`, `1333`, `1337`, `1359`, `1378`, `1388`, `1484`, `1509`) and 4 in `serializeWorkspace` (`apps/api/src/serializers.ts:22`).
 - Opening a thread executes 19 queries: the same 13 plus the selected-thread read (`repositories.ts:1237`), messages, the Invook draft, provider drafts (`repositories.ts:1599`), attachments, and message Gmail labels (`repositories.ts:1686`).
 - Both counts are structural upper bounds. The label-membership and attachment reads (`repositories.ts:1484`, `1509`, `1686`) execute only for a non-empty identifier list, so Phase 0 records the executed query count per flow rather than assuming these totals.
-- **Every mailbox read computes an unbounded aggregate over the entire account.** `serializeWorkspace` always resolves indexing progress, which runs `count(messages.id)` with a `LEFT JOIN message_embeddings` bounded only by `accountId` (`repositories.ts:1879-1914`). This runs on every sidebar click, thread open, infinite-scroll page, and event-triggered refresh.
-- That progress is already delivered by a dedicated stream. `AccountPipelineStripe` subscribes through `useAccountSyncEvents` and the account-sync store (`apps/web/src/components/mail/account-pipeline-stripe.tsx:20`, `apps/web/src/hooks/use-account-sync-events.ts`, `apps/web/src/stores/account-sync/store.ts`). The workspace read computes both progress objects only to seed the initial value.
+- Account progress is already delivered by a dedicated stream. `AccountPipelineStripe` subscribes through `useAccountSyncEvents` and the account-sync store (`apps/web/src/components/mail/account-pipeline-stripe.tsx:20`, `apps/web/src/hooks/use-account-sync-events.ts`, `apps/web/src/stores/account-sync/store.ts`).
 - `serializeWorkspace` re-reads `connectedAccounts.syncState` (`repositories.ts:1804-1834`) that `getMailboxWorkspace` already selected (`repositories.ts:1188`).
 - The response carries up to 100 threads (`repositories.ts:101`, `1332`, `1416`), each row computing two correlated `EXISTS` subqueries over messages, message labels, and labels, and each carrying its Invook and Gmail label memberships. The payload is serialized twice: API JSON, then the React Server Component payload to the browser.
-- Every response also carries all memories, all Invook label definitions, all sidebar counts, and both progress objects, regardless of the destination screen. Memories are consumed only inside the settings dialog reached from the sidebar (`apps/web/src/components/mail/mail-sidebar.tsx`, `apps/web/src/components/settings/settings-dialog.tsx`, `apps/web/src/components/settings/memory-settings.tsx`).
+- Every response also carries all memories, all Invook label definitions, and all sidebar counts, regardless of the destination screen. Memories are consumed only inside the settings dialog reached from the sidebar (`apps/web/src/components/mail/mail-sidebar.tsx`, `apps/web/src/components/settings/settings-dialog.tsx`, `apps/web/src/components/settings/memory-settings.tsx`).
 - Infinite scrolling requests the full workspace endpoint for one more page of thread rows (`apps/web/src/components/mail/mail-list.tsx:273`).
 - **Opening a thread triggers a second full workspace load.** The reader marks the thread read (`apps/web/src/components/mail/thread-read-tracker.tsx:32`), the API writes to Gmail and enqueues a history catchup (`apps/api/src/services/gmail-thread-read-state.ts:67`), the worker publishes `history_applied` (`packages/database/src/replica.ts:834-845`), and the browser calls `router.refresh()` (`apps/web/src/hooks/use-mailbox-events.ts:11-12`). The refresh re-runs the 19-query path with the selected thread attached.
 - Mailbox events cause an unconditional whole-route refresh. `MailboxChangeEvent` carries only `id`, `accountId`, `changeType`, and `createdAt` (`packages/contracts/src/index.ts:368-378`), so the browser cannot tell whether a change affects the visible screen. Additional unconditional refreshes are issued directly by `draft-composer.tsx:60`, `draft-composer.tsx:82`, `draft-composer.tsx:99`, `smart-label-controls.tsx:32`, and `mailbox-refresh-button.tsx:22`.
@@ -189,8 +188,6 @@ Use the same deployment mode, infrastructure, mailbox, browser profile, network 
 
 For slow SQL paths, run `EXPLAIN (ANALYZE, BUFFERS)` with representative stored data. Record p50, p95, the exceedance rate against the recorded threshold, the worst recorded sample, query count, response bytes, and the dominant time segments. Report p99 only for a flow that reached at least 1000 completed samples, and never as an acceptance gate below that count.
 
-Also record the executions per minute of the indexing-progress aggregate during an active sync, measured on both of its current paths, so Phase 1 can prove it did not simply relocate the cost.
-
 Record the baseline in this document. A baseline that lives only in a terminal session is not a baseline.
 
 ### Exit criteria
@@ -207,20 +204,9 @@ Record the baseline in this document. A baseline that lives only in a terminal s
 
 Apply independently shippable changes that the Phase 0 baseline proves relevant. Remeasure the affected flows after every item rather than batching all quick wins into one result.
 
-1. Remove both progress objects from the mailbox read after the original cost is recorded. The existing account-sync SSE route sends an initial durable snapshot after connection, so make the stripe state an explicit `connecting`, `available`, or `unavailable` contract until that snapshot arrives. Never substitute zero progress (`apps/api/src/serializers.ts:22`, `apps/api/src/routes/account-sync-events.ts:122-126`).
-2. Evaluate the indexing-progress aggregate separately after it is removed from navigation. It scans every message for the account with a `LEFT JOIN message_embeddings` (`packages/database/src/repositories.ts:1879-1914`), and the account-sync stream runs it on every notification through `broadcastDurableProgress` as well as once per connection (`apps/api/src/routes/account-sync-events.ts:50-58`, `account-sync-events.ts:85`). Compare its latency, rows scanned, and executions per minute during active sync against the Phase 0 budget. If it remains within budget and execution frequency does not increase, retain the canonical aggregate in the stream rather than creating denormalized state. If it exceeds the recorded budget, implement a durable projection in a separate reviewed slice.
-
-   Any durable indexing-progress projection must define and test all of these invariants before implementation:
-
-   - Its key includes `accountId`, embedding `modelId`, and `indexVersion`.
-   - Message creation, content-hash changes, deletion, embedding completion, failure, retry, and replacement update the projection transactionally and idempotently.
-   - Model or index-version changes cannot reuse counts from an incompatible embedding generation.
-   - Concurrent workers cannot double-increment or lose a transition; use database constraints, transactions, and locks where required.
-   - A repair operation can rebuild the projection from authoritative message and embedding rows after restart or detected drift.
-   - The projection has one owner and no consumer treats the SSE or Zustand value as the durable source of truth.
-
-3. Reduce the first thread page below 100 rows only if the baseline shows payload size, query time, rendering, or hydration cost warrants it (`packages/database/src/repositories.ts:101`). Record the chosen size and preserve cursor correctness and scroll behavior.
-4. Remove the redundant `await connection()` from `apps/web/src/app/mail/page.tsx:68`, and remove the duplicate account read in `serializeWorkspace` if the progress change does not already delete that path.
+1. Keep account progress out of the mailbox read. The existing account-sync SSE route sends an initial durable snapshot after connection, so make the stripe state an explicit `connecting`, `available`, or `unavailable` contract until that snapshot arrives. Never substitute zero progress (`apps/api/src/routes/account-sync-events.ts`).
+2. Reduce the first thread page below 100 rows only if the baseline shows payload size, query time, rendering, or hydration cost warrants it (`packages/database/src/repositories.ts:101`). Record the chosen size and preserve cursor correctness and scroll behavior.
+3. Remove the redundant `await connection()` from `apps/web/src/app/mail/page.tsx:68`, and remove any duplicate account read left in the broad workspace path.
 
 Migrate infinite scrolling directly to the thread-only endpoint in Phase 4. Do not add an interim duplicate endpoint solely to land it in this phase.
 
@@ -230,9 +216,8 @@ Opening an unread thread therefore continues to cost one navigation read plus on
 
 ### Exit criteria
 
-- Thread-list and thread-detail navigation do not wait on the indexing-progress aggregate.
-- Indexing-progress latency, rows scanned, and executions per minute on SSE connect and broadcast are measured and recorded against the Phase 0 budget. This phase exits on that recorded comparison. If the aggregate exceeds its budget, the durable projection with every invariant listed above is scheduled as its own reviewed slice that must land before Phase 7 closes; it does not block this phase, whose other items are independently shippable.
-- Sync and indexing progress render honest connecting, available, unavailable, complete, and failed states without synthetic values.
+- Thread-list and thread-detail navigation do not wait on account progress reads.
+- Sync and Memory progress render honest connecting, available, unavailable, complete, and failed states without synthetic values.
 - If page size changes, pagination and infinite-scroll regression tests pass at the measured size.
 - Canonical read-state convergence remains enabled until its focused replacement is complete, and its interim cost is recorded here.
 
@@ -492,7 +477,6 @@ Automated coverage should include:
 - Decision D's delivery cases: the initial read-to-subscribe race, automatic reconnect, subscriber remount, API restart, an event committed immediately before registration, an event concurrent with the focused snapshot, and an unknown payload that requires the same safe path. Assert that readiness is emitted only after live registration, mounted resources are revalidated once, and hidden cache entries are stale before display.
 - Decision D's server-side gap cases: connection-level listener loss, notification-subscription re-establishment, a lookup failure scoped by the notification's validated internal user/account identifiers, a malformed or mismatched notification requiring the broad fallback, and a process holding no subscription. Assert that none emits readiness until subscription and canonical user/account recovery both succeed.
 - Absence of SSE `id:` frames, `Last-Event-ID` forwarding and validation, and timestamp-and-UUID replay; every reconnect converges through readiness instead.
-- Indexing-progress behavior selected from Phase 1: either the canonical aggregate stays within its measured stream budget without increased execution frequency, or the durable projection survives restart, SSE reconnect, repair, model or index-version change, message deletion, content invalidation, retry, and concurrent workers.
 - Absence assertions on response shape, so a focused endpoint cannot regrow body, attachment, memory, settings, or progress fields.
 - Loading, empty, connecting, unavailable, and error UI states for shell, counts, progress, list, and detail resources.
 - Regression coverage for read-state changes while a thread is open.

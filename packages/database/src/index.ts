@@ -14,7 +14,6 @@ export {
 } from "./credentials";
 export * from "./gmail-draft-writes";
 export * from "./thread-label-analysis";
-export * from "./embedding-indexing";
 export * from "./mail-sync-progress";
 export * from "./mailbox-change-events";
 export * from "./mailbox-resources";
