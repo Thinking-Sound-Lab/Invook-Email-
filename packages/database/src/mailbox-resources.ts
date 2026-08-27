@@ -1,17 +1,18 @@
-import type {
-  InvookLabel,
-  InvookThreadLabel,
-  MailboxAccount,
-  MailboxPagination,
-  MailboxSelectedThread,
-  MailboxSettings,
-  MailboxScopeSidebarCounts,
-  MailboxSidebarCounts,
-  MailboxThreadDetail,
-  MailboxThreadPage,
-  MailboxThreadSummary,
-  MailboxView,
-  StaticMailboxView,
+import {
+  normalizeInvookLabelName,
+  type InvookLabel,
+  type InvookThreadLabel,
+  type MailboxAccount,
+  type MailboxPagination,
+  type MailboxSelectedThread,
+  type MailboxSettings,
+  type MailboxScopeSidebarCounts,
+  type MailboxSidebarCounts,
+  type MailboxThreadDetail,
+  type MailboxThreadPage,
+  type MailboxThreadSummary,
+  type MailboxView,
+  type StaticMailboxView,
 } from "@invook/contracts";
 import {
   and,
@@ -469,7 +470,22 @@ export async function getMailboxSidebarCounts(
     for (const view of Object.keys(all.views) as StaticMailboxView[]) {
       all.views[view] += counts.views[view];
     }
-    Object.assign(all.labels, counts.labels);
+  }
+  // Sibling labels share one name across accounts, so the All scope reports the
+  // combined total under each account label id that carries that name.
+  const labelTotalsByName = new Map<string, number>();
+  for (const label of invookLabels) {
+    const labelName = normalizeInvookLabelName(label.name);
+    const accountCount =
+      countsByAccountId.get(label.accountId)?.labels[label.id] ?? 0;
+    labelTotalsByName.set(
+      labelName,
+      (labelTotalsByName.get(labelName) ?? 0) + accountCount,
+    );
+  }
+  for (const label of invookLabels) {
+    all.labels[label.id] =
+      labelTotalsByName.get(normalizeInvookLabelName(label.name)) ?? 0;
   }
   return {
     all,

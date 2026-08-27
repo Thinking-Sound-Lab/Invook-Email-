@@ -55,6 +55,15 @@ export type InvookLabel = {
   isEnabled: boolean;
 };
 
+/**
+ * Invook labels are stored once per connected account, so the normalized name
+ * is the identity shared by the sibling labels that represent one user-facing
+ * label across accounts.
+ */
+export function normalizeInvookLabelName(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
 export type LabelHistoryWindowDays = 7 | 30 | 90;
 
 export const LABEL_PREVIEW_STALE_ERROR =

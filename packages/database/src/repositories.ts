@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  normalizeInvookLabelName,
   type LabelHistoryWindowDays,
   type MailSyncProgress,
 } from "@invook/contracts";
@@ -1855,10 +1856,6 @@ export class LabelMutationError extends Error {
   }
 }
 
-function normalizeLabelName(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
-}
-
 function isUniqueViolation(error: unknown) {
   return Boolean(
     error &&
@@ -1896,7 +1893,7 @@ export async function createInvookLabel(
         .limit(1);
       if (!account) return null;
 
-      const normalizedName = normalizeLabelName(input.name);
+      const normalizedName = normalizeInvookLabelName(input.name);
       const [existing] = await transaction
         .select({ id: labels.id })
         .from(labels)
@@ -1993,7 +1990,7 @@ export async function updateInvookLabel(
       .update(labels)
       .set({
         name: input.name.trim().replace(/\s+/g, " "),
-        normalizedName: normalizeLabelName(input.name),
+        normalizedName: normalizeInvookLabelName(input.name),
         description: input.description.trim().replace(/\s+/g, " "),
         definitionVersion: sql`${labels.definitionVersion} + 1`,
         updatedAt: new Date(),
