@@ -471,3 +471,95 @@ test(
     }
   },
 );
+
+test(
+  "terminal history catch-up leaves a ready replica able to apply later mail",
+  { skip: !testDatabaseUrl },
+  async () => {
+    if (!testDatabaseUrl) return;
+    const client = postgres(testDatabaseUrl, { max: 1, prepare: false });
+    const database = drizzle(client, { schema });
+    const userId = uuidv4();
+    const accountId = uuidv4();
+    const catchupStepId = uuidv4();
+    try {
+      await database.insert(profiles).values({
+        id: userId,
+        displayName: "Database Test User",
+        email: `${userId}@example.test`,
+      });
+      await database.insert(connectedAccounts).values({
+        id: accountId,
+        userId,
+        providerAccountId: `provider-${accountId}`,
+        email: `${accountId}@example.com`,
+        memoryAcknowledgedAt: new Date(),
+        syncState: { mailSync: "complete", memory: "complete" },
+      });
+      await database.insert(gmailReplicaStates).values({
+        accountId,
+        initialHistoryId: "100",
+        historyCursor: "200",
+        pendingHistoryCursor: "250",
+        state: "ready",
+        readyAt: new Date(),
+      });
+      await database.insert(workflowSteps).values({
+        id: catchupStepId,
+        userId,
+        accountId,
+        stepType: "gmail.history.catchup",
+        status: "running",
+        input: { reason: "notification" },
+        attempts: 5,
+        maxAttempts: 5,
+        idempotencyKey: `test-step-${catchupStepId}`,
+      });
+
+      assert.equal(
+        await failWorkflowStep(
+          {
+            step: {
+              id: catchupStepId,
+              runId: null,
+              userId,
+              accountId,
+              stepType: "gmail.history.catchup",
+              payload: { reason: "notification" },
+              attempts: 5,
+              maxAttempts: 5,
+            },
+            message: "Google is unavailable.",
+            terminal: true,
+          },
+          database,
+        ),
+        true,
+      );
+
+      const [account] = await database
+        .select()
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, accountId));
+      const [replica] = await database
+        .select()
+        .from(gmailReplicaStates)
+        .where(eq(gmailReplicaStates.accountId, accountId));
+      const [step] = await database
+        .select()
+        .from(workflowSteps)
+        .where(eq(workflowSteps.id, catchupStepId));
+
+      assert.equal(step?.status, "failed");
+      assert.equal(account?.status, "connected");
+      assert.equal(account?.syncState.mailSync, "complete");
+      assert.equal(account?.syncState.memory, "complete");
+      assert.equal(replica?.state, "ready");
+      assert.equal(replica?.historyCursor, "200");
+      assert.equal(replica?.pendingHistoryCursor, "250");
+    } finally {
+      await database.delete(profiles).where(eq(profiles.id, userId));
+      await client.end();
+    }
+  },
+);

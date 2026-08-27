@@ -60,11 +60,15 @@ const gmailConnectedAccountStepTypes = [
   "gmail.watch.renew",
 ] as const;
 
-const gmailReplicaStepTypes = [
-  "gmail.history.catchup",
-  "gmail.watch.renew",
-] as const;
-const gmailReplicaStepTypeSet = new Set<string>(gmailReplicaStepTypes);
+export function shouldMarkGmailReplicaFailedForTerminalStep(
+  stepType: string,
+): boolean {
+  // Catch-up applies one history range from a committed cursor. Exhausting its
+  // short retry budget is not replica corruption; later catch-up can resume.
+  // Watch renewal owns the subscription, so a terminal failure there does fail
+  // the replica until recovery re-establishes live history.
+  return stepType === "gmail.watch.renew";
+}
 
 async function lockMailSyncRun(
   input: { runId: string; accountId?: string; allowCompleted?: boolean },
@@ -1175,7 +1179,7 @@ export async function failWorkflowStep(
       input.terminal &&
       !input.reconnectRequired &&
       input.step.accountId &&
-      gmailReplicaStepTypeSet.has(input.step.stepType)
+      shouldMarkGmailReplicaFailedForTerminalStep(input.step.stepType)
     ) {
       await transaction
         .update(gmailReplicaStates)
