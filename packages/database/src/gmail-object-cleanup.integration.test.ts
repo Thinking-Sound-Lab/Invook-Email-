@@ -22,7 +22,7 @@ import { markWorkflowStepRunning } from "./workflows";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const rawObjectRetirementMigrationUrl = new URL(
-  "../drizzle/0036_nostalgic_rhodey.sql",
+  "../drizzle/0035_wandering_lockheed.sql",
   import.meta.url,
 );
 
@@ -111,7 +111,15 @@ test(
       for (const statement of migration
         .split("--> statement-breakpoint")
         .map((candidate) => candidate.trim())
-        .filter(Boolean)) {
+        .filter(
+          (candidate) =>
+            candidate.startsWith('INSERT INTO "workflow_steps"') ||
+            candidate.startsWith('INSERT INTO "temporal_commands"') ||
+            candidate.startsWith(
+              'ALTER TABLE "messages" DROP CONSTRAINT "messages_raw_content_length_check"',
+            ) ||
+            candidate.startsWith('ALTER TABLE "messages" DROP COLUMN "raw_'),
+        )) {
         await client.unsafe(statement);
       }
 
@@ -210,7 +218,6 @@ test(
         sender: { raw: "Sender <sender@example.com>", email: "sender@example.com" },
         internalDate: new Date("2026-08-14T10:00:00.000Z"),
         sentAt: new Date("2026-08-14T10:00:00.000Z"),
-        embeddingContentHash: "a".repeat(64),
       });
       await database.insert(messageAttachments).values({
         userId,

@@ -52,13 +52,19 @@ test("mailbox change parsing rejects incomplete and provider-shaped payloads", (
 test("mailbox stream readiness is a separate transport contract", () => {
   assert.deepEqual(
     parseMailboxStreamReadyEvent(
-      JSON.stringify({ type: "mailbox_stream_ready", accountId }),
+      JSON.stringify({ type: "mailbox_stream_ready", accountIds: [accountId] }),
     ),
-    { type: "mailbox_stream_ready", accountId },
+    { type: "mailbox_stream_ready", accountIds: [accountId] },
   );
   assert.equal(
     parseMailboxStreamReadyEvent(
-      JSON.stringify({ changeType: "mailbox_stream_ready", accountId }),
+      JSON.stringify({ changeType: "mailbox_stream_ready", accountIds: [accountId] }),
+    ),
+    null,
+  );
+  assert.equal(
+    parseMailboxStreamReadyEvent(
+      JSON.stringify({ type: "mailbox_stream_ready", accountIds: [] }),
     ),
     null,
   );

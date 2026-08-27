@@ -15,7 +15,6 @@ export {
 export * from "./gmail-draft-writes";
 export * from "./label-preview-receipts";
 export * from "./thread-label-analysis";
-export * from "./embedding-indexing";
 export * from "./mail-sync-progress";
 export * from "./mailbox-change-events";
 export * from "./mailbox-resources";

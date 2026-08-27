@@ -159,7 +159,6 @@ async function insertThreadMessage(
     subject: `Subject ${threadId}`,
     snippet: "Stored message",
     bodyText: "Stored message body",
-    embeddingContentHash: messageId.replaceAll("-", "").repeat(2),
     sentAt: input.sentAt,
   });
   if (input.gmailLabelIds.length > 0) {
@@ -207,6 +206,7 @@ test(
         const created = await createInvookLabel(
           {
             userId: context.userId,
+            accountId: context.accountId,
             name: `Window ${windowDays}`,
             description: `Messages from the last ${windowDays} days`,
             applyToPastDays: windowDays,
@@ -266,6 +266,7 @@ test(
           await createInvookLabel(
             {
               userId: context.userId,
+              accountId: context.accountId,
               name: rollbackName,
               description: "This transaction must roll back",
               applyToPastDays: 7,
@@ -338,6 +339,7 @@ test(
       const created = await createInvookLabel(
         {
           userId: context.userId,
+          accountId: context.accountId,
           name: "Preview receipts",
           description: "Invoices and purchase receipts",
           applyToPastDays: 7,
@@ -460,6 +462,7 @@ test(
         createInvookLabel(
           {
             userId: context.userId,
+            accountId: context.accountId,
             name: "Expired preview",
             description: "Must be previewed again",
             applyToPastDays: 90,

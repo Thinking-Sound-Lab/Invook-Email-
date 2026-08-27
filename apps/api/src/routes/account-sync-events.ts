@@ -3,14 +3,13 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { AccountSyncStatusEvent } from "@invook/contracts";
 import {
   getAccountSyncStateForAccount,
-  getIndexingProgressForAccount,
-  getIndexingProgressForUser,
+  getGmailConnectionForUser,
   getMailSyncProgressForAccount,
   listenForAccountSyncNotifications,
-  MAIL_INDEX_VERSION,
 } from "@invook/database";
 
 import { requireSession } from "../access";
+import { parseRequiredMailboxAccountId } from "../mailbox-account-scope";
 import { sendProblem } from "../responses";
 
 function parseNotification(payload: string): string | null {
@@ -30,21 +29,15 @@ function writeEvent(response: EventResponse, progress: AccountSyncStatusEvent) {
 
 export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) => {
   const streams = new Map<string, Set<EventResponse>>();
-  const modelId = process.env.OPENAI_EMBEDDING_MODEL?.trim() || null;
   const getDurableProgress = async (
     accountId: string,
   ): Promise<AccountSyncStatusEvent | null> => {
-    const [mailSync, indexing, syncState] = await Promise.all([
+    const [mailSync, syncState] = await Promise.all([
       getMailSyncProgressForAccount({ accountId }),
-      getIndexingProgressForAccount({
-        accountId,
-        modelId,
-        indexVersion: MAIL_INDEX_VERSION,
-      }),
       getAccountSyncStateForAccount({ accountId }),
     ]);
-    return mailSync && indexing && syncState
-      ? { mailSync, indexing, memory: syncState.memory }
+    return mailSync && syncState
+      ? { mailSync, memory: syncState.memory }
       : null;
   };
   const broadcastDurableProgress = async (accountId: string) => {
@@ -76,24 +69,28 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
     await stopListening?.();
   });
 
-  api.get(
+  api.get<{ Querystring: { accountId?: unknown } }>(
     "/v1/account-sync/events",
     { onRequest: requireSession },
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
-      const indexing = await getIndexingProgressForUser({
+      const accountId = parseRequiredMailboxAccountId(request.query.accountId);
+      if (!accountId) {
+        await sendProblem(request, reply, 400, "A valid mailbox account is required");
+        return;
+      }
+      const account = await getGmailConnectionForUser({
         userId: session.userId,
-        modelId,
-        indexVersion: MAIL_INDEX_VERSION,
+        accountId,
       });
-      if (!indexing) {
+      if (!account || account.status === "disconnected") {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
         return;
       }
       const [mailSync, syncState] = await Promise.all([
-        getMailSyncProgressForAccount({ accountId: indexing.accountId }),
-        getAccountSyncStateForAccount({ accountId: indexing.accountId }),
+        getMailSyncProgressForAccount({ accountId }),
+        getAccountSyncStateForAccount({ accountId }),
       ]);
       if (!mailSync || !syncState) {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
@@ -110,18 +107,17 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
       reply.raw.setHeader("x-request-id", request.id);
       reply.raw.flushHeaders();
 
-      const accountStreams = streams.get(indexing.accountId) ?? new Set();
+      const accountStreams = streams.get(accountId) ?? new Set();
       accountStreams.add(reply.raw);
-      streams.set(indexing.accountId, accountStreams);
+      streams.set(accountId, accountStreams);
       const removeStream = () => {
         accountStreams.delete(reply.raw);
-        if (accountStreams.size === 0) streams.delete(indexing.accountId);
+        if (accountStreams.size === 0) streams.delete(accountId);
       };
       request.raw.once("close", removeStream);
       reply.raw.once("close", removeStream);
       writeEvent(reply.raw, {
         mailSync,
-        indexing: indexing.progress,
         memory: syncState.memory,
       });
     },

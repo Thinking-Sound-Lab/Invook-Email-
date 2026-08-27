@@ -18,7 +18,7 @@ PostgreSQL stores normalized replica state, durable operation checkpoints, and t
 
 ## Initial synchronization
 
-Embedding backfill and initial Memory wait for the watch-first sequence to complete. Initial thread-label Batch admission is checked after each bounded storage activity and starts once at least 100 eligible threads have committed their full storage checkpoints:
+Initial Memory waits for the watch-first sequence to complete. Thread-label analysis starts during synchronization after each bounded storage activity, once at least 100 eligible threads have committed their full storage checkpoints:
 
 1. Complete Gmail OAuth and capture history cursor H0.
 2. Register and persist the Gmail watch immediately.
@@ -29,9 +29,9 @@ Embedding backfill and initial Memory wait for the watch-first sequence to compl
 7. Synchronize Gmail Draft resources.
 8. Under the account advisory lock, apply authenticated notification history from H0 while the snapshot proceeds, then perform a final replay and continue while a newer pending notification cursor exists.
 9. Atomically mark the replica ready at the final applied cursor.
-10. Flush the remaining partial initial thread-label Batch, then publish embedding and initial Memory derivation work.
+10. Flush the remaining partial initial thread-label Batch, then publish initial Memory derivation work.
 
-A connected account's committed stored data is immediately browsable while synchronization is in progress. All is Gmail `INBOX`, so an Inbox thread appears as soon as it is stored and renders normally with no Invook label until assignment commits. Invook-label views include only matching completed assignments. Missing rows stay unavailable, semantic indexing is not a prerequisite, and Gmail fetching continues independently from label planning and provider-event processing. The final H0 replay remains the only path that marks the replica ready.
+A connected account's committed stored data is immediately browsable while synchronization is in progress. All is Gmail `INBOX`, so an Inbox thread appears as soon as it is stored and renders normally with no Invook label until assignment commits. Invook-label views include only matching completed assignments. Missing rows stay unavailable, and Gmail fetching continues independently from label planning and provider-event processing. The final H0 replay remains the only path that marks the replica ready.
 
 A successful normal synchronization does not run a separate full-replica audit.
 

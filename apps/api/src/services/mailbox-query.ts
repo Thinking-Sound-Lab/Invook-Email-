@@ -5,6 +5,7 @@ import { searchMailForUser } from "./search";
 
 export async function queryMailboxForUser(input: {
   userId: string;
+  accountId?: string | null;
   searchText?: string;
   gmailLabelIds?: string[];
   invookLabelIds?: string[];
@@ -19,12 +20,14 @@ export async function queryMailboxForUser(input: {
   const searchResults = input.searchText
     ? await searchMailForUser({
         userId: input.userId,
+        accountId: input.accountId,
         query: input.searchText,
         limit: 50,
       })
     : null;
   const result = await queryInvookMailbox({
     userId: input.userId,
+    accountId: input.accountId,
     candidateMessageIds: searchResults?.map((result) => result.messageId),
     gmailLabelIds: input.gmailLabelIds,
     invookLabelIds: input.invookLabelIds,

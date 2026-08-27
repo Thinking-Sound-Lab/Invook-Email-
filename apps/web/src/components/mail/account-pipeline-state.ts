@@ -1,14 +1,13 @@
 import type {
   AccountSyncStage,
   AccountSyncStatusEvent,
-  IndexingProgress,
   MailSyncProgress,
 } from "@invook/contracts";
 
 import { getGmailSyncProgressPresentation } from "./gmail-sync-progress";
 
 export interface AccountPipelinePresentation {
-  phase: "mail" | "indexing" | "memory";
+  phase: "mail" | "memory";
   title: string;
   detail: string;
   percentage: number | null;
@@ -48,25 +47,6 @@ function parseMailSyncProgress(value: unknown): MailSyncProgress | null {
   };
 }
 
-function parseIndexingProgress(value: unknown): IndexingProgress | null {
-  if (
-    !isRecord(value) ||
-    !isAccountSyncStage(value.state) ||
-    !isNonnegativeInteger(value.completedMessageCount) ||
-    !isNonnegativeInteger(value.failedMessageCount) ||
-    !isNonnegativeInteger(value.totalMessageCount)
-  ) {
-    return null;
-  }
-
-  return {
-    state: value.state,
-    completedMessageCount: value.completedMessageCount,
-    failedMessageCount: value.failedMessageCount,
-    totalMessageCount: value.totalMessageCount,
-  };
-}
-
 export function parseAccountSyncStatusEvent(
   serializedEvent: string,
 ): AccountSyncStatusEvent | null {
@@ -74,10 +54,7 @@ export function parseAccountSyncStatusEvent(
     const value: unknown = JSON.parse(serializedEvent);
     if (!isRecord(value) || !isAccountSyncStage(value.memory)) return null;
     const mailSync = parseMailSyncProgress(value.mailSync);
-    const indexing = parseIndexingProgress(value.indexing);
-    return mailSync && indexing
-      ? { mailSync, indexing, memory: value.memory }
-      : null;
+    return mailSync ? { mailSync, memory: value.memory } : null;
   } catch {
     return null;
   }
@@ -89,35 +66,6 @@ export function getAccountPipelinePresentation(
   const mailPresentation = getGmailSyncProgressPresentation(progress.mailSync);
   if (mailPresentation) {
     return { phase: "mail", ...mailPresentation };
-  }
-
-  if (progress.indexing.state !== "complete") {
-    const { indexing } = progress;
-    const isFailed = indexing.state === "failed";
-    const percentage = indexing.totalMessageCount > 0
-      ? Math.min(
-          100,
-          Math.round(
-            (indexing.completedMessageCount / indexing.totalMessageCount) * 100,
-          ),
-        )
-      : null;
-    const failedDetail = indexing.failedMessageCount > 0
-      ? `; ${indexing.failedMessageCount.toLocaleString()} failed`
-      : "";
-    return {
-      phase: "indexing",
-      title: isFailed
-        ? "Indexing needs attention"
-        : indexing.state === "running"
-          ? "Indexing mail"
-          : "Preparing mail index",
-      detail: indexing.totalMessageCount > 0
-        ? `${indexing.completedMessageCount.toLocaleString()} of ${indexing.totalMessageCount.toLocaleString()} messages indexed${failedDetail}`
-        : "Waiting for indexed messages",
-      percentage,
-      isFailed,
-    };
   }
 
   if (progress.memory !== "complete") {

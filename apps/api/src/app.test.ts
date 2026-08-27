@@ -277,6 +277,7 @@ test("custom label creation accepts only supported historical windows", async ()
     url: "/v1/labels",
     headers: { cookie: await sessionCookie(attachmentOwnerId) },
     payload: {
+      accountId: attachmentOwnerId,
       name: "Security",
       description: "Account security notices",
       applyToPastDays: 14,
@@ -313,6 +314,7 @@ test("custom label creation validates and forwards the preview receipt", async (
       url: "/v1/labels",
       headers: { cookie: await sessionCookie(attachmentOwnerId) },
       payload: {
+        accountId: attachmentOwnerId,
         name: "Security",
         description: "Account security notices",
         applyToPastDays: 90,
@@ -327,6 +329,7 @@ test("custom label creation validates and forwards the preview receipt", async (
       url: "/v1/labels",
       headers: { cookie: await sessionCookie(attachmentOwnerId) },
       payload: {
+        accountId: attachmentOwnerId,
         name: "Security",
         description: "Account security notices",
         applyToPastDays: 90,
@@ -365,6 +368,7 @@ test("label previews return their reusable receipt contract", async () => {
       url: "/v1/labels/preview",
       headers: { cookie: await sessionCookie(attachmentOwnerId) },
       payload: {
+        accountId: attachmentOwnerId,
         name: "Billing",
         description: "Invoices and purchase receipts",
       },
@@ -392,6 +396,7 @@ test("a stale preview returns a stable conflict without exposing database detail
       url: "/v1/labels",
       headers: { cookie: await sessionCookie(attachmentOwnerId) },
       payload: {
+        accountId: attachmentOwnerId,
         name: "Security",
         description: "Account security notices",
         applyToPastDays: 7,
@@ -429,6 +434,7 @@ test("label admission failures return a stable problem and private request log",
       url: "/v1/labels",
       headers: { cookie: await sessionCookie(attachmentOwnerId) },
       payload: {
+        accountId: attachmentOwnerId,
         name: "Security",
         description: "Account security notices",
         applyToPastDays: 7,

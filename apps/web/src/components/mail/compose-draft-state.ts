@@ -29,6 +29,7 @@ export type ComposeDraftAction =
       value: string;
       idempotencyKey: string;
     }
+  | { type: "change_sender"; idempotencyKey: string }
   | { type: "saving" }
   | {
       type: "saved";
@@ -64,6 +65,14 @@ export function composeDraftReducer(
       return {
         ...state,
         [action.field]: action.value,
+        idempotencyKey: action.idempotencyKey,
+        sendIdempotencyKey: null,
+        status: "editing",
+        message: null,
+      };
+    case "change_sender":
+      return {
+        ...state,
         idempotencyKey: action.idempotencyKey,
         sendIdempotencyKey: null,
         status: "editing",

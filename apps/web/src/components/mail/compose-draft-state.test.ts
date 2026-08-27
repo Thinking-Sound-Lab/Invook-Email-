@@ -41,6 +41,16 @@ test("editing after a save rotates the key and retains the provider draft identi
   assert.equal(edited.providerDraft?.providerDraftId, "provider-draft");
 });
 
+test("changing the sender rotates the save idempotency key", () => {
+  const changed = composeDraftReducer(createComposeDraftState("save-key-1"), {
+    type: "change_sender",
+    idempotencyKey: "save-key-2",
+  });
+
+  assert.equal(changed.idempotencyKey, "save-key-2");
+  assert.equal(changed.status, "editing");
+});
+
 test("a successful save exposes an explicit convergence state", () => {
   const saved = composeDraftReducer(createComposeDraftState("save-key-1"), {
     type: "saved",

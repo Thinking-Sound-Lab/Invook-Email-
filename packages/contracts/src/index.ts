@@ -3,19 +3,9 @@ export * from "./mailbox-events";
 
 export type AccountSyncStage = "pending" | "running" | "complete" | "failed";
 
-export const MAIL_EMBEDDING_DIMENSIONS = 1_536;
-
 export type AccountSyncState = {
   mailSync: AccountSyncStage;
-  indexing: AccountSyncStage;
   memory: AccountSyncStage;
-};
-
-export type IndexingProgress = {
-  state: AccountSyncStage;
-  completedMessageCount: number;
-  failedMessageCount: number;
-  totalMessageCount: number;
 };
 
 export type MailSyncProgress = {
@@ -28,7 +18,6 @@ export type MailSyncProgress = {
 
 export type AccountSyncStatusEvent = {
   mailSync: MailSyncProgress;
-  indexing: IndexingProgress;
   memory: AccountSyncStage;
 };
 
@@ -251,6 +240,8 @@ export type GmailDraftResource = {
 };
 
 export type MailboxThreadSummary = {
+  accountId: string;
+  accountEmail: string;
   id: string;
   subject: string;
   snippet: string;
@@ -295,10 +286,10 @@ export type MailboxAttachment = {
 export type MailSearchMatch =
   | "full_text"
   | "metadata"
-  | "attachment"
-  | "semantic";
+  | "attachment";
 
 export type MailSearchResult = {
+  accountId: string;
   messageId: string;
   threadId: string;
   subject: string;
@@ -312,6 +303,7 @@ export type MailSearchResult = {
 };
 
 export type MailboxQueryMessage = {
+  accountId: string;
   messageId: string;
   threadId: string;
   subject: string;
@@ -328,8 +320,8 @@ export type MailboxQueryResult =
   | {
       status: "available";
       messages: MailboxQueryMessage[];
-      availableGmailLabels: Array<{ id: string; name: string }>;
-      availableInvookLabels: Array<{ id: string; name: string }>;
+      availableGmailLabels: Array<{ accountId: string; id: string; name: string }>;
+      availableInvookLabels: Array<{ accountId: string; id: string; name: string }>;
       nextCursor: string | null;
     }
   | {
@@ -352,16 +344,26 @@ export type MailboxPagination = {
   olderCursor: string | null;
 };
 
-export type MailboxSidebarCounts = {
+export type MailboxScopeSidebarCounts = {
   views: Record<StaticMailboxView, number>;
   labels: Record<string, number>;
+};
+
+export type MailboxSidebarCounts = {
+  all: MailboxScopeSidebarCounts;
+  accounts: Record<string, MailboxScopeSidebarCounts>;
+};
+
+export type MailboxAccountLabels = {
+  accountId: string;
+  labels: InvookLabel[];
 };
 
 export type MailboxShell = {
   aiConfigured: boolean;
   user: SignedInUser;
-  account: MailboxAccount;
-  invookLabels: InvookLabel[];
+  accounts: MailboxAccount[];
+  accountLabels: MailboxAccountLabels[];
 };
 
 export type MailboxThreadPage = {
@@ -375,6 +377,7 @@ export type MailboxThreadDetail = {
 };
 
 export type MailboxSettings = {
+  accountId: string;
   memories: MemoryEntry[];
   invookLabels: InvookLabel[];
 };
@@ -419,5 +422,5 @@ export type MailboxChangeEvent = MailboxChangeEventBase & (
 
 export type MailboxStreamReadyEvent = {
   type: "mailbox_stream_ready";
-  accountId: string;
+  accountIds: string[];
 };

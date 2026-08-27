@@ -22,7 +22,7 @@ There is no separate writing-profile or “voice” object. In Invook, personali
 
 ### Real data or an honest empty state
 
-Invook never ships dummy mailbox, contact, memory, label, or draft data. If Gmail, indexing, or a model is unavailable, the interface explains the actual state.
+Invook never ships dummy mailbox, contact, memory, label, or draft data. If Gmail or a model is unavailable, the interface explains the actual state.
 
 ### Opinionated defaults, user authority
 
@@ -44,7 +44,7 @@ The model may use facts present in the current thread and applicable Memory. It 
 
 ## Primary experience
 
-### Onboarding and indexing
+### Onboarding and synchronization
 
 The first page contains only the Invook name and **Sign in with Google**. Better Auth owns this global Invook identity and its database-backed browser session. Its Google OAuth client requests only `openid`, `email`, and `profile`; it never requests Gmail access or offline access.
 
@@ -62,19 +62,27 @@ After sign-in, an authenticated user with no mailbox sees an honest **Connect Gm
 
 Signing out revokes only the Better Auth browser session. It does not revoke Gmail credentials, stop a Gmail watch, cancel durable work, or change a mailbox replica. Mailbox disconnection and account deletion remain explicit lifecycles.
 
-The first connection follows every Gmail thread result page with Spam and Trash included. Bounded activities fetch each thread with `format=full`, atomically store all of its normalized messages and checkpoint in PostgreSQL, and store only attachment bytes in S3-compatible storage. Threads become browsable immediately without waiting for Invook labels. When live classification is configured, eligible Inbox threads active within the hot window (`MAIL_LABEL_HOT_WINDOW_DAYS`, default 14 days before run creation; zero disables; at most `MAIL_LABEL_HOT_WINDOW_MAX_THREADS`, default 1,000, per run) are reserved for the live label lane as each storage batch completes, so recent mail is labeled within minutes. Once 100 eligible non-hot-window Inbox threads are fully stored, an account-locked admission check starts durable OpenAI Batch label analysis while Gmail storage continues; Batch backfills the remainder newest-first and labels appear as results commit. Authenticated Pub/Sub pushes apply from the watch baseline while the initial snapshot continues, without marking the replica ready. The final replay from H0 is still the only path that marks the replica ready and releases indexing and initial Memory. Gmail remains canonical for provider-owned state. The detailed boundary is defined in `docs/gmail-replica-contract.md`.
+The first connection follows every Gmail thread result page with Spam and Trash included. Bounded activities fetch each thread with `format=full`, atomically store all of its normalized messages and checkpoint in PostgreSQL, and store only attachment bytes in S3-compatible storage. Threads become browsable immediately without waiting for Invook labels. When live classification is configured, eligible Inbox threads active within the hot window (`MAIL_LABEL_HOT_WINDOW_DAYS`, default 14 days before run creation; zero disables; at most `MAIL_LABEL_HOT_WINDOW_MAX_THREADS`, default 1,000, per run) are reserved for the live label lane as each storage batch completes, so recent mail is labeled within minutes. Once 100 eligible non-hot-window Inbox threads are fully stored, an account-locked admission check starts durable OpenAI Batch label analysis while Gmail storage continues; Batch backfills the remainder newest-first and labels appear as results commit. Authenticated Pub/Sub pushes apply from the watch baseline while the initial snapshot continues, without marking the replica ready. The final replay from H0 is still the only path that marks the replica ready and releases initial Memory. Gmail remains canonical for provider-owned state. The detailed boundary is defined in `docs/gmail-replica-contract.md`.
 
 Each connected account also has one durable daily watch-renewal action. A successful renewal catches up from the stored cursor and schedules its successor. Normal initial synchronization, catch-up, and renewal do not run a full replica audit.
-
-Historical search indexing uses durable 2,000-message provider batches. A signed terminal provider webhook commits current-content embeddings, provider-submission completion, any retry or next-batch Temporal command, and account progress in one PostgreSQL transaction. Duplicate webhook delivery is idempotent. Indexing is complete only when every current message has a complete embedding for the configured model, dimensions, content hash, and index version; unavailable mailbox prerequisites surface as failed rather than continuing in process memory.
 
 ### Mail workspace
 
 The left sidebar contains:
 
 - Compose, Search, Settings, Automations;
-- All plus built-in and user-created Invook labels owned by the connected account;
+- All plus built-in and user-created Invook labels owned by the selected account;
 - mail views: Starred, Shared, Reminders, Scheduled, Drafts, Done, Sent, Trash.
+- an Inboxes selector containing exactly All, every connected Gmail account, and Add account.
+
+The Inboxes selection scopes every item inside Mail. All aggregates threads,
+search, labels, and mail statistics across every connected account. Selecting one
+account restricts those same resources to that account; the Mail view named All
+then means all Gmail Inbox threads for that selected account. Compose and
+account-owned settings require one explicit account when the aggregate scope is
+selected. Every connected account has a stable colored ring around its profile
+picture in Inboxes, and the same profile picture and ring appear immediately to
+the left of the date on each thread or search-result row.
 
 The center pane shows the selected mailbox or label view in reverse chronological order. Selecting a thread replaces the list with the real thread. Opening an unread thread submits one Gmail thread-level read mutation; Gmail is written first, and the stored replica changes only when provider history is applied. A failed passive mutation remains non-optimistic and exposes an explicit retry.
 
@@ -119,7 +127,7 @@ Deleting removes the active record and its text. A non-reversible fingerprint to
 
 ## Batch analysis
 
-Embeddings are not required for Memory v3 or labels. Initial and repair imports label each thread through exactly one path. Inbox threads active within the configured hot window (`MAIL_LABEL_HOT_WINDOW_DAYS` before run creation, capped at `MAIL_LABEL_HOT_WINDOW_MAX_THREADS` per run) are reserved once for the live structured-classification lane under the account label lock before Batch admission runs; a live failure or missing live-model configuration returns the thread to the Batch pool. Every other thread uses serialized durable OpenAI Batch submissions admitted from 100 eligible complete Inbox threads, claimed newest-first by latest message, and capped at 2,000 requests, 200 MB, and the configured input-token ceiling. Admission is checked after each bounded Gmail storage activity, only one submission may be queued or active per account, and Gmail finalization flushes the remainder below 100. Newly eligible unassigned Inbox threads arriving after synchronization use the live structured-classification lane. Later content discovered during the same snapshot advances the pending Batch analysis version; manual labels remain authoritative, and ordinary post-snapshot content does not reclassify an already-labelled thread.
+Initial and repair imports label each thread through exactly one path. Inbox threads active within the configured hot window (`MAIL_LABEL_HOT_WINDOW_DAYS` before run creation, capped at `MAIL_LABEL_HOT_WINDOW_MAX_THREADS` per run) are reserved once for the live structured-classification lane under the account label lock before Batch admission runs; a live failure or missing live-model configuration returns the thread to the Batch pool. Every other thread uses serialized durable OpenAI Batch submissions admitted from 100 eligible complete Inbox threads, claimed newest-first by latest message, and capped at 2,000 requests, 200 MB, and the configured input-token ceiling. Admission is checked after each bounded Gmail storage activity, only one submission may be queued or active per account, and Gmail finalization flushes the remainder below 100. Newly eligible unassigned Inbox threads arriving after synchronization use the live structured-classification lane. Later content discovered during the same snapshot advances the pending Batch analysis version; manual labels remain authoritative, and ordinary post-snapshot content does not reclassify an already-labelled thread. Labels do not depend on embeddings.
 
 For initial Memory, the worker uses the selected OpenAI or Azure OpenAI native Batch API as follows:
 
@@ -198,7 +206,7 @@ Worker
   -> Temporal Cloud Workflows, schedules, task delivery, and retries
   -> Gmail snapshot, history replay, Pub/Sub catch-up, watch renewal, and repair runs
   -> S3-compatible attachment object storage
-  -> Temporal Activities for search indexing, Invook-label analysis, and initial or incremental Memory
+  -> Temporal Activities for Invook-label analysis and initial or incremental Memory
   -> selected OpenAI or Azure OpenAI Batch provider for Memory
   -> selected OpenAI Batch provider for initial Invook-label analysis
   -> configured model endpoint for validated incoming-thread label classification
@@ -225,7 +233,6 @@ Drizzle owns the PostgreSQL schema and ordered SQL migrations. Current applicati
 - `thread_label_batch_submissions`
 - `message_attachments`
 - `drafts`
-- `message_embeddings`
 - `memory_entries`
 - `memory_pending_evidence`
 - `memory_deletions`
@@ -235,7 +242,6 @@ Drizzle owns the PostgreSQL schema and ordered SQL migrations. Current applicati
 - `gmail_sync_items`
 - `workflow_steps`
 - `temporal_commands`
-- `embedding_batch_submissions`
 - `gmail_account_cleanups`
 - `mailbox_change_events`
 
@@ -280,7 +286,6 @@ Every product mutation requires an authenticated Better Auth database session an
 
 ## Initial non-goals
 
-- Embedding-based Memory extraction or retrieval.
 - A broad inferred relationship/personality graph.
 - Automatic sending or autonomous mailbox mutations without an explicit user action.
 - Calendar execution.

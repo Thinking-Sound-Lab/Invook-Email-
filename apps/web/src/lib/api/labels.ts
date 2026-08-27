@@ -13,20 +13,22 @@ import axios from "axios";
 
 export async function createInvookLabel(
   input: CreateInvookLabelRequest,
+  accountId: string,
 ): Promise<CreateInvookLabelResponse> {
   const response = await axios.post<CreateInvookLabelResponse>(
     "/v1/labels",
-    input,
+    { ...input, accountId },
   );
   return response.data;
 }
 
 export async function previewInvookLabel(
   input: PreviewInvookLabelRequest,
+  accountId: string,
 ): Promise<InvookLabelPreviewResponse> {
   const response = await axios.post<InvookLabelPreviewResponse>(
     "/v1/labels/preview",
-    input,
+    { ...input, accountId },
   );
   return response.data;
 }

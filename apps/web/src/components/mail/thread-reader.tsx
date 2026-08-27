@@ -29,6 +29,7 @@ import { getThreadReadTrackerKey } from "./thread-read-state";
 import type { MailboxView, SelectedThread } from "./types";
 
 export interface ThreadReaderProps {
+  accountSelection: string;
   thread: SelectedThread;
   currentView: MailboxView;
   mailboxCursor?: string;
@@ -36,12 +37,16 @@ export interface ThreadReaderProps {
 }
 
 export async function ThreadReader({
+  accountSelection,
   thread,
   currentView,
   mailboxCursor,
   availableLabels,
 }: ThreadReaderProps) {
-  const mailboxQuery = new URLSearchParams({ view: currentView });
+  const mailboxQuery = new URLSearchParams({
+    account: accountSelection,
+    view: currentView,
+  });
   if (mailboxCursor) mailboxQuery.set("cursor", mailboxCursor);
   const isUnread = thread.gmailLabels.some(
     (label) => label.providerLabelId === "UNREAD",
@@ -138,6 +143,7 @@ export async function ThreadReader({
                             {senderLabel}
                           </p>
                           <MessageRecipientDetails
+                            accountEmail={thread.accountEmail}
                             recipients={message.recipients}
                             sender={message.sender.raw || message.sender.email}
                           />

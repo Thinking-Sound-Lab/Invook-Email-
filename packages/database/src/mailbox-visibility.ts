@@ -26,14 +26,20 @@ export const countedGmailProviderLabelIds = Object.values(
   gmailProviderLabelByMailboxView,
 );
 
+const outerThreadId = sql.raw('"threads"."id"');
+const outerThreadAccountId = sql.raw('"threads"."account_id"');
+
 export function inboxThreadCondition() {
   return sql<boolean>`exists (
     select 1 from ${messages} inbox_message
-    where inbox_message.thread_id = ${threads.id}
+    where inbox_message.thread_id = ${outerThreadId}
+      and inbox_message.account_id = ${outerThreadAccountId}
       and exists (
         select 1 from ${messageLabels} inbox_membership
         inner join ${labels} inbox_label on inbox_label.id = inbox_membership.label_id
         where inbox_membership.message_id = inbox_message.id
+          and inbox_membership.account_id = ${outerThreadAccountId}
+          and inbox_label.account_id = ${outerThreadAccountId}
           and inbox_label.kind = 'gmail'
           and inbox_label.provider_label_id = 'INBOX'
       )
@@ -52,7 +58,8 @@ export function mailboxViewCondition(view: MailboxView) {
     return sql<boolean>`
       (${inboxThreadCondition()}) and exists (
         select 1 from ${threadLabelAssignments} assignment
-        where assignment.thread_id = ${threads.id}
+        where assignment.thread_id = ${outerThreadId}
+          and assignment.account_id = ${outerThreadAccountId}
           and assignment.label_id = ${labelId}::uuid
       )
     `;
@@ -66,7 +73,9 @@ export function mailboxViewCondition(view: MailboxView) {
           select 1 from ${threadLabelAssignments} important_assignment
           inner join ${labels} important_label
             on important_label.id = important_assignment.label_id
-          where important_assignment.thread_id = ${threads.id}
+          where important_assignment.thread_id = ${outerThreadId}
+            and important_assignment.account_id = ${outerThreadAccountId}
+            and important_label.account_id = ${outerThreadAccountId}
             and important_label.kind = 'invook'
             and important_label.system_key = 'important'
         )
@@ -85,6 +94,9 @@ export function mailboxViewCondition(view: MailboxView) {
         inner join ${labels}
           on ${labels.id} = ${messageLabels.labelId}
         where ${messages.threadId} = ${threads.id}
+          and ${messages.accountId} = ${threads.accountId}
+          and ${messageLabels.accountId} = ${threads.accountId}
+          and ${labels.accountId} = ${threads.accountId}
           and ${labels.kind} = 'gmail'
           and ${labels.providerLabelId} = ${providerLabelId}
       )`;

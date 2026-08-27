@@ -13,15 +13,12 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
-  vector,
 } from "drizzle-orm/pg-core";
 import type {
   InvookSystemLabelKey,
   ThreadLabelAnalysisState,
 } from "@invook/contracts";
 import type { TenantTaskQueueLane } from "@invook/workflows";
-
-import { MAIL_EMBEDDING_DIMENSIONS } from "@invook/contracts";
 
 import type { AccountSyncState } from "./types";
 
@@ -154,7 +151,7 @@ export const connectedAccounts = pgTable(
     syncState: jsonb("sync_state")
       .$type<AccountSyncState>()
       .notNull()
-      .default({ mailSync: "pending", indexing: "pending", memory: "pending" }),
+      .default({ mailSync: "pending", memory: "pending" }),
     lastSyncedAt: timestampWithTimezone("last_synced_at"),
     createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
     updatedAt: timestampWithTimezone("updated_at")
@@ -530,7 +527,6 @@ export const messages = pgTable(
     subject: text("subject").notNull().default(""),
     snippet: text("snippet").notNull().default(""),
     bodyText: text("body_text").notNull().default(""),
-    embeddingContentHash: text("embedding_content_hash").notNull(),
     bodyHtml: text("body_html"),
     sentAt: timestampWithTimezone("sent_at").notNull(),
     isMemoryEligible: boolean("is_memory_eligible").notNull().default(false),
@@ -570,10 +566,6 @@ export const messages = pgTable(
     check(
       "messages_size_estimate_check",
       sql`${table.sizeEstimate} is null or ${table.sizeEstimate} >= 0`,
-    ),
-    check(
-      "messages_embedding_content_hash_check",
-      sql`${table.embeddingContentHash} ~ '^[0-9a-f]{64}$'`,
     ),
   ],
 );
@@ -715,59 +707,6 @@ export const messageAttachments = pgTable(
     check(
       "message_attachments_content_length_check",
       sql`${table.contentLength} is null or ${table.contentLength} >= 0`,
-    ),
-  ],
-);
-
-export const messageEmbeddings = pgTable(
-  "message_embeddings",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => profiles.id, { onDelete: "cascade" }),
-    accountId: uuid("account_id")
-      .notNull()
-      .references(() => connectedAccounts.id, { onDelete: "cascade" }),
-    messageId: uuid("message_id")
-      .notNull()
-      .references(() => messages.id, { onDelete: "cascade" }),
-    modelId: text("model_id").notNull(),
-    dimensions: integer("dimensions").notNull(),
-    indexVersion: integer("index_version").notNull(),
-    contentHash: text("content_hash").notNull(),
-    status: text("status")
-      .$type<"pending" | "submitted" | "complete" | "failed">()
-      .notNull()
-      .default("pending"),
-    embedding: vector("embedding", { dimensions: MAIL_EMBEDDING_DIMENSIONS }),
-    providerBatchId: text("provider_batch_id"),
-    lastError: text("last_error"),
-    createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
-    updatedAt: timestampWithTimezone("updated_at")
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
-  },
-  (table) => [
-    uniqueIndex("message_embeddings_message_model_version_idx").on(
-      table.messageId,
-      table.modelId,
-      table.indexVersion,
-    ),
-    index("message_embeddings_account_status_idx").on(
-      table.accountId,
-      table.modelId,
-      table.indexVersion,
-      table.status,
-    ),
-    index("message_embeddings_embedding_hnsw_idx")
-      .using("hnsw", table.embedding.op("vector_cosine_ops"))
-      .where(sql`${table.status} = 'complete'`),
-    check("message_embeddings_dimensions_check", sql`${table.dimensions} > 0`),
-    check(
-      "message_embeddings_status_check",
-      sql`${table.status} in ('pending', 'submitted', 'complete', 'failed')`,
     ),
   ],
 );
@@ -1084,80 +1023,6 @@ export const workflowSteps = pgTable(
     ),
     check("workflow_steps_attempts_check", sql`${table.attempts} >= 0`),
     check("workflow_steps_max_attempts_check", sql`${table.maxAttempts} > 0`),
-  ],
-);
-
-export const embeddingBatchSubmissions = pgTable(
-  "embedding_batch_submissions",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    workflowStepId: uuid("workflow_step_id")
-      .notNull()
-      .references(() => workflowSteps.id, { onDelete: "cascade" }),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => profiles.id, { onDelete: "cascade" }),
-    accountId: uuid("account_id")
-      .notNull()
-      .references(() => connectedAccounts.id, { onDelete: "cascade" }),
-    provider: text("provider").$type<"openai">().notNull().default("openai"),
-    providerBatchId: text("provider_batch_id"),
-    inputFileId: text("input_file_id"),
-    modelId: text("model_id").notNull(),
-    dimensions: integer("dimensions").notNull(),
-    indexVersion: integer("index_version").notNull(),
-    batchAttempt: integer("batch_attempt").notNull().default(1),
-    hasMore: boolean("has_more").notNull(),
-    requestCount: integer("request_count").notNull(),
-    manifest: jsonb("manifest")
-      .$type<Array<{ key: string; messageId: string; contentHash: string }>>()
-      .notNull(),
-    status: text("status")
-      .$type<"preparing" | "submitted" | "complete" | "failed">()
-      .notNull()
-      .default("preparing"),
-    providerState: text("provider_state"),
-    lastError: text("last_error"),
-    submittedAt: timestampWithTimezone("submitted_at"),
-    completedAt: timestampWithTimezone("completed_at"),
-    createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
-    updatedAt: timestampWithTimezone("updated_at")
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
-  },
-  (table) => [
-    uniqueIndex("embedding_batch_submissions_workflow_step_idx").on(
-      table.workflowStepId,
-    ),
-    uniqueIndex("embedding_batch_submissions_provider_batch_idx")
-      .on(table.provider, table.providerBatchId)
-      .where(sql`${table.providerBatchId} is not null`),
-    uniqueIndex("embedding_batch_submissions_account_active_idx")
-      .on(table.accountId)
-      .where(sql`${table.status} in ('preparing', 'submitted')`),
-    index("embedding_batch_submissions_account_status_idx").on(
-      table.accountId,
-      table.status,
-      table.createdAt,
-    ),
-    check("embedding_batch_submissions_provider_check", sql`${table.provider} = 'openai'`),
-    check(
-      "embedding_batch_submissions_status_check",
-      sql`${table.status} in ('preparing', 'submitted', 'complete', 'failed')`,
-    ),
-    check(
-      "embedding_batch_submissions_dimensions_check",
-      sql`${table.dimensions} = ${sql.raw(String(MAIL_EMBEDDING_DIMENSIONS))}`,
-    ),
-    check(
-      "embedding_batch_submissions_request_count_check",
-      sql`${table.requestCount} > 0`,
-    ),
-    check(
-      "embedding_batch_submissions_batch_attempt_check",
-      sql`${table.batchAttempt} > 0`,
-    ),
   ],
 );
 

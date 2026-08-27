@@ -28,6 +28,7 @@ import {
 } from "@invook/database";
 
 import { mutationAccessHooks, requireUuidParameter } from "../access";
+import { parseRequiredMailboxAccountId } from "../mailbox-account-scope";
 import { sendJson, sendProblem } from "../responses";
 
 type LabelParams = {
@@ -139,12 +140,14 @@ function parseEnabledState(body: unknown): boolean | null {
 
 async function previewLabelMatches(input: {
   userId: string;
+  accountId: string;
   name: string;
   description: string;
 }): Promise<InvookLabelPreviewResponse> {
   await deleteExpiredLabelPreviewReceipts();
   const context = await getInvookLabelPreviewContext({
     userId: input.userId,
+    accountId: input.accountId,
     limit: 100,
   });
   if (!context) {
@@ -250,7 +253,11 @@ export const registerLabelRoutes: FastifyPluginAsync<
       const session = request.invookSession;
       if (!session) return;
       const definition = parseLabelDefinition(request.body);
-      if (!definition) {
+      const accountId =
+        request.body && typeof request.body === "object" && "accountId" in request.body
+          ? parseRequiredMailboxAccountId(request.body.accountId)
+          : null;
+      if (!definition || !accountId) {
         await sendProblem(
           request,
           reply,
@@ -262,6 +269,7 @@ export const registerLabelRoutes: FastifyPluginAsync<
       try {
         const preview = await previewLabel({
           userId: session.userId,
+          accountId,
           ...definition,
         });
         await sendJson(reply, 200, preview);
@@ -290,7 +298,11 @@ export const registerLabelRoutes: FastifyPluginAsync<
       const session = request.invookSession;
       if (!session) return;
       const definition = parseLabelDefinition(request.body);
-      if (!definition) {
+      const accountId =
+        request.body && typeof request.body === "object" && "accountId" in request.body
+          ? parseRequiredMailboxAccountId(request.body.accountId)
+          : null;
+      if (!definition || !accountId) {
         await sendProblem(
           request,
           reply,
@@ -316,6 +328,7 @@ export const registerLabelRoutes: FastifyPluginAsync<
       try {
         const label = await createLabel({
           userId: session.userId,
+          accountId,
           ...definition,
           applyToPastDays: parseHistoryWindow(request.body),
           previewReceiptId: parsePreviewReceiptId(request.body),

@@ -728,8 +728,8 @@ export function createGmailHistoryContinuationStep(input: {
   };
 }
 
-export async function enqueueGmailHistoryCatchupForUser(
-  userId: string,
+export async function enqueueGmailHistoryCatchupForAccount(
+  input: { userId: string; accountId: string },
   database: Database = getDatabase(),
 ): Promise<
   | { stepId: string; reason: null }
@@ -748,7 +748,8 @@ export async function enqueueGmailHistoryCatchupForUser(
       )
       .where(
         and(
-          eq(connectedAccounts.userId, userId),
+          eq(connectedAccounts.userId, input.userId),
+          eq(connectedAccounts.id, input.accountId),
           eq(connectedAccounts.status, "connected"),
         ),
       )
@@ -758,7 +759,7 @@ export async function enqueueGmailHistoryCatchupForUser(
       return { stepId: null, reason: "replica_not_ready" };
     }
     const stepId = await enqueueGmailHistoryCatchup(
-      { userId, accountId: account.id, reason: "manual" },
+      { userId: input.userId, accountId: account.id, reason: "manual" },
       transaction as unknown as Database,
     );
     return { stepId, reason: null };

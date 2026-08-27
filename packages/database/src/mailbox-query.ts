@@ -13,8 +13,8 @@ import {
 import { validate as validateUuid } from "uuid";
 
 import { getDatabase, type Database } from "./client";
+import { resolveMailboxAccountIds } from "./mailbox-resources";
 import {
-  connectedAccounts,
   labels,
   messageLabels,
   messages,
@@ -23,6 +23,7 @@ import {
 
 export type QueryInvookMailboxInput = {
   userId: string;
+  accountId?: string | null;
   candidateMessageIds?: string[];
   gmailLabelIds?: string[];
   invookLabelIds?: string[];
@@ -68,6 +69,8 @@ function gmailMembership(providerLabelId: string) {
     from ${messageLabels} membership
     inner join ${labels} label on label.id = membership.label_id
     where membership.message_id = ${messages.id}
+      and membership.account_id = ${messages.accountId}
+      and label.account_id = ${messages.accountId}
       and label.kind = 'gmail'
       and label.provider_label_id = ${providerLabelId}
   )`;
@@ -77,18 +80,11 @@ export async function queryInvookMailbox(
   input: QueryInvookMailboxInput,
   database: Database = getDatabase(),
 ) {
-  const [account] = await database
-    .select({ id: connectedAccounts.id })
-    .from(connectedAccounts)
-    .where(
-      and(
-        eq(connectedAccounts.userId, input.userId),
-        eq(connectedAccounts.status, "connected"),
-      ),
-    )
-    .orderBy(desc(connectedAccounts.createdAt))
-    .limit(1);
-  if (!account) {
+  const accountIds = await resolveMailboxAccountIds(
+    { userId: input.userId, accountId: input.accountId },
+    database,
+  );
+  if (!accountIds) {
     return { status: "unavailable" as const, reason: "mailbox_not_connected" as const };
   }
 
@@ -98,14 +94,14 @@ export async function queryInvookMailbox(
 
   const [availableGmailLabels, availableInvookLabels] = await Promise.all([
     database
-      .select({ id: labels.id, name: labels.name })
+      .select({ accountId: labels.accountId, id: labels.id, name: labels.name })
       .from(labels)
-      .where(and(eq(labels.accountId, account.id), eq(labels.kind, "gmail")))
+      .where(and(inArray(labels.accountId, accountIds), eq(labels.kind, "gmail")))
       .orderBy(asc(labels.name)),
     database
-      .select({ id: labels.id, name: labels.name })
+      .select({ accountId: labels.accountId, id: labels.id, name: labels.name })
       .from(labels)
-      .where(and(eq(labels.accountId, account.id), eq(labels.kind, "invook")))
+      .where(and(inArray(labels.accountId, accountIds), eq(labels.kind, "invook")))
       .orderBy(asc(labels.name)),
   ]);
   if (input.candidateMessageIds && input.candidateMessageIds.length === 0) {
@@ -120,7 +116,7 @@ export async function queryInvookMailbox(
 
   const conditions = [
     eq(messages.userId, input.userId),
-    eq(messages.accountId, account.id),
+    inArray(messages.accountId, accountIds),
   ];
   if (input.candidateMessageIds) {
     conditions.push(inArray(messages.id, input.candidateMessageIds));
@@ -129,6 +125,7 @@ export async function queryInvookMailbox(
     conditions.push(sql<boolean>`exists (
       select 1 from ${messageLabels} membership
       where membership.message_id = ${messages.id}
+        and membership.account_id = ${messages.accountId}
         and membership.label_id = ${labelId}
     )`);
   }
@@ -136,6 +133,7 @@ export async function queryInvookMailbox(
     conditions.push(sql<boolean>`exists (
       select 1 from ${threadLabelAssignments} assignment
       where assignment.thread_id = ${messages.threadId}
+        and assignment.account_id = ${messages.accountId}
         and assignment.label_id = ${labelId}
     )`);
   }
@@ -166,6 +164,7 @@ export async function queryInvookMailbox(
 
   const rows = await database
     .select({
+      accountId: messages.accountId,
       id: messages.id,
       threadId: messages.threadId,
       subject: messages.subject,
@@ -193,7 +192,13 @@ export async function queryInvookMailbox(
           })
           .from(messageLabels)
           .innerJoin(labels, eq(labels.id, messageLabels.labelId))
-          .where(inArray(messageLabels.messageId, messageIds))
+          .where(
+            and(
+              inArray(messageLabels.messageId, messageIds),
+              inArray(messageLabels.accountId, accountIds),
+              eq(labels.accountId, messageLabels.accountId),
+            ),
+          )
           .orderBy(asc(labels.name)),
         database
           .select({
@@ -203,7 +208,13 @@ export async function queryInvookMailbox(
           })
           .from(threadLabelAssignments)
           .innerJoin(labels, eq(labels.id, threadLabelAssignments.labelId))
-          .where(inArray(threadLabelAssignments.threadId, threadIds)),
+          .where(
+            and(
+              inArray(threadLabelAssignments.threadId, threadIds),
+              inArray(threadLabelAssignments.accountId, accountIds),
+              eq(labels.accountId, threadLabelAssignments.accountId),
+            ),
+          ),
       ]);
   const assignmentsByThread = new Map(
     assignmentRows.map((assignment) => [assignment.threadId, assignment]),
@@ -219,6 +230,7 @@ export async function queryInvookMailbox(
         (membership) => membership.kind === "gmail",
       );
       return {
+        accountId: message.accountId,
         messageId: message.id,
         threadId: message.threadId,
         subject: message.subject,

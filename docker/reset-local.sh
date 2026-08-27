@@ -74,7 +74,6 @@ FROM (
     ('profiles'),
     ('connected_accounts'),
     ('messages'),
-    ('message_embeddings'),
     ('drafts'),
     ('memory_entries'),
     ('workflow_steps'),
@@ -149,7 +148,6 @@ database_evidence=$(compose exec -T db sh -c "$psql_command -At" <<'SQL'
 SELECT 'profiles=' || count(*) FROM profiles
 UNION ALL SELECT 'connected_accounts=' || count(*) FROM connected_accounts
 UNION ALL SELECT 'messages=' || count(*) FROM messages
-UNION ALL SELECT 'message_embeddings=' || count(*) FROM message_embeddings
 UNION ALL SELECT 'drafts=' || count(*) FROM drafts
 UNION ALL SELECT 'memory_entries=' || count(*) FROM memory_entries
 UNION ALL SELECT 'workflow_steps=' || count(*) FROM workflow_steps

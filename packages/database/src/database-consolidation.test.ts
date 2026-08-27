@@ -37,8 +37,12 @@ const tenantTemporalRoutingMigrationUrl = new URL(
   "../drizzle/0033_shallow_apocalypse.sql",
   import.meta.url,
 );
-const labelPreviewReceiptMigrationUrl = new URL(
-  "../drizzle/0034_lovely_flatman.sql",
+const removeEmbeddingMigrationUrl = new URL(
+  "../drizzle/0034_wandering_jubilee.sql",
+  import.meta.url,
+);
+const threadSyncMigrationUrl = new URL(
+  "../drizzle/0035_wandering_lockheed.sql",
   import.meta.url,
 );
 const schemaUrl = new URL("./schema.ts", import.meta.url);
@@ -53,18 +57,41 @@ function assertBefore(source: string, earlier: string, later: string): void {
   assert.ok(earlierIndex < laterIndex, `${earlier} must precede ${later}`);
 }
 
-test("the Drizzle schema has exactly the 31 owned tables", async () => {
+test("the Drizzle schema has exactly the 29 owned tables without embedding storage", async () => {
   const source = await readFile(schemaUrl, "utf8");
-  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 31);
+  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 29);
+  assert.doesNotMatch(source, /messageEmbeddings/);
+  assert.doesNotMatch(source, /embeddingBatchSubmissions/);
+  assert.doesNotMatch(source, /embeddingContentHash/);
+  assert.doesNotMatch(source, /\bvector\s*\(/);
 });
 
-test("the label preview receipt migration backfills durable historical jobs", async () => {
-  const migration = await readFile(labelPreviewReceiptMigrationUrl, "utf8");
+test("the thread-sync migration preserves durable label and object work before retiring legacy storage", async () => {
+  const migration = await readFile(threadSyncMigrationUrl, "utf8");
 
   assert.match(migration, /CREATE TABLE "label_preview_receipts"/);
   assert.match(migration, /'\{historicalScanId\}'/);
   assert.match(migration, /'\{previewReceiptId\}'/);
-  assert.match(migration, /'label\.thread\.scan'/);
+  assertBefore(
+    migration,
+    'WHERE "provider_thread_id" IS NULL',
+    'ALTER COLUMN "provider_thread_id" SET NOT NULL',
+  );
+  assertBefore(
+    migration,
+    'PARTITION BY "run_id", "provider_thread_id"',
+    'CREATE UNIQUE INDEX "gmail_sync_items_run_thread_idx"',
+  );
+  assertBefore(
+    migration,
+    "'gmail.objects.delete'",
+    'DROP COLUMN "raw_object_key"',
+  );
+  assertBefore(
+    migration,
+    'INSERT INTO "temporal_commands"',
+    'DROP COLUMN "raw_object_key"',
+  );
 });
 
 test("the auth migration preserves identity without copying Gmail credentials", async () => {
@@ -254,6 +281,34 @@ test("the tenant Temporal migration replaces legacy queues with required lanes",
   assert.match(migration, /CREATE INDEX "workflow_steps_user_status_idx"/);
 });
 
+test("the embedding removal migration retires durable work before dropping storage", async () => {
+  const migration = await readFile(removeEmbeddingMigrationUrl, "utf8");
+
+  assertBefore(
+    migration,
+    'DELETE FROM "temporal_commands"',
+    'DROP TABLE "embedding_batch_submissions"',
+  );
+  assertBefore(
+    migration,
+    'UPDATE "workflow_steps"',
+    'DROP TABLE "embedding_batch_submissions"',
+  );
+  assertBefore(
+    migration,
+    'UPDATE "connected_accounts"',
+    'DROP TABLE "message_embeddings"',
+  );
+  assertBefore(
+    migration,
+    'DROP TABLE "message_embeddings"',
+    'DROP EXTENSION IF EXISTS "vector"',
+  );
+  assert.match(migration, /'embedding\.backfill'/);
+  assert.match(migration, /'embedding\.incremental'/);
+  assert.match(migration, /'embedding\.batch\.event'/);
+});
+
 async function applyMigrationFile(
   client: postgres.Sql | postgres.TransactionSql,
   filename: string,
@@ -401,7 +456,7 @@ test(
         );
         INSERT INTO messages (
           id, user_id, account_id, thread_id, provider_message_id, direction,
-          sender, internal_date, embedding_content_hash, sent_at
+          sender, internal_date, sent_at
         ) VALUES (
           '44444444-4444-4444-8444-444444444444',
           '11111111-1111-4111-8111-111111111111',
@@ -411,7 +466,6 @@ test(
           'incoming',
           '{"raw":"Sender <sender@example.com>","email":"sender@example.com"}'::jsonb,
           now(),
-          repeat('a', 64),
           now()
         );
         INSERT INTO labels (

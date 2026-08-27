@@ -705,7 +705,7 @@ export async function failThreadLabelAnalysis(
 }
 
 export async function getInvookLabelPreviewContext(
-  input: { userId: string; limit?: number },
+  input: { userId: string; accountId: string; limit?: number },
   database: Database = getDatabase(),
 ): Promise<{
   accountId: string;
@@ -724,10 +724,10 @@ export async function getInvookLabelPreviewContext(
     .where(
       and(
         eq(connectedAccounts.userId, input.userId),
+        eq(connectedAccounts.id, input.accountId),
         eq(connectedAccounts.status, "connected"),
       ),
     )
-    .orderBy(desc(connectedAccounts.createdAt))
     .limit(1);
   if (!account) return null;
   const candidates = await database

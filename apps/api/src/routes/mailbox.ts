@@ -6,21 +6,26 @@ import {
   type MailboxView,
 } from "@invook/contracts";
 import {
-  enqueueGmailHistoryCatchupForUser,
+  enqueueGmailHistoryCatchupForAccount,
   getMailboxSettings,
   getMailboxShellData,
   getMailboxSidebarCounts,
   getMailboxThreadDetail,
   listMailboxThreads,
-  markGmailReplicaDeletingForUser,
+  markGmailReplicaDeleting,
   parseMailboxCursor,
 } from "@invook/database";
 
 import { isUuid, mutationAccessHooks, requireSession } from "../access";
+import {
+  type MailboxAccountQuery,
+  parseMailboxAccountScope,
+  parseRequiredMailboxAccountId,
+} from "../mailbox-account-scope";
 import { sendJson, sendProblem } from "../responses";
 import { serializeMailboxShell } from "../serializers";
 
-type MailboxQuery = {
+type MailboxQuery = MailboxAccountQuery & {
   cursor?: unknown;
   view?: unknown;
 };
@@ -72,6 +77,11 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
+      const accountScope = parseMailboxAccountScope(request.query.account);
+      if (!accountScope.valid) {
+        await sendProblem(request, reply, 400, "Invalid mailbox account");
+        return;
+      }
       const view = parseMailboxView(request.query.view);
       if (!view) {
         await sendProblem(request, reply, 400, "Invalid mailbox view");
@@ -85,6 +95,7 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
         return;
       }
       const threadPage = await listMailboxThreads(session.userId, {
+        accountId: accountScope.accountId,
         cursor,
         view,
       });
@@ -102,7 +113,10 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
     },
   );
 
-  api.get<{ Params: { threadId: string } }>(
+  api.get<{
+    Params: { threadId: string };
+    Querystring: MailboxAccountQuery;
+  }>(
     "/v1/mailbox/threads/:threadId",
     { onRequest: requireSession },
     async (request, reply) => {
@@ -112,9 +126,15 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
         await sendProblem(request, reply, 400, "Invalid mailbox thread");
         return;
       }
+      const accountScope = parseMailboxAccountScope(request.query.account);
+      if (!accountScope.valid) {
+        await sendProblem(request, reply, 400, "Invalid mailbox account");
+        return;
+      }
       const thread = await getMailboxThreadDetail(
         session.userId,
         request.params.threadId,
+        accountScope.accountId,
       );
       if (!thread) {
         await sendProblem(request, reply, 404, "Mailbox thread not found");
@@ -124,13 +144,18 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
     },
   );
 
-  api.get(
+  api.get<{ Querystring: MailboxAccountQuery }>(
     "/v1/mailbox/settings",
     { onRequest: requireSession },
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
-      const settings = await getMailboxSettings(session.userId);
+      const accountId = parseRequiredMailboxAccountId(request.query.account);
+      if (!accountId) {
+        await sendProblem(request, reply, 400, "A valid mailbox account is required");
+        return;
+      }
+      const settings = await getMailboxSettings(session.userId, accountId);
       if (!settings) {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
         return;
@@ -139,14 +164,25 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
     },
   );
 
-  api.post(
+  api.post<{ Body: unknown }>(
     "/v1/mailbox/sync",
     { onRequest: mutationAccessHooks },
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
-      const result = await enqueueGmailHistoryCatchupForUser(session.userId);
-      if (result.stepId === null) {
+      const accountId =
+        request.body && typeof request.body === "object" && "accountId" in request.body
+          ? parseRequiredMailboxAccountId(request.body.accountId)
+          : null;
+      if (!accountId) {
+        await sendProblem(request, reply, 400, "A valid mailbox account is required");
+        return;
+      }
+      const result = await enqueueGmailHistoryCatchupForAccount({
+        userId: session.userId,
+        accountId,
+      });
+      if (!result.stepId) {
         await sendProblem(
           request,
           reply,
@@ -165,20 +201,31 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
     },
   );
 
-  api.delete(
+  api.delete<{ Body: unknown }>(
     "/v1/mailbox/account",
     { onRequest: mutationAccessHooks },
     async (request, reply) => {
       const session = request.invookSession;
       if (!session) return;
-      const result = await markGmailReplicaDeletingForUser(session.userId);
-      if (!result.cleanupId) {
+      const accountId =
+        request.body && typeof request.body === "object" && "accountId" in request.body
+          ? parseRequiredMailboxAccountId(request.body.accountId)
+          : null;
+      if (!accountId) {
+        await sendProblem(request, reply, 400, "A valid mailbox account is required");
+        return;
+      }
+      const cleanupId = await markGmailReplicaDeleting({
+        userId: session.userId,
+        accountId,
+      });
+      if (!cleanupId) {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
         return;
       }
       await sendJson(reply, 202, {
         accepted: true,
-        cleanupId: result.cleanupId,
+        cleanupId,
       });
     },
   );

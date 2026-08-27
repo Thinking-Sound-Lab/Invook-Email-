@@ -1,6 +1,7 @@
 import type { MailboxChangeEvent } from "@invook/contracts";
 
 export interface MailboxEventLocation {
+  accountSelection: string;
   surface: string;
   threadId: string | null;
   view: string;
@@ -14,6 +15,12 @@ export function isRelevantMailboxChange(
   event: MailboxChangeEvent,
   input: MailboxEventLocation,
 ): boolean {
+  if (
+    input.accountSelection !== "all" &&
+    event.accountId !== input.accountSelection
+  ) {
+    return false;
+  }
   switch (event.changeType) {
     case "replica_ready":
     case "safe_invalidation":
