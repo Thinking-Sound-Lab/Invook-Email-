@@ -398,6 +398,7 @@ test(
       const secondThreadId = uuidv4();
       const secondMessageId = uuidv4();
       const firstStarredLabelId = uuidv4();
+      const secondInboxLabelId = uuidv4();
       const secondStarredLabelId = uuidv4();
       const sentAt = new Date("2026-08-16T09:00:00.000Z");
 
@@ -472,6 +473,16 @@ test(
           providerType: "system",
         },
         {
+          id: secondInboxLabelId,
+          userId,
+          accountId: secondAccountId,
+          kind: "gmail",
+          providerLabelId: "INBOX",
+          name: "Inbox",
+          normalizedName: "inbox",
+          providerType: "system",
+        },
+        {
           id: secondStarredLabelId,
           userId,
           accountId: secondAccountId,
@@ -483,6 +494,13 @@ test(
         },
       ]);
       await database.insert(messageLabels).values([
+        {
+          userId,
+          accountId: secondAccountId,
+          messageId: secondMessageId,
+          labelId: secondInboxLabelId,
+          source: "gmail",
+        },
         {
           userId,
           accountId,

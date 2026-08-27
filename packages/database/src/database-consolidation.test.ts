@@ -41,6 +41,10 @@ const removeEmbeddingMigrationUrl = new URL(
   "../drizzle/0034_wandering_jubilee.sql",
   import.meta.url,
 );
+const threadSyncMigrationUrl = new URL(
+  "../drizzle/0035_wandering_lockheed.sql",
+  import.meta.url,
+);
 const schemaUrl = new URL("./schema.ts", import.meta.url);
 const migrationsUrl = new URL("../drizzle/", import.meta.url);
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -53,13 +57,41 @@ function assertBefore(source: string, earlier: string, later: string): void {
   assert.ok(earlierIndex < laterIndex, `${earlier} must precede ${later}`);
 }
 
-test("the Drizzle schema has exactly the 28 owned tables without embedding storage", async () => {
+test("the Drizzle schema has exactly the 29 owned tables without embedding storage", async () => {
   const source = await readFile(schemaUrl, "utf8");
-  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 28);
+  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 29);
   assert.doesNotMatch(source, /messageEmbeddings/);
   assert.doesNotMatch(source, /embeddingBatchSubmissions/);
   assert.doesNotMatch(source, /embeddingContentHash/);
   assert.doesNotMatch(source, /\bvector\s*\(/);
+});
+
+test("the thread-sync migration preserves durable label and object work before retiring legacy storage", async () => {
+  const migration = await readFile(threadSyncMigrationUrl, "utf8");
+
+  assert.match(migration, /CREATE TABLE "label_preview_receipts"/);
+  assert.match(migration, /'\{historicalScanId\}'/);
+  assert.match(migration, /'\{previewReceiptId\}'/);
+  assertBefore(
+    migration,
+    'WHERE "provider_thread_id" IS NULL',
+    'ALTER COLUMN "provider_thread_id" SET NOT NULL',
+  );
+  assertBefore(
+    migration,
+    'PARTITION BY "run_id", "provider_thread_id"',
+    'CREATE UNIQUE INDEX "gmail_sync_items_run_thread_idx"',
+  );
+  assertBefore(
+    migration,
+    "'gmail.objects.delete'",
+    'DROP COLUMN "raw_object_key"',
+  );
+  assertBefore(
+    migration,
+    'INSERT INTO "temporal_commands"',
+    'DROP COLUMN "raw_object_key"',
+  );
 });
 
 test("the auth migration preserves identity without copying Gmail credentials", async () => {

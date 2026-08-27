@@ -9,9 +9,9 @@ import {
 const completeMailSync = {
   state: "complete",
   discoveryComplete: true,
-  discoveredMessageCount: 71_468,
-  processedMessageCount: 71_468,
-  failedMessageCount: 0,
+  discoveredThreadCount: 71_468,
+  processedThreadCount: 71_468,
+  failedThreadCount: 0,
 } as const;
 
 test("account progress events are validated before entering client state", () => {

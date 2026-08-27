@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { generateText, type LanguageModel, Output } from "ai";
 import { z } from "zod";
 
@@ -101,20 +103,35 @@ function validateDefinitions(
   return labelIds;
 }
 
+function classifierThreadPayload(
+  thread: StoredThreadLabelClassifierInput["thread"],
+) {
+  const validated = classifierInputSchema.shape.thread.parse(thread);
+  return {
+    subject: clip(validated.subject, SUBJECT_LIMIT),
+    messages: validated.messages.slice(-MESSAGE_LIMIT).map((message) => ({
+      subject: clip(message.subject, SUBJECT_LIMIT),
+      sender: clip(message.sender, ADDRESS_LIMIT),
+      recipients: message.recipients
+        .slice(0, RECIPIENT_LIMIT)
+        .map((recipient) => clip(recipient, ADDRESS_LIMIT)),
+      bodyText: clip(message.bodyText, BODY_TEXT_LIMIT),
+      sentAt: message.sentAt,
+    })),
+  };
+}
+
+export function createStoredThreadLabelInputHash(
+  thread: StoredThreadLabelClassifierInput["thread"],
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify(classifierThreadPayload(thread)))
+    .digest("hex");
+}
+
 function classifierPayload(input: StoredThreadLabelClassifierInput) {
   return {
-    thread: {
-      subject: clip(input.thread.subject, SUBJECT_LIMIT),
-      messages: input.thread.messages.slice(-MESSAGE_LIMIT).map((message) => ({
-        subject: clip(message.subject, SUBJECT_LIMIT),
-        sender: clip(message.sender, ADDRESS_LIMIT),
-        recipients: message.recipients
-          .slice(0, RECIPIENT_LIMIT)
-          .map((recipient) => clip(recipient, ADDRESS_LIMIT)),
-        bodyText: clip(message.bodyText, BODY_TEXT_LIMIT),
-        sentAt: message.sentAt,
-      })),
-    },
+    thread: classifierThreadPayload(input.thread),
     labelDefinitions: input.labelDefinitions.map((definition) => ({
       id: definition.id,
       name: clip(definition.name, LABEL_NAME_LIMIT),

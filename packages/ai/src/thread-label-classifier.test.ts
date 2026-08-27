@@ -4,6 +4,7 @@ import test from "node:test";
 import { MockLanguageModelV4 } from "ai/test";
 
 import {
+  createStoredThreadLabelInputHash,
   createStoredThreadLabelClassifier,
   ThreadLabelClassificationContractError,
   type StoredThreadLabelClassifierInput,
@@ -127,4 +128,32 @@ test("uses Others without calling a model when every candidate is disabled", asy
 
   assert.equal(result.labelId, "others-label");
   assert.equal(modelCreationCount, 0);
+});
+
+test("classifier input hashes match the exact clipped thread payload", () => {
+  const originalHash = createStoredThreadLabelInputHash(baseInput.thread);
+  const changedHash = createStoredThreadLabelInputHash({
+    ...baseInput.thread,
+    messages: baseInput.thread.messages.map((message) => ({
+      ...message,
+      bodyText: "A different invoice body.",
+    })),
+  });
+  const clippedTailHash = createStoredThreadLabelInputHash({
+    ...baseInput.thread,
+    messages: [
+      {
+        ...baseInput.thread.messages[0],
+        bodyText: "This message is outside the model's final twenty messages.",
+      },
+      ...Array.from({ length: 20 }, () => baseInput.thread.messages[0]),
+    ],
+  });
+  const tailHash = createStoredThreadLabelInputHash({
+    ...baseInput.thread,
+    messages: Array.from({ length: 20 }, () => baseInput.thread.messages[0]),
+  });
+
+  assert.notEqual(changedHash, originalHash);
+  assert.equal(clippedTailHash, tailHash);
 });

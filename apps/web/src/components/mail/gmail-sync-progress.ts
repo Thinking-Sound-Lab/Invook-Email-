@@ -13,44 +13,44 @@ export function getGmailSyncProgressPresentation(
   if (progress.state === "complete") return null;
 
   const isFailed = progress.state === "failed";
-  const percentage = progress.discoveredMessageCount === 0
+  const percentage = progress.discoveredThreadCount === 0
     ? progress.discoveryComplete
       ? 100
       : null
     : Math.min(
         100,
         Math.round(
-          (progress.processedMessageCount / progress.discoveredMessageCount) * 100,
+          (progress.processedThreadCount / progress.discoveredThreadCount) * 100,
         ),
       );
 
   if (isFailed) {
-    const failedDetail = progress.failedMessageCount
-      ? `; ${progress.failedMessageCount.toLocaleString()} failed`
+    const failedDetail = progress.failedThreadCount
+      ? `; ${progress.failedThreadCount.toLocaleString()} failed`
       : "";
     return {
       title: "Gmail sync needs attention",
-      detail: `${progress.processedMessageCount.toLocaleString()} messages synced${failedDetail}`,
+      detail: `${progress.processedThreadCount.toLocaleString()} threads synced${failedDetail}`,
       percentage,
       isFailed,
     };
   }
 
   if (!progress.discoveryComplete) {
-    const isProcessing = progress.processedMessageCount > 0;
+    const isProcessing = progress.processedThreadCount > 0;
     return {
       title:
         isProcessing
           ? "Finding and syncing Gmail"
-          : progress.discoveredMessageCount > 0
-          ? "Finding Gmail messages"
+          : progress.discoveredThreadCount > 0
+          ? "Finding Gmail threads"
           : "Preparing Gmail sync",
       detail:
         isProcessing
-          ? `${progress.processedMessageCount.toLocaleString()} of ${progress.discoveredMessageCount.toLocaleString()} discovered messages synced`
-          : progress.discoveredMessageCount > 0
-          ? `${progress.discoveredMessageCount.toLocaleString()} messages found so far`
-          : "Waiting for Gmail to report message totals",
+          ? `${progress.processedThreadCount.toLocaleString()} of ${progress.discoveredThreadCount.toLocaleString()} discovered threads synced`
+          : progress.discoveredThreadCount > 0
+          ? `${progress.discoveredThreadCount.toLocaleString()} threads found so far`
+          : "Waiting for Gmail to report thread totals",
       percentage,
       isFailed,
     };
@@ -59,9 +59,9 @@ export function getGmailSyncProgressPresentation(
   return {
     title: "Syncing Gmail",
     detail:
-      progress.discoveredMessageCount === 0
+      progress.discoveredThreadCount === 0
         ? "Finishing an empty mailbox sync"
-        : `${progress.processedMessageCount.toLocaleString()} of ${progress.discoveredMessageCount.toLocaleString()} messages synced`,
+        : `${progress.processedThreadCount.toLocaleString()} of ${progress.discoveredThreadCount.toLocaleString()} threads synced`,
     percentage,
     isFailed,
   };

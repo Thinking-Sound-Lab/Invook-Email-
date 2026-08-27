@@ -6,13 +6,17 @@ import axios, { type AxiosRequestConfig } from "axios";
 import {
   GmailApiError,
   GMAIL_MESSAGE_LIST_MAX_RESULTS,
+  GMAIL_THREAD_LIST_MAX_RESULTS,
+  getGmailAttachment,
   getGmailDraft,
   getGmailMessage,
   getGmailMessageState,
+  getGmailThread,
   gmailHistoryChanges,
   isGoogleReauthenticationRequired,
   listGmailDrafts,
   listGmailMessages,
+  listGmailThreads,
   modifyGmailMessageLabels,
   modifyGmailThreadLabels,
   sendGmailDraft,
@@ -52,11 +56,11 @@ test("complete Gmail message pages use the provider maximum with Spam and Trash"
   assert.equal(url.searchParams.get("pageToken"), "next-page");
 });
 
-test("each listed Gmail message is fetched as raw MIME", async () => {
+test("incremental Gmail messages are fetched as parsed full payloads", async () => {
   responseData = {
     id: "message/with spaces",
     threadId: "thread-id",
-    raw: "cmF3",
+    payload: { mimeType: "text/plain", body: { data: "dGVzdA" } },
     labelIds: ["IMPORTANT", "INBOX", "Label_7", "CATEGORY_PROMOTIONS"],
   };
   const message = await getGmailMessage(
@@ -69,8 +73,57 @@ test("each listed Gmail message is fetched as raw MIME", async () => {
   const url = new URL(request.url ?? "", request.baseURL);
   assert.equal(request.baseURL, "https://gmail.googleapis.com/gmail/v1");
   assert.equal(url.pathname, "/users/me/messages/message%2Fwith%20spaces");
-  assert.equal(url.searchParams.get("format"), "raw");
+  assert.equal(url.searchParams.get("format"), "full");
   assert.deepEqual(message.labelIds, ["IMPORTANT", "INBOX"]);
+});
+
+test("initial sync lists threads at Gmail's maximum and fetches each as full", async () => {
+  responseData = { threads: [{ id: "thread-id" }] };
+  await listGmailThreads("access-token", { pageToken: "next-page" });
+
+  assert.equal(GMAIL_THREAD_LIST_MAX_RESULTS, 500);
+  const listRequest = requests[0];
+  assert.ok(listRequest);
+  const listUrl = new URL(listRequest.url ?? "", listRequest.baseURL);
+  assert.equal(listUrl.pathname, "/users/me/threads");
+  assert.equal(listUrl.searchParams.get("includeSpamTrash"), "true");
+  assert.equal(listUrl.searchParams.get("maxResults"), "500");
+  assert.equal(listUrl.searchParams.get("pageToken"), "next-page");
+
+  responseData = {
+    id: "thread/with spaces",
+    messages: [
+      {
+        id: "message-id",
+        threadId: "thread/with spaces",
+        labelIds: ["INBOX", "Label_7"],
+        payload: { mimeType: "text/plain", body: { data: "dGVzdA" } },
+      },
+    ],
+  };
+  const thread = await getGmailThread("access-token", "thread/with spaces");
+  const getRequest = requests[1];
+  assert.ok(getRequest);
+  const getUrl = new URL(getRequest.url ?? "", getRequest.baseURL);
+  assert.equal(getUrl.pathname, "/users/me/threads/thread%2Fwith%20spaces");
+  assert.equal(getUrl.searchParams.get("format"), "full");
+  assert.deepEqual(thread.messages[0]?.labelIds, ["INBOX"]);
+});
+
+test("external full-format parts use Gmail's attachment endpoint", async () => {
+  responseData = { size: 4, data: "dGVzdA" };
+  assert.deepEqual(
+    await getGmailAttachment("access-token", "message/id", "attachment/id"),
+    responseData,
+  );
+
+  const request = requests[0];
+  assert.ok(request);
+  const url = new URL(request.url ?? "", request.baseURL);
+  assert.equal(
+    url.pathname,
+    "/users/me/messages/message%2Fid/attachments/attachment%2Fid",
+  );
 });
 
 test("label-only history reads minimal state without downloading raw MIME", async () => {

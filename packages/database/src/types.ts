@@ -45,12 +45,6 @@ export type MailboxMessage = {
   recipients: string[];
   bodyText: string;
   bodyHtml: string | null;
-  rawObject: {
-    key: string;
-    checksumSha256: string;
-    contentLength: number;
-    etag: string | null;
-  } | null;
   isMemoryEligible: boolean;
   ingestionMode: "initial" | "incremental";
   isLiveDelivery?: boolean;

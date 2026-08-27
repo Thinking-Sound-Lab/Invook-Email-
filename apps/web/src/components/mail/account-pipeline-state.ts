@@ -31,9 +31,9 @@ function parseMailSyncProgress(value: unknown): MailSyncProgress | null {
     !isRecord(value) ||
     !isAccountSyncStage(value.state) ||
     typeof value.discoveryComplete !== "boolean" ||
-    !isNonnegativeInteger(value.discoveredMessageCount) ||
-    !isNonnegativeInteger(value.processedMessageCount) ||
-    !isNonnegativeInteger(value.failedMessageCount)
+    !isNonnegativeInteger(value.discoveredThreadCount) ||
+    !isNonnegativeInteger(value.processedThreadCount) ||
+    !isNonnegativeInteger(value.failedThreadCount)
   ) {
     return null;
   }
@@ -41,9 +41,9 @@ function parseMailSyncProgress(value: unknown): MailSyncProgress | null {
   return {
     state: value.state,
     discoveryComplete: value.discoveryComplete,
-    discoveredMessageCount: value.discoveredMessageCount,
-    processedMessageCount: value.processedMessageCount,
-    failedMessageCount: value.failedMessageCount,
+    discoveredThreadCount: value.discoveredThreadCount,
+    processedThreadCount: value.processedThreadCount,
+    failedThreadCount: value.failedThreadCount,
   };
 }
 

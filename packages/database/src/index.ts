@@ -13,6 +13,7 @@ export {
   type GoogleCredential,
 } from "./credentials";
 export * from "./gmail-draft-writes";
+export * from "./label-preview-receipts";
 export * from "./thread-label-analysis";
 export * from "./mail-sync-progress";
 export * from "./mailbox-change-events";

@@ -25,6 +25,14 @@ import type { AccountSyncState } from "./types";
 type JsonObject = Record<string, unknown>;
 type JsonValue = JsonObject | unknown[];
 
+export type LabelPreviewReceiptResult = {
+  threadId: string;
+  classifierInputHash: string;
+  matched: boolean;
+  confidence: number;
+  modelId: string;
+};
+
 const timestampWithTimezone = (name: string) =>
   timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -390,6 +398,53 @@ export const threads = pgTable(
   ],
 );
 
+export const labelPreviewReceipts = pgTable(
+  "label_preview_receipts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => connectedAccounts.id, { onDelete: "cascade" }),
+    definitionHash: text("definition_hash").notNull(),
+    scannedThreadCount: integer("scanned_thread_count").notNull(),
+    results: jsonb("results")
+      .$type<LabelPreviewReceiptResult[]>()
+      .notNull()
+      .default([]),
+    expiresAt: timestampWithTimezone("expires_at").notNull(),
+    consumedScanId: uuid("consumed_scan_id"),
+    createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
+    updatedAt: timestampWithTimezone("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index("label_preview_receipts_account_expiration_idx").on(
+      table.accountId,
+      table.expiresAt,
+    ),
+    uniqueIndex("label_preview_receipts_consumed_scan_idx")
+      .on(table.consumedScanId)
+      .where(sql`${table.consumedScanId} is not null`),
+    check(
+      "label_preview_receipts_definition_hash_check",
+      sql`${table.definitionHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "label_preview_receipts_count_check",
+      sql`${table.scannedThreadCount} between 0 and 100`,
+    ),
+    check(
+      "label_preview_receipts_results_check",
+      sql`jsonb_typeof(${table.results}) = 'array' and jsonb_array_length(${table.results}) = ${table.scannedThreadCount}`,
+    ),
+  ],
+);
+
 export const threadLabelAssignments = pgTable(
   "thread_label_assignments",
   {
@@ -473,10 +528,6 @@ export const messages = pgTable(
     snippet: text("snippet").notNull().default(""),
     bodyText: text("body_text").notNull().default(""),
     bodyHtml: text("body_html"),
-    rawObjectKey: text("raw_object_key"),
-    rawChecksumSha256: text("raw_checksum_sha256"),
-    rawContentLength: integer("raw_content_length"),
-    rawEtag: text("raw_etag"),
     sentAt: timestampWithTimezone("sent_at").notNull(),
     isMemoryEligible: boolean("is_memory_eligible").notNull().default(false),
     excludedFromMemory: boolean("excluded_from_memory").notNull().default(false),
@@ -515,10 +566,6 @@ export const messages = pgTable(
     check(
       "messages_size_estimate_check",
       sql`${table.sizeEstimate} is null or ${table.sizeEstimate} >= 0`,
-    ),
-    check(
-      "messages_raw_content_length_check",
-      sql`${table.rawContentLength} is null or ${table.rawContentLength} >= 0`,
     ),
   ],
 );
@@ -901,9 +948,9 @@ export const mailSyncRuns = pgTable(
     finalHistoryCursor: text("final_history_cursor"),
     discoveryComplete: boolean("discovery_complete").notNull().default(false),
     pageCount: integer("page_count").notNull().default(0),
-    discoveredMessageCount: integer("discovered_message_count").notNull().default(0),
-    processedMessageCount: integer("processed_message_count").notNull().default(0),
-    failedMessageCount: integer("failed_message_count").notNull().default(0),
+    discoveredThreadCount: integer("discovered_thread_count").notNull().default(0),
+    processedThreadCount: integer("processed_thread_count").notNull().default(0),
+    failedThreadCount: integer("failed_thread_count").notNull().default(0),
     lastError: text("last_error"),
     idempotencyKey: text("idempotency_key").notNull(),
     startedAt: timestampWithTimezone("started_at"),
@@ -927,8 +974,8 @@ export const mailSyncRuns = pgTable(
     check("mail_sync_runs_type_check", sql`${table.runType} in ('initial', 'repair')`),
     check("mail_sync_runs_page_count_check", sql`${table.pageCount} >= 0`),
     check(
-      "mail_sync_runs_message_counts_check",
-      sql`${table.discoveredMessageCount} >= 0 and ${table.processedMessageCount} >= 0 and ${table.failedMessageCount} >= 0`,
+      "mail_sync_runs_thread_counts_check",
+      sql`${table.discoveredThreadCount} >= 0 and ${table.processedThreadCount} >= 0 and ${table.failedThreadCount} >= 0`,
     ),
   ],
 );
@@ -1100,7 +1147,7 @@ export const gmailSyncPages = pgTable(
     pageNumber: integer("page_number").notNull(),
     pageToken: text("page_token"),
     nextPageToken: text("next_page_token"),
-    discoveredMessageCount: integer("discovered_message_count").notNull().default(0),
+    discoveredThreadCount: integer("discovered_thread_count").notNull().default(0),
     createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
     completedAt: timestampWithTimezone("completed_at").notNull().defaultNow(),
   },
@@ -1108,8 +1155,8 @@ export const gmailSyncPages = pgTable(
     uniqueIndex("gmail_sync_pages_run_number_idx").on(table.runId, table.pageNumber),
     check("gmail_sync_pages_number_check", sql`${table.pageNumber} > 0`),
     check(
-      "gmail_sync_pages_message_count_check",
-      sql`${table.discoveredMessageCount} >= 0`,
+      "gmail_sync_pages_thread_count_check",
+      sql`${table.discoveredThreadCount} >= 0`,
     ),
   ],
 );
@@ -1121,8 +1168,7 @@ export const gmailSyncItems = pgTable(
     runId: uuid("run_id")
       .notNull()
       .references(() => mailSyncRuns.id, { onDelete: "cascade" }),
-    providerMessageId: text("provider_message_id").notNull(),
-    providerThreadId: text("provider_thread_id"),
+    providerThreadId: text("provider_thread_id").notNull(),
     status: text("status")
       .$type<"queued" | "running" | "complete" | "failed">()
       .notNull()
@@ -1138,16 +1184,11 @@ export const gmailSyncItems = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => [
-    uniqueIndex("gmail_sync_items_run_message_idx").on(
-      table.runId,
-      table.providerMessageId,
-    ),
-    index("gmail_sync_items_run_status_idx").on(table.runId, table.status),
-    index("gmail_sync_items_run_thread_status_idx").on(
+    uniqueIndex("gmail_sync_items_run_thread_idx").on(
       table.runId,
       table.providerThreadId,
-      table.status,
     ),
+    index("gmail_sync_items_run_status_idx").on(table.runId, table.status),
     check(
       "gmail_sync_items_status_check",
       sql`${table.status} in ('queued', 'running', 'complete', 'failed')`,

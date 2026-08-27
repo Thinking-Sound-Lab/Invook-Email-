@@ -97,8 +97,11 @@ test(
 
       assert.equal(dispatchedJobs.length, TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE);
       assert.ok(dispatchedJobs.some((job) => job.userId === secondUserId));
+      const ownedJobs = dispatchedJobs.filter(
+        (job) => job.userId === firstUserId || job.userId === secondUserId,
+      );
       assert.ok(
-        dispatchedJobs.every((job) => job.activityTaskLane === "live"),
+        ownedJobs.every((job) => job.activityTaskLane === "bulk"),
       );
     } finally {
       await database.delete(profiles).where(eq(profiles.id, firstUserId));

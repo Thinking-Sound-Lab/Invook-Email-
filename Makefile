@@ -1,4 +1,4 @@
-.PHONY: dev down reset-local verify
+.PHONY: dev down reset-local verify verify-database
 
 dev:
 	./docker/dev-local.sh
@@ -14,3 +14,6 @@ verify:
 	pnpm lint
 	pnpm test
 	pnpm build
+
+verify-database:
+	pnpm --filter @invook/database test:integration

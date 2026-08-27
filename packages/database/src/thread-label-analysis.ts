@@ -3,10 +3,11 @@ import { createHash } from "node:crypto";
 import {
   and,
   asc,
-  countDistinct,
   desc,
   eq,
+  exists,
   gt,
+  gte,
   inArray,
   isNull,
   sql,
@@ -31,6 +32,7 @@ import {
   workflowSteps,
 } from "./schema";
 import { insertMailboxChange } from "./mailbox-change-events";
+import { getLabelPreviewReceiptResult } from "./label-preview-receipts";
 import { toPostgresTextProjection } from "./text";
 import {
   enqueueWorkflowStepsWithExecutor,
@@ -51,11 +53,23 @@ export type ThreadLabelAnalysisCheckpoint = {
 };
 
 export type HistoricalThreadLabelCheckpoint = {
+  historicalScanId: string;
+  previewReceiptId: string | null;
   threadId: string;
   labelId: string;
   definitionVersion: number;
   enablementVersion: number;
   assignmentVersion: number | null;
+};
+
+export type HistoricalThreadLabelScanCoordinatorCheckpoint = {
+  historicalScanId: string;
+  previewReceiptId: string | null;
+  labelId: string;
+  definitionVersion: number;
+  enablementVersion: number;
+  after: Date;
+  cursorThreadId: string | null;
 };
 
 export type InboxThreadMessage = {
@@ -67,7 +81,7 @@ export type InboxThreadMessage = {
   sentAt: Date;
 };
 
-export const INITIAL_THREAD_LABEL_FAST_LANE_LIMIT = 200;
+export const HISTORICAL_THREAD_LABEL_SCAN_PAGE_SIZE = 100;
 
 const BUILT_IN_INVOOK_LABELS = [
   {
@@ -274,8 +288,6 @@ export async function refreshThreadProjection(
   return true;
 }
 
-type ThreadLabelFastLane = "live" | "recent";
-
 function checkpointMatches(
   thread: { id: string; labelAnalysisVersion: number },
   checkpoint: ThreadLabelAnalysisCheckpoint,
@@ -291,21 +303,6 @@ function automaticThreadLabelAssignmentAllowed() {
     select 1 from ${threadLabelAssignments} manual_assignment
     where manual_assignment.thread_id = ${threads.id}
       and manual_assignment.source = 'user'
-  )`;
-}
-
-function recentThreadPreviouslyAdmittedCondition(input: {
-  accountId: string;
-  runId?: string;
-}) {
-  return sql<boolean>`exists (
-    select 1
-    from ${workflowSteps} admitted_recent_step
-    where admitted_recent_step.account_id = ${input.accountId}
-      and admitted_recent_step.step_type = 'label.thread.assign'
-      and admitted_recent_step.input->>'lane' = 'recent'
-      and admitted_recent_step.input->>'threadId' = ${threads.id}::text
-      ${input.runId ? sql`and admitted_recent_step.run_id = ${input.runId}` : sql``}
   )`;
 }
 
@@ -357,7 +354,7 @@ async function enqueueThreadLabelAnalysisWithExecutor(
     accountId: string;
     threadId: string;
     analysisVersion: number;
-    lane: ThreadLabelFastLane;
+    lane: "live";
     runId?: string;
   },
   database: DatabaseExecutor,
@@ -408,13 +405,17 @@ async function enqueueThreadLabelAnalysisWithExecutor(
   return { stepId, definitionHash: snapshot.definitionHash };
 }
 
-export async function enqueueLiveInboxThreadLabelAnalyses(
-  input: { userId: string; accountId: string; threadIds: string[] },
+async function listLiveThreadLabelCandidates(
+  input: {
+    userId: string;
+    accountId: string;
+    threadIds: string[];
+    latestMessageAtCutoff?: Date;
+    limit?: number;
+  },
   database: DatabaseExecutor,
-): Promise<number> {
-  const threadIds = Array.from(new Set(input.threadIds));
-  if (threadIds.length === 0) return 0;
-  const candidates = await database
+): Promise<Array<{ threadId: string; analysisVersion: number }>> {
+  const query = database
     .select({
       threadId: threads.id,
       analysisVersion: threads.labelAnalysisVersion,
@@ -428,13 +429,29 @@ export async function enqueueLiveInboxThreadLabelAnalyses(
       and(
         eq(threads.userId, input.userId),
         eq(threads.accountId, input.accountId),
-        inArray(threads.id, threadIds),
+        inArray(threads.id, input.threadIds),
         eq(threads.labelAnalysisState, "pending"),
         automaticThreadLabelAssignmentAllowed(),
         inboxThreadConditionForBatch(),
+        input.latestMessageAtCutoff
+          ? gte(threads.latestMessageAt, input.latestMessageAtCutoff)
+          : undefined,
       ),
     )
     .orderBy(desc(threads.latestMessageAt), desc(threads.id));
+  return input.limit === undefined ? query : query.limit(input.limit);
+}
+
+export async function enqueueLiveInboxThreadLabelAnalyses(
+  input: { userId: string; accountId: string; threadIds: string[] },
+  database: DatabaseExecutor,
+): Promise<number> {
+  const threadIds = Array.from(new Set(input.threadIds));
+  if (threadIds.length === 0) return 0;
+  const candidates = await listLiveThreadLabelCandidates(
+    { userId: input.userId, accountId: input.accountId, threadIds },
+    database,
+  );
   let enqueuedCount = 0;
   for (const candidate of candidates) {
     const enqueued = await enqueueThreadLabelAnalysisWithExecutor(
@@ -448,163 +465,6 @@ export async function enqueueLiveInboxThreadLabelAnalyses(
       database,
     );
     if (enqueued) enqueuedCount += 1;
-  }
-  return enqueuedCount;
-}
-
-export async function enqueueRecentInboxThreadLabelFastLane(
-  input: {
-    userId: string;
-    accountId: string;
-    runId?: string;
-    threadIds?: string[];
-  },
-  database: Database = getDatabase(),
-): Promise<number> {
-  const requestedThreadIds = input.threadIds
-    ? Array.from(new Set(input.threadIds))
-    : null;
-  if (requestedThreadIds?.length === 0) return 0;
-  return database.transaction(async (transaction) => {
-    await transaction.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`thread-label-fast:${input.accountId}:${input.runId ?? "bootstrap"}`}, 43))`,
-    );
-    if (input.runId) {
-      const [activeRun] = await transaction
-        .select({ id: mailSyncRuns.id })
-        .from(mailSyncRuns)
-        .where(
-          and(
-            eq(mailSyncRuns.id, input.runId),
-            eq(mailSyncRuns.accountId, input.accountId),
-            inArray(mailSyncRuns.status, ["queued", "running"]),
-          ),
-        )
-        .limit(1);
-      if (!activeRun) return 0;
-    }
-    const [alreadyAdmitted] = await transaction
-      .select({
-        value: countDistinct(sql`${workflowSteps.input}->>'threadId'`),
-      })
-      .from(workflowSteps)
-      .where(
-        and(
-          eq(workflowSteps.accountId, input.accountId),
-          eq(workflowSteps.stepType, "label.thread.assign"),
-          sql`${workflowSteps.input}->>'lane' = 'recent'`,
-          input.runId ? eq(workflowSteps.runId, input.runId) : undefined,
-        ),
-      );
-    const remaining = Math.max(
-      0,
-      INITIAL_THREAD_LABEL_FAST_LANE_LIMIT - (alreadyAdmitted?.value ?? 0),
-    );
-    const eligibleCandidateCondition = and(
-      eq(threads.userId, input.userId),
-      eq(threads.accountId, input.accountId),
-      requestedThreadIds ? inArray(threads.id, requestedThreadIds) : undefined,
-      eq(threads.labelAnalysisState, "pending"),
-      automaticThreadLabelAssignmentAllowed(),
-      inboxThreadConditionForBatch(),
-      input.runId
-        ? sql<boolean>`not exists (
-            select 1
-            from ${gmailSyncItems} pending_thread_item
-            where pending_thread_item.run_id = ${input.runId}
-              and pending_thread_item.provider_thread_id = ${threads.providerThreadId}
-              and pending_thread_item.status <> 'complete'
-          )`
-        : undefined,
-    );
-    const previouslyAdmittedCondition =
-      recentThreadPreviouslyAdmittedCondition({
-        accountId: input.accountId,
-        runId: input.runId,
-      });
-    const replanCandidates = await transaction
-      .select({
-        threadId: threads.id,
-        analysisVersion: threads.labelAnalysisVersion,
-      })
-      .from(threads)
-      .leftJoin(
-        threadLabelAssignments,
-        eq(threadLabelAssignments.threadId, threads.id),
-      )
-      .where(
-        and(
-          eligibleCandidateCondition,
-          previouslyAdmittedCondition,
-        ),
-      )
-      .orderBy(desc(threads.latestMessageAt), desc(threads.id))
-      .for("update", { of: threads, skipLocked: true });
-    const newCandidates =
-      remaining === 0
-        ? []
-        : await transaction
-            .select({
-              threadId: threads.id,
-              analysisVersion: threads.labelAnalysisVersion,
-            })
-            .from(threads)
-            .leftJoin(
-              threadLabelAssignments,
-              eq(threadLabelAssignments.threadId, threads.id),
-            )
-            .where(
-              and(
-                eligibleCandidateCondition,
-                sql<boolean>`not (${previouslyAdmittedCondition})`,
-              ),
-            )
-            .orderBy(desc(threads.latestMessageAt), desc(threads.id))
-            .limit(remaining)
-            .for("update", { of: threads, skipLocked: true });
-    const candidates = [...replanCandidates, ...newCandidates];
-    let enqueuedCount = 0;
-    for (const candidate of candidates) {
-      const enqueued = await enqueueThreadLabelAnalysisWithExecutor(
-        {
-          userId: input.userId,
-          accountId: input.accountId,
-          threadId: candidate.threadId,
-          analysisVersion: candidate.analysisVersion,
-          lane: "recent",
-          runId: input.runId,
-        },
-        transaction,
-      );
-      if (enqueued) enqueuedCount += 1;
-    }
-    return enqueuedCount;
-  });
-}
-
-export async function enqueueStartupThreadLabelFastLanes(
-  database: Database = getDatabase(),
-): Promise<number> {
-  const accounts = await database
-    .select({ userId: connectedAccounts.userId, accountId: connectedAccounts.id })
-    .from(connectedAccounts)
-    .where(eq(connectedAccounts.status, "connected"));
-  let enqueuedCount = 0;
-  for (const account of accounts) {
-    const [activeRun] = await database
-      .select({ id: mailSyncRuns.id })
-      .from(mailSyncRuns)
-      .where(
-        and(
-          eq(mailSyncRuns.accountId, account.accountId),
-          inArray(mailSyncRuns.status, ["queued", "running"]),
-        ),
-      )
-      .limit(1);
-    enqueuedCount += await enqueueRecentInboxThreadLabelFastLane(
-      { ...account, runId: activeRun?.id },
-      database,
-    );
   }
   return enqueuedCount;
 }
@@ -844,16 +704,19 @@ export async function failThreadLabelAnalysis(
   });
 }
 
-export async function listInvookLabelPreviewCandidates(
+export async function getInvookLabelPreviewContext(
   input: { userId: string; accountId: string; limit?: number },
   database: Database = getDatabase(),
-): Promise<Array<{
-  threadId: string;
-  subject: string;
-  sender: { raw: string; email: string };
-  sentAt: Date;
-  messages: InboxThreadMessage[];
-}>> {
+): Promise<{
+  accountId: string;
+  candidates: Array<{
+    threadId: string;
+    subject: string;
+    sender: { raw: string; email: string };
+    sentAt: Date;
+    messages: InboxThreadMessage[];
+  }>;
+} | null> {
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 100);
   const [account] = await database
     .select({ id: connectedAccounts.id })
@@ -866,7 +729,7 @@ export async function listInvookLabelPreviewCandidates(
       ),
     )
     .limit(1);
-  if (!account) return [];
+  if (!account) return null;
   const candidates = await database
     .select({ id: threads.id, subject: threads.subject })
     .from(threads)
@@ -896,11 +759,24 @@ export async function listInvookLabelPreviewCandidates(
       messages: inboxMessages,
     });
   }
-  return results;
+  return { accountId: account.id, candidates: results };
 }
 
-export async function enqueueHistoricalThreadLabelScan(
+function historicalThreadLabelScanCoordinatorKey(input: {
+  historicalScanId: string;
+  cursorThreadId: string | null;
+}): string {
+  return [
+    "label.historical.scan",
+    input.historicalScanId,
+    input.cursorThreadId ?? "start",
+  ].join(":");
+}
+
+export async function enqueueHistoricalThreadLabelScanCoordinator(
   input: {
+    historicalScanId: string;
+    previewReceiptId: string | null;
     userId: string;
     accountId: string;
     labelId: string;
@@ -909,50 +785,168 @@ export async function enqueueHistoricalThreadLabelScan(
     after: Date;
   },
   database: DatabaseExecutor,
-): Promise<number> {
-  const candidates = await database
-    .select({
-      threadId: threads.id,
-      assignmentVersion: threadLabelAssignments.assignmentVersion,
-    })
-    .from(threads)
-    .leftJoin(
-      threadLabelAssignments,
-      eq(threadLabelAssignments.threadId, threads.id),
-    )
-    .where(
-      and(
-        eq(threads.userId, input.userId),
-        eq(threads.accountId, input.accountId),
-        sql<boolean>`exists (
-          select 1 from ${messages} scan_message
-          where scan_message.thread_id = ${threads.id}
-            and scan_message.sent_at >= ${input.after}
-            and ${inboxMembership(sql.raw("scan_message.id"))}
-        )`,
-      ),
-    );
-  let queuedThreadCount = 0;
-  for (let index = 0; index < candidates.length; index += 500) {
+): Promise<string> {
+  const cursorThreadId = null;
+  return enqueueWorkflowStepWithExecutor(
+    {
+      userId: input.userId,
+      accountId: input.accountId,
+      stepType: "label.historical.scan",
+      payload: {
+        historicalScanId: input.historicalScanId,
+        previewReceiptId: input.previewReceiptId,
+        labelId: input.labelId,
+        definitionVersion: input.definitionVersion,
+        enablementVersion: input.enablementVersion,
+        after: input.after.toISOString(),
+        cursorThreadId,
+      },
+      idempotencyKey: historicalThreadLabelScanCoordinatorKey({
+        historicalScanId: input.historicalScanId,
+        cursorThreadId,
+      }),
+    },
+    database,
+  );
+}
+
+export async function scanHistoricalThreadLabelPage(
+  input: {
+    userId: string;
+    accountId: string;
+    checkpoint: HistoricalThreadLabelScanCoordinatorCheckpoint;
+  },
+  database: Database = getDatabase(),
+): Promise<
+  | { status: "missing" | "superseded"; queuedThreadCount: 0 }
+  | {
+      status: "complete" | "continued";
+      queuedThreadCount: number;
+      continuationStepId: string | null;
+      cursorThreadId: string | null;
+    }
+> {
+  return database.transaction(async (transaction) => {
+    const [definition] = await transaction
+      .select({
+        id: labels.id,
+        definitionVersion: labels.definitionVersion,
+        enablementVersion: labels.enablementVersion,
+        isEnabled: labels.isEnabled,
+        systemKey: labels.systemKey,
+      })
+      .from(labels)
+      .where(
+        and(
+          eq(labels.id, input.checkpoint.labelId),
+          eq(labels.kind, "invook"),
+          eq(labels.userId, input.userId),
+          eq(labels.accountId, input.accountId),
+        ),
+      )
+      .limit(1);
+    if (!definition) return { status: "missing", queuedThreadCount: 0 };
+    if (
+      definition.definitionVersion !== input.checkpoint.definitionVersion ||
+      definition.enablementVersion !== input.checkpoint.enablementVersion ||
+      !definition.isEnabled ||
+      definition.systemKey === "others"
+    ) {
+      return { status: "superseded", queuedThreadCount: 0 };
+    }
+
+    const eligibleMessage = transaction
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.threadId, threads.id),
+          gte(messages.sentAt, input.checkpoint.after),
+          inboxMembership(messages.id),
+        ),
+      )
+      .limit(1);
+    const candidates = await transaction
+      .select({
+        threadId: threads.id,
+        assignmentVersion: threadLabelAssignments.assignmentVersion,
+      })
+      .from(threads)
+      .leftJoin(
+        threadLabelAssignments,
+        eq(threadLabelAssignments.threadId, threads.id),
+      )
+      .where(
+        and(
+          eq(threads.userId, input.userId),
+          eq(threads.accountId, input.accountId),
+          input.checkpoint.cursorThreadId
+            ? gt(threads.id, input.checkpoint.cursorThreadId)
+            : undefined,
+          exists(eligibleMessage),
+        ),
+      )
+      .orderBy(asc(threads.id))
+      .limit(HISTORICAL_THREAD_LABEL_SCAN_PAGE_SIZE + 1);
+    const page = candidates.slice(0, HISTORICAL_THREAD_LABEL_SCAN_PAGE_SIZE);
     const inserted = await enqueueWorkflowStepsWithExecutor(
-      candidates.slice(index, index + 500).map((candidate) => ({
+      page.map((candidate) => ({
         userId: input.userId,
         accountId: input.accountId,
         stepType: "label.thread.scan",
         payload: {
+          historicalScanId: input.checkpoint.historicalScanId,
+          previewReceiptId: input.checkpoint.previewReceiptId,
           threadId: candidate.threadId,
-          labelId: input.labelId,
-          definitionVersion: input.definitionVersion,
-          enablementVersion: input.enablementVersion,
+          labelId: input.checkpoint.labelId,
+          definitionVersion: input.checkpoint.definitionVersion,
+          enablementVersion: input.checkpoint.enablementVersion,
           assignmentVersion: candidate.assignmentVersion,
         },
-        idempotencyKey: `label.thread.scan:${candidate.threadId}:${candidate.assignmentVersion ?? "unassigned"}:${input.labelId}:${input.definitionVersion}:${input.enablementVersion}`,
+        idempotencyKey: `label.thread.scan:${input.checkpoint.historicalScanId}:${candidate.threadId}`,
       })),
-      database,
+      transaction,
     );
-    queuedThreadCount += inserted.length;
-  }
-  return queuedThreadCount;
+    const cursorThreadId = page.at(-1)?.threadId ?? null;
+    if (candidates.length <= HISTORICAL_THREAD_LABEL_SCAN_PAGE_SIZE) {
+      return {
+        status: "complete",
+        queuedThreadCount: inserted.length,
+        continuationStepId: null,
+        cursorThreadId,
+      };
+    }
+    if (!cursorThreadId) {
+      throw new Error("The historical label scan continuation cursor is missing.");
+    }
+    const continuationStepId = await enqueueWorkflowStepWithExecutor(
+      {
+        userId: input.userId,
+        accountId: input.accountId,
+        stepType: "label.historical.scan",
+        payload: {
+          historicalScanId: input.checkpoint.historicalScanId,
+          previewReceiptId: input.checkpoint.previewReceiptId,
+          labelId: input.checkpoint.labelId,
+          definitionVersion: input.checkpoint.definitionVersion,
+          enablementVersion: input.checkpoint.enablementVersion,
+          after: input.checkpoint.after.toISOString(),
+          cursorThreadId,
+        },
+        idempotencyKey: historicalThreadLabelScanCoordinatorKey({
+          historicalScanId: input.checkpoint.historicalScanId,
+          cursorThreadId,
+        }),
+      },
+      transaction,
+    );
+    return {
+      status: "continued",
+      queuedThreadCount: inserted.length,
+      continuationStepId,
+      cursorThreadId,
+    };
+  });
 }
 
 export async function beginHistoricalThreadLabelScan(
@@ -968,6 +962,12 @@ export async function beginHistoricalThreadLabelScan(
       status: "ready";
       thread: { id: string; subject: string; messages: InboxThreadMessage[] };
       definition: ThreadLabelDefinition;
+      previewResult: {
+        classifierInputHash: string;
+        matched: boolean;
+        confidence: number;
+        modelId: string;
+      } | null;
     }
 > {
   const [target] = await database
@@ -1013,6 +1013,28 @@ export async function beginHistoricalThreadLabelScan(
   }
   const inboxMessages = await listInboxThreadMessages(target.threadId, database);
   if (inboxMessages.length === 0) return { status: "superseded" };
+  const storedPreviewResult = input.checkpoint.previewReceiptId
+    ? await getLabelPreviewReceiptResult(
+        {
+          receiptId: input.checkpoint.previewReceiptId,
+          historicalScanId: input.checkpoint.historicalScanId,
+          userId: input.userId,
+          accountId: input.accountId,
+          name: target.labelName,
+          description: target.labelDescription,
+          threadId: target.threadId,
+        },
+        database,
+      )
+    : null;
+  const previewResult = storedPreviewResult
+    ? {
+        classifierInputHash: storedPreviewResult.classifierInputHash,
+        matched: storedPreviewResult.matched,
+        confidence: storedPreviewResult.confidence,
+        modelId: storedPreviewResult.modelId,
+      }
+    : null;
   return {
     status: "ready",
     thread: { id: target.threadId, subject: target.subject, messages: inboxMessages },
@@ -1022,6 +1044,7 @@ export async function beginHistoricalThreadLabelScan(
       description: target.labelDescription,
       definitionVersion: target.definitionVersion,
     },
+    previewResult,
   };
 }
 
@@ -1219,7 +1242,8 @@ export async function setUserThreadLabel(
   });
 }
 
-const THREAD_LABEL_BATCH_LIMIT = 2_000;
+export const THREAD_LABEL_BATCH_START_THRESHOLD = 100;
+const THREAD_LABEL_BATCH_REQUEST_LIMIT = 2_000;
 const THREAD_LABEL_CANDIDATE_PAGE_SIZE = 500;
 const THREAD_LABEL_BATCH_RETRY_LIMIT = 6;
 const THREAD_LABEL_CAPACITY_RETRY_DELAY_MS = 5 * 60 * 1_000;
@@ -1308,7 +1332,7 @@ async function listThreadLabelBatchCandidateRows(
     subject: string;
     analysisVersion: number;
   }> = [];
-  let afterThreadId: string | null = null;
+  let cursor: { latestMessageAt: Date; threadId: string } | null = null;
   while (candidates.length < input.limit) {
     const pageLimit = Math.min(
       THREAD_LABEL_CANDIDATE_PAGE_SIZE,
@@ -1319,6 +1343,7 @@ async function listThreadLabelBatchCandidateRows(
         threadId: threads.id,
         subject: threads.subject,
         analysisVersion: threads.labelAnalysisVersion,
+        latestMessageAt: threads.latestMessageAt,
       })
       .from(threads)
       .leftJoin(
@@ -1334,7 +1359,9 @@ async function listThreadLabelBatchCandidateRows(
           input.candidateThreadIds
             ? inArray(threads.id, input.candidateThreadIds)
             : undefined,
-          afterThreadId ? gt(threads.id, afterThreadId) : undefined,
+          cursor
+            ? sql<boolean>`(${threads.latestMessageAt}, ${threads.id}) < (${cursor.latestMessageAt.toISOString()}::timestamptz, ${cursor.threadId}::uuid)`
+            : undefined,
           inboxThreadConditionForBatch(),
           input.activeRunId
             ? sql<boolean>`exists (
@@ -1343,13 +1370,6 @@ async function listThreadLabelBatchCandidateRows(
                 where label_run.id = ${input.activeRunId}
                   and label_run.account_id = ${input.accountId}
                   and label_run.status in ('queued', 'running')
-                  and label_run.discovery_complete = true
-              ) and not exists (
-                select 1
-                from ${gmailSyncItems} unidentified_thread_item
-                where unidentified_thread_item.run_id = ${input.activeRunId}
-                  and unidentified_thread_item.provider_thread_id is null
-                  and unidentified_thread_item.status <> 'complete'
               ) and not exists (
                 select 1
                 from ${gmailSyncItems} pending_thread_item
@@ -1360,15 +1380,206 @@ async function listThreadLabelBatchCandidateRows(
             : undefined,
         ),
       )
-      .orderBy(asc(threads.id))
+      .orderBy(sql`${threads.latestMessageAt} desc nulls last`, desc(threads.id))
       .limit(pageLimit)
       .for("update", { of: threads, skipLocked: true });
-    candidates.push(...page);
+    candidates.push(
+      ...page.map(({ latestMessageAt: _latestMessageAt, ...candidate }) => candidate),
+    );
     if (page.length < pageLimit) break;
-    afterThreadId = page.at(-1)?.threadId ?? null;
-    if (!afterThreadId) break;
+    const lastRow = page.at(-1);
+    // Eligible threads always carry latestMessageAt; a null cursor cannot
+    // order the next keyset page, so stop instead of looping unordered.
+    if (!lastRow || lastRow.latestMessageAt === null) break;
+    cursor = {
+      latestMessageAt: lastRow.latestMessageAt,
+      threadId: lastRow.threadId,
+    };
   }
   return candidates;
+}
+
+export type InitialThreadLabelBatchAdmissionResult =
+  | { status: "inactive" | "busy" }
+  | { status: "below_threshold"; candidateCount: number }
+  | { status: "enqueued"; candidateCount: number; stepId: string };
+
+export async function enqueueInitialThreadLabelBatchIfReady(
+  input: {
+    runId: string;
+    userId: string;
+    accountId: string;
+    sourceKey: string;
+  },
+  database: Database = getDatabase(),
+): Promise<InitialThreadLabelBatchAdmissionResult> {
+  return database.transaction(async (transaction) => {
+    await lockThreadLabelBatchAccount(input.accountId, transaction);
+    const [activeRun] = await transaction
+      .select({ id: mailSyncRuns.id })
+      .from(mailSyncRuns)
+      .where(
+        and(
+          eq(mailSyncRuns.id, input.runId),
+          eq(mailSyncRuns.userId, input.userId),
+          eq(mailSyncRuns.accountId, input.accountId),
+          inArray(mailSyncRuns.status, ["queued", "running"]),
+        ),
+      )
+      .limit(1);
+    if (!activeRun) return { status: "inactive" };
+
+    const [[activeSubmission], [outstandingSubmissionStep]] = await Promise.all([
+      transaction
+        .select({ id: threadLabelBatchSubmissions.id })
+        .from(threadLabelBatchSubmissions)
+        .where(
+          and(
+            eq(threadLabelBatchSubmissions.accountId, input.accountId),
+            inArray(threadLabelBatchSubmissions.status, [
+              "preparing",
+              "submitted",
+            ]),
+          ),
+        )
+        .limit(1),
+      transaction
+        .select({ id: workflowSteps.id })
+        .from(workflowSteps)
+        .where(
+          and(
+            eq(workflowSteps.userId, input.userId),
+            eq(workflowSteps.accountId, input.accountId),
+            eq(workflowSteps.stepType, "label.batch.submit"),
+            inArray(workflowSteps.status, ["queued", "running"]),
+          ),
+        )
+        .limit(1),
+    ]);
+    if (activeSubmission || outstandingSubmissionStep) return { status: "busy" };
+
+    const candidates = await listThreadLabelBatchCandidateRows(
+      {
+        userId: input.userId,
+        accountId: input.accountId,
+        activeRunId: input.runId,
+        flushRemainder: false,
+        limit: THREAD_LABEL_BATCH_START_THRESHOLD,
+      },
+      transaction,
+    );
+    if (candidates.length < THREAD_LABEL_BATCH_START_THRESHOLD) {
+      return {
+        status: "below_threshold",
+        candidateCount: candidates.length,
+      };
+    }
+
+    const stepId = await enqueueThreadLabelBatchSubmission(
+      {
+        userId: input.userId,
+        accountId: input.accountId,
+        sourceKey: input.sourceKey,
+        flushRemainder: false,
+      },
+      transaction,
+    );
+    return {
+      status: "enqueued",
+      candidateCount: candidates.length,
+      stepId,
+    };
+  });
+}
+
+export type InitialSyncLiveThreadLabelResult =
+  | { status: "inactive" }
+  | { status: "enqueued"; enqueuedCount: number; remainingBudget: number };
+
+export async function enqueueInitialSyncLiveThreadLabelAnalyses(
+  input: {
+    runId: string;
+    userId: string;
+    accountId: string;
+    threadIds: string[];
+    hotWindowDays: number;
+    maxThreads: number;
+  },
+  database: Database = getDatabase(),
+): Promise<InitialSyncLiveThreadLabelResult> {
+  const threadIds = Array.from(new Set(input.threadIds));
+  return database.transaction(async (transaction) => {
+    await lockThreadLabelBatchAccount(input.accountId, transaction);
+    const [activeRun] = await transaction
+      .select({ id: mailSyncRuns.id, createdAt: mailSyncRuns.createdAt })
+      .from(mailSyncRuns)
+      .where(
+        and(
+          eq(mailSyncRuns.id, input.runId),
+          eq(mailSyncRuns.userId, input.userId),
+          eq(mailSyncRuns.accountId, input.accountId),
+          inArray(mailSyncRuns.status, ["queued", "running"]),
+        ),
+      )
+      .limit(1);
+    if (!activeRun) return { status: "inactive" };
+
+    const [usedBudget] = await transaction
+      .select({ count: sql<number>`count(*)::int` })
+      .from(workflowSteps)
+      .where(
+        and(
+          eq(workflowSteps.runId, input.runId),
+          eq(workflowSteps.accountId, input.accountId),
+          eq(workflowSteps.stepType, "label.thread.assign"),
+        ),
+      );
+    const budget = input.maxThreads - (usedBudget?.count ?? 0);
+    if (budget <= 0 || threadIds.length === 0) {
+      return {
+        status: "enqueued",
+        enqueuedCount: 0,
+        remainingBudget: Math.max(budget, 0),
+      };
+    }
+
+    // The cutoff anchors to the run's creation time, not now(), so step
+    // retries reserve a deterministic hot window.
+    const cutoff = new Date(
+      activeRun.createdAt.getTime() -
+        input.hotWindowDays * 24 * 60 * 60 * 1000,
+    );
+    const candidates = await listLiveThreadLabelCandidates(
+      {
+        userId: input.userId,
+        accountId: input.accountId,
+        threadIds,
+        latestMessageAtCutoff: cutoff,
+        limit: budget,
+      },
+      transaction,
+    );
+    let enqueuedCount = 0;
+    for (const candidate of candidates) {
+      const enqueued = await enqueueThreadLabelAnalysisWithExecutor(
+        {
+          userId: input.userId,
+          accountId: input.accountId,
+          threadId: candidate.threadId,
+          analysisVersion: candidate.analysisVersion,
+          lane: "live",
+          runId: input.runId,
+        },
+        transaction,
+      );
+      if (enqueued) enqueuedCount += 1;
+    }
+    return {
+      status: "enqueued",
+      enqueuedCount,
+      remainingBudget: budget - enqueuedCount,
+    };
+  });
 }
 
 function inboxThreadConditionForBatch() {
@@ -1552,17 +1763,19 @@ export async function claimThreadLabelBatchSubmission(
         activeRunId: activeRun?.id ?? null,
         candidateThreadIds: input.threadIds,
         flushRemainder: shouldFlushRemainder,
-        limit: THREAD_LABEL_BATCH_LIMIT + 1,
+        limit: THREAD_LABEL_BATCH_REQUEST_LIMIT + 1,
       },
       transaction,
     );
     if (
       rows.length === 0 ||
-      (!shouldFlushRemainder && rows.length < THREAD_LABEL_BATCH_LIMIT)
+      (!input.threadIds &&
+        !shouldFlushRemainder &&
+        rows.length < THREAD_LABEL_BATCH_START_THRESHOLD)
     ) {
       return null;
     }
-    const selected = rows.slice(0, THREAD_LABEL_BATCH_LIMIT);
+    const selected = rows.slice(0, THREAD_LABEL_BATCH_REQUEST_LIMIT);
     const manifest: ThreadLabelBatchManifestEntry[] = selected.map((thread) => ({
       threadId: thread.threadId,
       analysisVersion: thread.analysisVersion,
@@ -1578,7 +1791,7 @@ export async function claimThreadLabelBatchSubmission(
         modelId: input.modelId,
         definitionHash: currentSnapshot.definitionHash,
         flushRemainder: shouldFlushRemainder,
-        hasMore: rows.length > THREAD_LABEL_BATCH_LIMIT,
+        hasMore: rows.length > THREAD_LABEL_BATCH_REQUEST_LIMIT,
         requestCount: manifest.length,
         manifest,
       })
@@ -1976,7 +2189,10 @@ export async function finalizeThreadLabelBatchSubmission(
               userId: submission.userId,
               accountId: submission.accountId,
               sourceKey: `continue:${submission.id}`,
-              flushRemainder: submission.flushRemainder,
+              // While synchronization is active the claim path still enforces the
+              // start threshold. Once synchronization completes, this guarantees
+              // that the final partial group is not stranded behind an earlier Batch.
+              flushRemainder: true,
             },
             transaction,
           )

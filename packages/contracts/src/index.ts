@@ -11,9 +11,9 @@ export type AccountSyncState = {
 export type MailSyncProgress = {
   state: AccountSyncStage;
   discoveryComplete: boolean;
-  discoveredMessageCount: number;
-  processedMessageCount: number;
-  failedMessageCount: number;
+  discoveredThreadCount: number;
+  processedThreadCount: number;
+  failedThreadCount: number;
 };
 
 export type AccountSyncStatusEvent = {
@@ -57,10 +57,14 @@ export type InvookLabel = {
 
 export type LabelHistoryWindowDays = 7 | 30 | 90;
 
+export const LABEL_PREVIEW_STALE_ERROR =
+  "The label preview is stale. Run the preview again.";
+
 export type CreateInvookLabelRequest = {
   name: string;
   description: string;
   applyToPastDays?: LabelHistoryWindowDays | null;
+  previewReceiptId?: string;
 };
 
 export type UpdateInvookLabelRequest = Pick<
@@ -79,6 +83,8 @@ export type InvookLabelPreviewMatch = {
 };
 
 export type InvookLabelPreviewResponse = {
+  previewReceiptId: string | null;
+  expiresAt: string | null;
   scannedThreadCount: number;
   matches: InvookLabelPreviewMatch[];
 };
@@ -90,7 +96,7 @@ export type InvookLabelResponse = {
 export type CreateInvookLabelResponse = InvookLabelResponse & {
   historicalAnalysis: {
     windowDays: LabelHistoryWindowDays;
-    queuedThreadCount: number;
+    status: "queued";
   } | null;
 };
 
@@ -117,7 +123,7 @@ export type SetInvookLabelEnabledRequest = {
 export type SetInvookLabelEnabledResponse = InvookLabelResponse & {
   historicalAnalysis: {
     windowDays: LabelHistoryWindowDays;
-    queuedThreadCount: number;
+    status: "queued";
   } | null;
 };
 
@@ -260,10 +266,6 @@ export type MailboxThreadMessage = {
   subject: string;
   bodyText: string;
   bodyHtml: string | null;
-  rawMime: {
-    checksumSha256: string;
-    contentLength: number;
-  } | null;
   sentAt: string;
   attachments: MailboxAttachment[];
 };

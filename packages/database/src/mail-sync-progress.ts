@@ -2,9 +2,9 @@ import type { AccountSyncStage, MailSyncProgress } from "@invook/contracts";
 
 export interface StoredMailSyncProgress {
   discoveryComplete: boolean;
-  discoveredMessageCount: number;
-  processedMessageCount: number;
-  failedMessageCount: number;
+  discoveredThreadCount: number;
+  processedThreadCount: number;
+  failedThreadCount: number;
 }
 
 export function deriveMailSyncProgress(input: {
@@ -15,9 +15,9 @@ export function deriveMailSyncProgress(input: {
     state: input.state,
     discoveryComplete:
       input.state === "complete" || (input.run?.discoveryComplete ?? false),
-    discoveredMessageCount: input.run?.discoveredMessageCount ?? 0,
-    processedMessageCount: input.run?.processedMessageCount ?? 0,
-    failedMessageCount: input.run?.failedMessageCount ?? 0,
+    discoveredThreadCount: input.run?.discoveredThreadCount ?? 0,
+    processedThreadCount: input.run?.processedThreadCount ?? 0,
+    failedThreadCount: input.run?.failedThreadCount ?? 0,
   };
 }
 
@@ -25,26 +25,26 @@ const MAIL_SYNC_NOTIFICATION_INTERVAL = 100;
 
 export function hasMailSyncProgressAdvanced(input: {
   discoveryComplete: boolean;
-  discoveredMessageCount: number;
-  previousProcessedMessageCount: number;
-  processedMessageCount: number;
+  discoveredThreadCount: number;
+  previousProcessedThreadCount: number;
+  processedThreadCount: number;
 }): boolean {
-  if (input.discoveredMessageCount <= 0) return false;
+  if (input.discoveredThreadCount <= 0) return false;
 
   const previousInterval = Math.floor(
-    input.previousProcessedMessageCount / MAIL_SYNC_NOTIFICATION_INTERVAL,
+    input.previousProcessedThreadCount / MAIL_SYNC_NOTIFICATION_INTERVAL,
   );
   const interval = Math.floor(
-    input.processedMessageCount / MAIL_SYNC_NOTIFICATION_INTERVAL,
+    input.processedThreadCount / MAIL_SYNC_NOTIFICATION_INTERVAL,
   );
   if (interval > previousInterval) return true;
   if (!input.discoveryComplete) return false;
 
   const previousPercentage = Math.floor(
-    (input.previousProcessedMessageCount / input.discoveredMessageCount) * 100,
+    (input.previousProcessedThreadCount / input.discoveredThreadCount) * 100,
   );
   const percentage = Math.floor(
-    (input.processedMessageCount / input.discoveredMessageCount) * 100,
+    (input.processedThreadCount / input.discoveredThreadCount) * 100,
   );
   return percentage > previousPercentage;
 }

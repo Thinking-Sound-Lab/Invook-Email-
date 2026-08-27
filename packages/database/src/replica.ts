@@ -1020,26 +1020,21 @@ export async function listGmailObjectKeysForAccount(
   accountId: string,
   database: Database = getDatabase(),
 ) {
-  const [rawObjects, attachmentObjects] = await Promise.all([
-    database
-      .select({ key: messages.rawObjectKey })
-      .from(messages)
-      .where(and(eq(messages.accountId, accountId), isNotNull(messages.rawObjectKey))),
-    database
-      .select({ key: messageAttachments.objectKey })
-      .from(messageAttachments)
-      .where(
-        and(
-          eq(messageAttachments.accountId, accountId),
-          isNotNull(messageAttachments.objectKey),
-        ),
+  const attachmentObjects = await database
+    .select({ key: messageAttachments.objectKey })
+    .from(messageAttachments)
+    .where(
+      and(
+        eq(messageAttachments.accountId, accountId),
+        isNotNull(messageAttachments.objectKey),
       ),
-  ]);
+    );
   return Array.from(
-    new Set([
-      ...rawObjects.map((entry) => entry.key),
-      ...attachmentObjects.map((entry) => entry.key),
-    ].filter((key): key is string => Boolean(key))),
+    new Set(
+      attachmentObjects
+        .map((entry) => entry.key)
+        .filter((key): key is string => Boolean(key)),
+    ),
   );
 }
 
