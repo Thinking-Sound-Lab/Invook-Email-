@@ -23,6 +23,13 @@ import {
   composeDraftReducer,
   createComposeDraftState,
 } from "@/components/mail/compose-draft-state";
+import {
+  bindComposeSenderAccount,
+  createComposeSenderAccountState,
+  releaseComposeSenderAccount,
+  resolveComposeSenderAccountId,
+  selectComposeSenderAccount,
+} from "@/components/mail/compose-sender-account";
 import { SurfaceHeader } from "@/components/mail/surface-header";
 import {
   createGmailComposeDraft,
@@ -44,13 +51,20 @@ export function ComposeSurface() {
     accounts,
   );
   const scopedAccount = selectedMailboxAccount(accountSelection, accounts);
-  const [gmailAccountId, setGmailAccountId] = useState(scopedAccount?.id ?? "");
-  const account = accounts.find((candidate) => candidate.id === gmailAccountId) ?? null;
+  const [senderAccount, setSenderAccount] = useState(() =>
+    createComposeSenderAccountState(scopedAccount?.id ?? ""),
+  );
   const [state, dispatch] = useReducer(
     composeDraftReducer,
     undefined,
     () => createComposeDraftState(uuidv4()),
   );
+  const gmailAccountId = resolveComposeSenderAccountId({
+    state: senderAccount,
+    scopedAccountId: scopedAccount?.id ?? null,
+  });
+  const account =
+    accounts.find((candidate) => candidate.id === gmailAccountId) ?? null;
   const isSaving = state.status === "saving";
   const isSending = state.status === "sending";
   const isSent = state.status === "sent";
@@ -68,7 +82,17 @@ export function ComposeSurface() {
     field: "recipients" | "subject" | "body",
     value: string,
   ): void {
+    setSenderAccount((current) =>
+      releaseComposeSenderAccount(current, {
+        hasProviderDraft: Boolean(state.providerDraft),
+      }),
+    );
     dispatch({ type: "edit", field, value, idempotencyKey: uuidv4() });
+  }
+
+  function handleSenderAccountChange(accountId: string): void {
+    setSenderAccount(selectComposeSenderAccount(accountId));
+    dispatch({ type: "change_sender", idempotencyKey: uuidv4() });
   }
 
   async function handleSave(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -87,6 +111,7 @@ export function ComposeSurface() {
       return;
     }
 
+    setSenderAccount(bindComposeSenderAccount(account.id));
     dispatch({ type: "saving" });
     const request = {
       accountId: account.id,
@@ -156,7 +181,9 @@ export function ComposeSurface() {
               <select
                 id="compose-account"
                 value={gmailAccountId}
-                onChange={(event) => setGmailAccountId(event.target.value)}
+                onChange={(event) =>
+                  handleSenderAccountChange(event.target.value)
+                }
                 disabled={isLocked || Boolean(state.providerDraft)}
                 required
                 className="h-9 w-full rounded-md bg-transparent px-3 text-sm shadow-xs outline-none ring-1 ring-input focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
