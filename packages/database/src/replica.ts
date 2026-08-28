@@ -1038,6 +1038,53 @@ export async function listGmailObjectKeysForAccount(
   );
 }
 
+export async function listReferencedGmailObjectKeys(
+  input: { accountId: string; objectKeys: readonly string[] },
+  database: Database = getDatabase(),
+): Promise<string[]> {
+  const objectKeys = [
+    ...new Set(input.objectKeys.filter((objectKey) => objectKey.length > 0)),
+  ];
+  if (objectKeys.length === 0) return [];
+  const attachmentObjects = await database
+    .select({ objectKey: messageAttachments.objectKey })
+    .from(messageAttachments)
+    .where(
+      and(
+        eq(messageAttachments.accountId, input.accountId),
+        inArray(messageAttachments.objectKey, objectKeys),
+      ),
+    );
+  return Array.from(
+    new Set(
+      attachmentObjects
+        .map((entry) => entry.objectKey)
+        .filter((objectKey): objectKey is string => Boolean(objectKey)),
+    ),
+  );
+}
+
+export function selectUnreferencedGmailObjectKeys(input: {
+  objectKeys: readonly string[];
+  referencedObjectKeys: readonly string[];
+}): string[] {
+  const referencedObjectKeys = new Set(input.referencedObjectKeys);
+  const pendingObjectKeys: string[] = [];
+  const seenObjectKeys = new Set<string>();
+  for (const objectKey of input.objectKeys) {
+    if (
+      objectKey.length === 0 ||
+      referencedObjectKeys.has(objectKey) ||
+      seenObjectKeys.has(objectKey)
+    ) {
+      continue;
+    }
+    seenObjectKeys.add(objectKey);
+    pendingObjectKeys.push(objectKey);
+  }
+  return pendingObjectKeys;
+}
+
 export async function markGmailReplicaDeleting(
   input: { userId: string; accountId: string },
   database: Database = getDatabase(),
