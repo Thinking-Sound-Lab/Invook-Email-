@@ -28,6 +28,7 @@ export const countedGmailProviderLabelIds = Object.values(
 
 const outerThreadId = sql.raw('"threads"."id"');
 const outerThreadAccountId = sql.raw('"threads"."account_id"');
+const outerThreadUserId = sql.raw('"threads"."user_id"');
 
 export function inboxThreadCondition() {
   return sql<boolean>`exists (
@@ -55,12 +56,24 @@ export function visibleThreadCondition() {
 export function mailboxViewCondition(view: MailboxView) {
   if (view.startsWith("label:")) {
     const labelId = view.slice(6);
+    // One Invook label exists per connected account, so the view matches every
+    // account label the signed-in user owns under the selected label's name.
     return sql<boolean>`
       (${inboxThreadCondition()}) and exists (
         select 1 from ${threadLabelAssignments} assignment
+        inner join ${labels} assignment_label
+          on assignment_label.id = assignment.label_id
         where assignment.thread_id = ${outerThreadId}
           and assignment.account_id = ${outerThreadAccountId}
-          and assignment.label_id = ${labelId}::uuid
+          and assignment_label.account_id = ${outerThreadAccountId}
+          and assignment_label.kind = 'invook'
+          and assignment_label.normalized_name = (
+            select selected_label.normalized_name
+            from ${labels} selected_label
+            where selected_label.id = ${labelId}::uuid
+              and selected_label.user_id = ${outerThreadUserId}
+              and selected_label.kind = 'invook'
+          )
       )
     `;
   }

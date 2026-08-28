@@ -145,10 +145,16 @@ export function MailSidebar({
       ? requestedView
       : "all";
   const currentSearchParams = new URLSearchParams(searchParams.toString());
-  const labelGroups = accounts.flatMap((account) => {
-    if (accountSelection !== "all" && account.id !== accountSelection) return [];
-    return [{ account, labels: listSidebarLabels(accountLabels(shell, account.id)) }];
-  });
+  const currentLabelId = currentView.startsWith("label:")
+    ? currentView.slice("label:".length)
+    : null;
+  const sidebarLabels = listSidebarLabels(
+    accounts.flatMap((account) =>
+      accountSelection !== "all" && account.id !== accountSelection
+        ? []
+        : accountLabels(shell, account.id),
+    ),
+  );
   const hrefFor = (updates: Parameters<typeof createMailboxHref>[1]): string =>
     createMailboxHref(currentSearchParams, updates);
   const handleAccountHref = (account: "all" | string): string =>
@@ -217,32 +223,23 @@ export function MailSidebar({
             href={hrefFor({ surface: null, thread: null, view: "important" })}
             count={currentCounts?.views.important}
           />
-          {labelGroups.map(({ account, labels }) => (
-            <div key={account.id}>
-              {accountSelection === "all" && accounts.length > 1 && labels.length > 0 ? (
-                <p className="mb-1 mt-2 hidden truncate px-2.5 text-[10px] font-medium text-sidebar-foreground/35 lg:block">
-                  {account.email}
-                </p>
-              ) : null}
-              {labels.map((label) => {
-                const view = `label:${label.id}` as const;
-                return (
-                  <NavLink
-                    key={label.id}
-                    label={label.name}
-                    icon={AiMagicIcon}
-                    active={currentSurface === "mail" && currentView === view}
-                    href={hrefFor({
-                      account: account.id,
-                      surface: null,
-                      thread: null,
-                      view,
-                    })}
-                    count={sidebarCounts?.accounts[account.id]?.labels[label.id]}
-                  />
-                );
+          {sidebarLabels.map((label) => (
+            <NavLink
+              key={label.id}
+              label={label.name}
+              icon={AiMagicIcon}
+              active={
+                currentSurface === "mail" &&
+                currentLabelId !== null &&
+                label.labelIds.includes(currentLabelId)
+              }
+              href={hrefFor({
+                surface: null,
+                thread: null,
+                view: `label:${label.id}`,
               })}
-            </div>
+              count={currentCounts?.labels[label.id]}
+            />
           ))}
         </nav>
 

@@ -1,6 +1,6 @@
 import type {
-  InvookLabel,
   MailboxAccount,
+  MailboxAccountLabel,
   MailboxScopeSidebarCounts,
   MailboxShell,
   MailboxSidebarCounts,
@@ -34,7 +34,7 @@ export function selectedMailboxAccount(
 export function accountLabels(
   shell: Pick<MailboxShell, "accountLabels">,
   accountId: string,
-): InvookLabel[] {
+): MailboxAccountLabel[] {
   return (
     shell.accountLabels.find((entry) => entry.accountId === accountId)?.labels ?? []
   );

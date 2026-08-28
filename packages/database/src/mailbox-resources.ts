@@ -2,6 +2,7 @@ import type {
   InvookLabel,
   InvookThreadLabel,
   MailboxAccount,
+  MailboxAccountLabel,
   MailboxPagination,
   MailboxSelectedThread,
   MailboxSettings,
@@ -204,7 +205,7 @@ async function listInvookLabels(
   return rows.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-type AccountInvookLabel = InvookLabel & { accountId: string };
+type AccountInvookLabel = MailboxAccountLabel & { accountId: string };
 
 async function listInvookLabelsForAccounts(
   input: { userId: string; accountIds: string[] },
@@ -216,6 +217,7 @@ async function listInvookLabelsForAccounts(
       accountId: labels.accountId,
       id: labels.id,
       name: labels.name,
+      normalizedName: labels.normalizedName,
       description: labels.description,
       systemKey: labels.systemKey,
       definitionVersion: labels.definitionVersion,
@@ -334,7 +336,7 @@ export async function getMailboxShellData(
   database: Database = getDatabase(),
 ): Promise<{
   accounts: MailboxAccount[];
-  accountLabels: Array<{ accountId: string; labels: InvookLabel[] }>;
+  accountLabels: Array<{ accountId: string; labels: MailboxAccountLabel[] }>;
 } | null> {
   const accounts = await listMailboxAccountContexts(userId, database);
   if (accounts.length === 0) return null;
@@ -469,7 +471,21 @@ export async function getMailboxSidebarCounts(
     for (const view of Object.keys(all.views) as StaticMailboxView[]) {
       all.views[view] += counts.views[view];
     }
-    Object.assign(all.labels, counts.labels);
+  }
+  // Sibling labels share one stored normalized name across accounts, the same
+  // identity a label view matches, so the All scope reports the combined total
+  // under each account label id that carries that name.
+  const labelTotalsByName = new Map<string, number>();
+  for (const label of invookLabels) {
+    const accountCount =
+      countsByAccountId.get(label.accountId)?.labels[label.id] ?? 0;
+    labelTotalsByName.set(
+      label.normalizedName,
+      (labelTotalsByName.get(label.normalizedName) ?? 0) + accountCount,
+    );
+  }
+  for (const label of invookLabels) {
+    all.labels[label.id] = labelTotalsByName.get(label.normalizedName) ?? 0;
   }
   return {
     all,

@@ -55,6 +55,17 @@ export type InvookLabel = {
   isEnabled: boolean;
 };
 
+/**
+ * Invook labels are stored once per connected account, so the normalized name
+ * is the identity shared by the sibling labels that represent one user-facing
+ * label across accounts. Case folding stays locale-independent because the
+ * server persists this value while the browser recomputes it, and a
+ * locale-sensitive rule would split one label into separate identities.
+ */
+export function normalizeInvookLabelName(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 export type LabelHistoryWindowDays = 7 | 30 | 90;
 
 export const LABEL_PREVIEW_STALE_ERROR =
@@ -354,9 +365,18 @@ export type MailboxSidebarCounts = {
   accounts: Record<string, MailboxScopeSidebarCounts>;
 };
 
+export type MailboxAccountLabel = InvookLabel & {
+  /**
+   * Stored identity that a mailbox label view matches on, so a client merging
+   * sibling labels across accounts follows the server instead of deriving a
+   * competing identity from the display name.
+   */
+  normalizedName: string;
+};
+
 export type MailboxAccountLabels = {
   accountId: string;
-  labels: InvookLabel[];
+  labels: MailboxAccountLabel[];
 };
 
 export type MailboxShell = {
