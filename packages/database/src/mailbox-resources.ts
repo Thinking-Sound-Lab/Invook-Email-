@@ -2,6 +2,7 @@ import type {
   InvookLabel,
   InvookThreadLabel,
   MailboxAccount,
+  MailboxAccountLabel,
   MailboxPagination,
   MailboxSelectedThread,
   MailboxSettings,
@@ -204,10 +205,7 @@ async function listInvookLabels(
   return rows.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-type AccountInvookLabel = InvookLabel & {
-  accountId: string;
-  normalizedName: string;
-};
+type AccountInvookLabel = MailboxAccountLabel & { accountId: string };
 
 async function listInvookLabelsForAccounts(
   input: { userId: string; accountIds: string[] },
@@ -338,7 +336,7 @@ export async function getMailboxShellData(
   database: Database = getDatabase(),
 ): Promise<{
   accounts: MailboxAccount[];
-  accountLabels: Array<{ accountId: string; labels: InvookLabel[] }>;
+  accountLabels: Array<{ accountId: string; labels: MailboxAccountLabel[] }>;
 } | null> {
   const accounts = await listMailboxAccountContexts(userId, database);
   if (accounts.length === 0) return null;
@@ -352,10 +350,7 @@ export async function getMailboxShellData(
       accountId: account.id,
       labels: invookLabels
         .filter((label) => label.accountId === account.id)
-        .map(
-          ({ accountId: _accountId, normalizedName: _normalizedName, ...label }) =>
-            label,
-        ),
+        .map(({ accountId: _accountId, ...label }) => label),
     })),
   };
 }

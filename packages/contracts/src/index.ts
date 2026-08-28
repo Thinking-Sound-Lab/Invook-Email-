@@ -365,9 +365,18 @@ export type MailboxSidebarCounts = {
   accounts: Record<string, MailboxScopeSidebarCounts>;
 };
 
+export type MailboxAccountLabel = InvookLabel & {
+  /**
+   * Stored identity that a mailbox label view matches on, so a client merging
+   * sibling labels across accounts follows the server instead of deriving a
+   * competing identity from the display name.
+   */
+  normalizedName: string;
+};
+
 export type MailboxAccountLabels = {
   accountId: string;
-  labels: InvookLabel[];
+  labels: MailboxAccountLabel[];
 };
 
 export type MailboxShell = {
