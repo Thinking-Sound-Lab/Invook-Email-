@@ -9,6 +9,7 @@ import {
   beginGmailDraftWrite,
   completeGmailDraftWrite,
   enqueueGmailHistoryCatchup,
+  getGmailReplyContext,
   type BeginGmailDraftWriteResult,
   type GmailDraftWriteOperation,
   type GmailDraftWriteResult,
@@ -33,6 +34,13 @@ export class GmailDraftWritePendingError extends Error {
   }
 }
 
+export class GmailReplyContextUnavailableError extends Error {
+  constructor() {
+    super("Reply message is unavailable for this Gmail account.");
+    this.name = "GmailReplyContextUnavailableError";
+  }
+}
+
 export interface SaveComposeDraftInput {
   userId: string;
   access: GmailProviderAccess;
@@ -40,6 +48,7 @@ export interface SaveComposeDraftInput {
   idempotencyKey: string;
   fields: GmailComposeDraftFields;
   providerDraftId?: string;
+  replyToMessageId?: string;
 }
 
 export interface ComposeDraftDependencies {
@@ -51,6 +60,7 @@ export interface ComposeDraftDependencies {
   listDrafts: typeof listGmailDrafts;
   updateDraft: typeof updateGmailDraft;
   enqueueCatchup: typeof enqueueGmailHistoryCatchup;
+  getReplyContext: typeof getGmailReplyContext;
 }
 
 const defaultDependencies: ComposeDraftDependencies = {
@@ -62,6 +72,7 @@ const defaultDependencies: ComposeDraftDependencies = {
   listDrafts: listGmailDrafts,
   updateDraft: updateGmailDraft,
   enqueueCatchup: enqueueGmailHistoryCatchup,
+  getReplyContext: getGmailReplyContext,
 };
 
 function requestFingerprint(input: SaveComposeDraftInput): string {
@@ -73,6 +84,15 @@ function requestFingerprint(input: SaveComposeDraftInput): string {
         recipients: input.fields.recipients,
         subject: input.fields.subject,
         body: input.fields.body,
+        ...(input.fields.ccRecipients
+          ? { ccRecipients: input.fields.ccRecipients }
+          : {}),
+        ...(input.fields.bccRecipients
+          ? { bccRecipients: input.fields.bccRecipients }
+          : {}),
+        ...(input.replyToMessageId
+          ? { replyToMessageId: input.replyToMessageId }
+          : {}),
       }),
       "utf8",
     )
@@ -149,6 +169,16 @@ export async function saveComposeDraft(
   input: SaveComposeDraftInput,
   dependencies: ComposeDraftDependencies = defaultDependencies,
 ): Promise<GmailComposeDraftResponse> {
+  const replyContext = input.replyToMessageId
+    ? await dependencies.getReplyContext({
+        userId: input.userId,
+        accountId: input.access.accountId,
+        messageId: input.replyToMessageId,
+      })
+    : null;
+  if (input.replyToMessageId && !replyContext) {
+    throw new GmailReplyContextUnavailableError();
+  }
   const write = await dependencies.beginWrite({
     userId: input.userId,
     accountId: input.access.accountId,
@@ -157,7 +187,12 @@ export async function saveComposeDraft(
     requestFingerprint: requestFingerprint(input),
   });
   if (write.outcome === "complete") {
-    return completedResponse(input, write.operationId, write.result, dependencies);
+    return completedResponse(
+      input,
+      write.operationId,
+      write.result,
+      dependencies,
+    );
   }
   if (write.outcome === "pending") {
     return recoverPendingWrite(input, write, dependencies);
@@ -166,6 +201,9 @@ export async function saveComposeDraft(
   const raw = composePlainTextGmailMessage({
     accountEmail: input.access.email,
     ...input.fields,
+    ...(replyContext
+      ? { subject: replyContext.subject, replyTarget: replyContext }
+      : {}),
     messageId: operationMessageId(write.operationId),
   });
   if (!raw) {
@@ -181,15 +219,26 @@ export async function saveComposeDraft(
     let saved: GmailDraft;
     if (input.operation === "create") {
       hasStartedProviderWrite = true;
-      saved = await dependencies.createDraft(input.access.accessToken, { raw });
+      saved = await dependencies.createDraft(input.access.accessToken, {
+        raw,
+        ...(replyContext ? { threadId: replyContext.providerThreadId } : {}),
+      });
     } else {
       if (!input.providerDraftId) {
-        throw new Error("A provider draft ID is required to update a Gmail draft.");
+        throw new Error(
+          "A provider draft ID is required to update a Gmail draft.",
+        );
       }
       const current = await dependencies.getDraft(
         input.access.accessToken,
         input.providerDraftId,
       );
+      if (
+        replyContext &&
+        current.message.threadId !== replyContext.providerThreadId
+      ) {
+        throw new GmailReplyContextUnavailableError();
+      }
       hasStartedProviderWrite = true;
       saved = await dependencies.updateDraft(
         input.access.accessToken,
@@ -205,7 +254,8 @@ export async function saveComposeDraft(
     });
     return completedResponse(input, write.operationId, result, dependencies);
   } catch (error) {
-    const isKnownProviderRejection = error instanceof GmailApiError && error.status > 0;
+    const isKnownProviderRejection =
+      error instanceof GmailApiError && error.status > 0;
     if (!hasStartedProviderWrite || isKnownProviderRejection) {
       await dependencies.abandonWrite({
         operationId: write.operationId,

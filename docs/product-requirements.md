@@ -161,7 +161,9 @@ When the user requests a draft, the API builds context from:
 
 Unrelated contact memory is never supplied. The model returns the draft, the IDs of memories that materially affected it, and whether scheduling was relevant. Invook persists that provenance with the editable draft.
 
-The UI may explicitly save an AI reply as a Gmail Draft; that creates a separate provider resource and keeps the AI draft/evidence unchanged. Saving must not imply that a message was sent.
+The API supports explicitly saving an AI reply as a Gmail Draft; that creates a separate provider resource and keeps the AI draft/evidence unchanged. Saving must not imply that a message was sent.
+
+Each thread exposes Reply, Forward, and Draft with AI chips. The writing card opens only after an action is selected. Reply addresses the original Reply-To (or sender), retains the owned message's subject and threading headers, and sends from that thread's account. Forward starts a new message with an empty recipient field and the original text; original attachments are not included and the UI states that limitation. To, Cc, and Bcc are editable. The inline Send action first saves any AI edits as feedback, creates a Gmail draft, and sends that exact provider draft using separate stable save/send idempotency keys. An unresolved send locks the editor and retries the same attempt. Send later and Remind me are visible but inactive.
 
 New-message Compose accepts explicit recipient email addresses, subject, and plain-text body, and saves or updates a Gmail Draft. Gmail is written first; Invook then schedules stored-cursor history catch-up so the provider-owned draft converges into the local replica. After a successful save, Compose exposes a separate confirmation step that sends that exact Gmail Draft only after the user clicks **Send now**. The send uses a durable idempotency key, does not repeat an ambiguous or completed provider write, and schedules stored-cursor history catch-up for the sent message. Compose never sends autonomously.
 

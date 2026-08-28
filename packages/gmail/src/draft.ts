@@ -8,7 +8,9 @@ function safeHeaderValue(value: string): string {
 }
 
 function headerValue(headers: HeaderLine[], name: string): string | null {
-  const header = headers.find((candidate) => candidate.key.toLowerCase() === name);
+  const header = headers.find(
+    (candidate) => candidate.key.toLowerCase() === name,
+  );
   if (!header) return null;
   const separator = header.line.indexOf(":");
   const value = separator >= 0 ? header.line.slice(separator + 1) : header.line;
@@ -31,12 +33,29 @@ function subjectHeaderValue(value: string): string {
     : `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
 }
 
+function replyHeaders(headerLines: HeaderLine[]): string[] {
+  const messageId = headerValue(headerLines, "message-id");
+  const previousReferences = headerValue(headerLines, "references");
+  const references = previousReferences
+    ? messageId && !previousReferences.split(/\s+/).includes(messageId)
+      ? `${previousReferences} ${messageId}`
+      : previousReferences
+    : messageId;
+  return [
+    ...(messageId ? [`In-Reply-To: ${messageId}`] : []),
+    ...(references ? [`References: ${references}`] : []),
+  ];
+}
+
 export function composePlainTextGmailMessage(input: {
   accountEmail: string;
   recipients: string[];
+  ccRecipients?: string[];
+  bccRecipients?: string[];
   subject: string;
   body: string;
   messageId: string;
+  replyTarget?: { headerLines: HeaderLine[] };
 }): Buffer | null {
   const sender = safeHeaderValue(input.accountEmail);
   const recipients = input.recipients
@@ -48,8 +67,17 @@ export function composePlainTextGmailMessage(input: {
   const headers = [
     `From: ${sender}`,
     `To: ${recipients.join(", ")}`,
-    `Subject: ${subjectHeaderValue(input.subject)}`,
+    ...(["ccRecipients", "bccRecipients"] as const).flatMap((field) => {
+      const addresses = input[field]?.map(safeHeaderValue).filter(Boolean);
+      return addresses?.length
+        ? [
+            `${field === "ccRecipients" ? "Cc" : "Bcc"}: ${addresses.join(", ")}`,
+          ]
+        : [];
+    }),
+    `Subject: ${subjectHeaderValue(input.replyTarget ? replySubject(input.subject) : input.subject)}`,
     `Message-ID: <${rawMessageId}>`,
+    ...(input.replyTarget ? replyHeaders(input.replyTarget.headerLines) : []),
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 8bit",
@@ -77,27 +105,16 @@ export function composePlainTextGmailReply(input: {
   const sender = safeHeaderValue(input.accountEmail);
   if (!recipient || !sender) return null;
 
-  const messageId = headerValue(input.replyTarget.headerLines, "message-id");
-  const previousReferences = headerValue(
-    input.replyTarget.headerLines,
-    "references",
-  );
-  const references = previousReferences
-    ? messageId && !previousReferences.includes(messageId)
-      ? `${previousReferences} ${messageId}`
-      : previousReferences
-    : messageId;
   const headers = [
     `From: ${sender}`,
     `To: ${recipient}`,
-    `Subject: ${replySubject(input.subject)}`,
+    `Subject: ${subjectHeaderValue(replySubject(input.subject))}`,
     ...(input.messageId
       ? [
           `Message-ID: <${safeHeaderValue(input.messageId).replace(/^<|>$/g, "")}>`,
         ]
       : []),
-    ...(messageId ? [`In-Reply-To: ${messageId}`] : []),
-    ...(references ? [`References: ${references}`] : []),
+    ...replyHeaders(input.replyTarget.headerLines),
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 8bit",

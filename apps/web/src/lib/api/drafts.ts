@@ -36,7 +36,3 @@ export async function updateReplyDraft({
   const response = await axios.patch<AiReplyDraftResponse>(`/v1/drafts/${draftId}`, request);
   return response.data.draft;
 }
-
-export async function saveReplyDraftToGmail(draftId: string): Promise<void> {
-  await axios.post(`/v1/drafts/${draftId}/save-to-gmail`);
-}

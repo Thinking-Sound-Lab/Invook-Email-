@@ -1,8 +1,4 @@
-import {
-  ArrowLeft02Icon,
-  Download01Icon,
-  MailReply01Icon,
-} from "@hugeicons/core-free-icons";
+import { ArrowLeft02Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { InvookLabel } from "@invook/contracts";
 import Link from "next/link";
@@ -17,9 +13,9 @@ import {
   formatMailText,
   initials,
 } from "./mail-format";
-import { DraftComposer } from "./draft-composer";
+import { ThreadComposer } from "./thread-composer";
 import { EmailHtmlContent } from "./email-html-content";
-import { buildEmailHtmlContent } from "./email-html-sanitizer";
+import { buildEmailHtmlContent, buildEmailPlainText } from "./email-html-sanitizer";
 import { LocalMailDate } from "./local-mail-date";
 import { MessageRecipientDetails } from "./message-recipient-details";
 import { MessageStarButton } from "./message-star-button";
@@ -52,6 +48,12 @@ export async function ThreadReader({
     (label) => label.providerLabelId === "UNREAD",
   );
   const latestMessage = thread.messages.at(-1);
+  const composeMessage = [...thread.messages]
+    .reverse()
+    .find(
+      (message) =>
+        !message.gmailLabels.some((label) => label.providerLabelId === "DRAFT"),
+    );
   const isLatestMessageStarred = Boolean(
     latestMessage?.gmailLabels.some(
       (label) => label.providerLabelId === "STARRED",
@@ -108,7 +110,8 @@ export async function ThreadReader({
             {formatMailText(thread.subject) || "(No subject)"}
           </h1>
           <p className="mt-1 text-xs text-muted-foreground">
-            {thread.messageCount} {thread.messageCount === 1 ? "message" : "messages"}
+            {thread.messageCount}{" "}
+            {thread.messageCount === 1 ? "message" : "messages"}
           </p>
 
           <div className="mt-7 space-y-14">
@@ -150,16 +153,6 @@ export async function ThreadReader({
                         </div>
 
                         <div className="flex shrink-0 items-center gap-1 sm:gap-2">
-                          <Button
-                            asChild
-                            variant="ghost"
-                            size="icon-xs"
-                            className="text-muted-foreground"
-                          >
-                            <a href="#reply-draft" aria-label="Reply to this thread">
-                              <HugeiconsIcon icon={MailReply01Icon} size={14} />
-                            </a>
-                          </Button>
                           <LocalMailDate
                             className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground sm:text-xs"
                             value={message.sentAt}
@@ -198,9 +191,13 @@ export async function ThreadReader({
                                 href={`/v1/attachments/${encodeURIComponent(attachment.id)}/download`}
                                 download
                               >
-                                <HugeiconsIcon icon={Download01Icon} size={15} />
+                                <HugeiconsIcon
+                                  icon={Download01Icon}
+                                  size={15}
+                                />
                                 <span className="truncate">
-                                  {formatMailText(attachment.filename) || "Attachment"}
+                                  {formatMailText(attachment.filename) ||
+                                    "Attachment"}
                                 </span>
                               </a>
                             </Button>
@@ -214,13 +211,28 @@ export async function ThreadReader({
             })}
           </div>
 
-          <div id="reply-draft" className="scroll-mt-6">
-            <DraftComposer
-              key={thread.id}
-              threadId={thread.id}
-              initialDraft={thread.aiReplyDraft}
-            />
-          </div>
+          <ThreadComposer
+            key={thread.id}
+            threadId={thread.id}
+            accountId={thread.accountId}
+            accountEmail={thread.accountEmail}
+            message={
+              composeMessage
+                ? {
+                    id: composeMessage.id,
+                    direction: composeMessage.direction,
+                    sender: composeMessage.sender,
+                    recipients: composeMessage.recipients,
+                    headers: composeMessage.headers,
+                    subject: composeMessage.subject,
+                bodyText: composeMessage.bodyText || (composeMessage.bodyHtml ? buildEmailPlainText(composeMessage.bodyHtml) : ""),
+                    sentAt: composeMessage.sentAt,
+                    attachmentCount: composeMessage.attachments.length,
+                  }
+                : null
+            }
+            initialDraft={thread.aiReplyDraft}
+          />
         </div>
       </ScrollArea>
     </section>

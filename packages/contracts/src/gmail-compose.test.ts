@@ -70,3 +70,51 @@ test("compose validation preserves valid user-authored subject and body text", (
     },
   });
 });
+
+test("Cc and Bcc share validation, deduplication, and total recipient limits", () => {
+  const fields = {
+    recipients: ["to@example.com"],
+    subject: "Subject",
+    body: "Body",
+  };
+  assert.deepEqual(
+    validateGmailComposeDraftFields({
+      ...fields,
+      ccRecipients: [" cc@example.com "],
+      bccRecipients: ["private@example.com"],
+    }),
+    {
+      valid: true,
+      fields: {
+        ...fields,
+        ccRecipients: ["cc@example.com"],
+        bccRecipients: ["private@example.com"],
+      },
+    },
+  );
+  for (const field of ["ccRecipients", "bccRecipients"] as const) {
+    assert.equal(
+      validateGmailComposeDraftFields({
+        ...fields,
+        [field]: ["TO@example.com"],
+      }).valid,
+      false,
+    );
+    const invalid = validateGmailComposeDraftFields({
+      ...fields,
+      [field]: ["bad\r\nBcc: address"],
+    });
+    assert.equal(invalid.valid, false);
+    if (!invalid.valid) assert.equal(invalid.error.field, field);
+    assert.equal(
+      validateGmailComposeDraftFields({
+        ...fields,
+        [field]: Array.from(
+          { length: 50 },
+          (_, index) => `person${index}@example.com`,
+        ),
+      }).valid,
+      false,
+    );
+  }
+});

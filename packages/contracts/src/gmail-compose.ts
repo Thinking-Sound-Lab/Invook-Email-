@@ -4,12 +4,14 @@ export const GMAIL_COMPOSE_MAX_BODY_LENGTH = 10_000;
 
 export type GmailComposeDraftFields = {
   recipients: string[];
+  ccRecipients?: string[];
+  bccRecipients?: string[];
   subject: string;
   body: string;
 };
 
 export type GmailComposeDraftValidationError = {
-  field: "recipients" | "subject" | "body";
+  field: "recipients" | "ccRecipients" | "bccRecipients" | "subject" | "body";
   message: string;
 };
 
@@ -20,6 +22,7 @@ export type GmailComposeDraftValidationResult =
 export type CreateGmailComposeDraftRequest = GmailComposeDraftFields & {
   accountId: string;
   idempotencyKey: string;
+  replyToMessageId?: string;
 };
 
 export type UpdateGmailComposeDraftRequest = CreateGmailComposeDraftRequest;
@@ -74,7 +77,12 @@ export function validateGmailComposeDraftFields(
       },
     };
   }
-  if (input.recipients.length > GMAIL_COMPOSE_MAX_RECIPIENTS) {
+  const allRecipients = [
+    ...input.recipients,
+    ...(input.ccRecipients ?? []),
+    ...(input.bccRecipients ?? []),
+  ];
+  if (allRecipients.length > GMAIL_COMPOSE_MAX_RECIPIENTS) {
     return {
       valid: false,
       error: {
@@ -84,28 +92,38 @@ export function validateGmailComposeDraftFields(
     };
   }
 
-  const normalizedRecipients = input.recipients.map((recipient) => recipient.trim());
-  if (
-    normalizedRecipients.some(
-      (recipient) =>
-        recipient.length > 254 ||
-        HEADER_CONTROL_PATTERN.test(recipient) ||
-        !EMAIL_ADDRESS_PATTERN.test(recipient),
-    )
-  ) {
-    return {
-      valid: false,
-      error: {
-        field: "recipients",
-        message: "Enter valid email addresses separated by commas.",
-      },
-    };
+  const normalizedRecipients = input.recipients.map((recipient) =>
+    recipient.trim(),
+  );
+  for (const field of [
+    "recipients",
+    "ccRecipients",
+    "bccRecipients",
+  ] as const) {
+    if (
+      (input[field] ?? []).some(
+        (recipient) =>
+          recipient.length > 254 ||
+          HEADER_CONTROL_PATTERN.test(recipient) ||
+          !EMAIL_ADDRESS_PATTERN.test(recipient.trim()),
+      )
+    ) {
+      return {
+        valid: false,
+        error: {
+          field,
+          message: "Enter valid email addresses separated by commas.",
+        },
+      };
+    }
   }
 
   const uniqueRecipients = new Set(
-    normalizedRecipients.map((recipient) => recipient.toLocaleLowerCase("en-US")),
+    allRecipients.map((recipient) =>
+      recipient.trim().toLocaleLowerCase("en-US"),
+    ),
   );
-  if (uniqueRecipients.size !== normalizedRecipients.length) {
+  if (uniqueRecipients.size !== allRecipients.length) {
     return {
       valid: false,
       error: {
@@ -148,6 +166,20 @@ export function validateGmailComposeDraftFields(
     valid: true,
     fields: {
       recipients: normalizedRecipients,
+      ...(input.ccRecipients !== undefined
+        ? {
+            ccRecipients: input.ccRecipients.map((recipient) =>
+              recipient.trim(),
+            ),
+          }
+        : {}),
+      ...(input.bccRecipients !== undefined
+        ? {
+            bccRecipients: input.bccRecipients.map((recipient) =>
+              recipient.trim(),
+            ),
+          }
+        : {}),
       subject: input.subject,
       body: input.body,
     },

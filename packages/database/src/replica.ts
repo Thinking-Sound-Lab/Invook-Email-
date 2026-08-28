@@ -141,6 +141,46 @@ export async function getGmailThreadMutationContext(
   return thread ?? null;
 }
 
+export interface GmailReplyContext {
+  providerThreadId: string;
+  subject: string;
+  headerLines: { key: string; line: string }[];
+}
+
+export async function getGmailReplyContext(
+  input: { userId: string; accountId: string; messageId: string },
+  database: Database = getDatabase(),
+): Promise<GmailReplyContext | null> {
+  const [message] = await database
+    .select({
+      providerThreadId: threads.providerThreadId,
+      subject: messages.subject,
+      headerLines: messages.headerLines,
+    })
+    .from(messages)
+    .innerJoin(
+      threads,
+      and(
+        eq(threads.id, messages.threadId),
+        eq(threads.accountId, messages.accountId),
+        eq(threads.userId, messages.userId),
+      ),
+    )
+    .innerJoin(connectedAccounts, eq(connectedAccounts.id, messages.accountId))
+    .where(
+      and(
+        eq(messages.id, input.messageId),
+        eq(messages.userId, input.userId),
+        eq(messages.accountId, input.accountId),
+        eq(connectedAccounts.userId, input.userId),
+        eq(connectedAccounts.status, "connected"),
+        visibleThreadCondition(),
+      ),
+    )
+    .limit(1);
+  return message ?? null;
+}
+
 export async function getGmailDraftResourceForUser(
   input: { userId: string; gmailDraftId: string },
   database: Database = getDatabase(),

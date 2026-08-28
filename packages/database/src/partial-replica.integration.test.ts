@@ -19,6 +19,7 @@ import {
   enqueueGmailHistoryCatchup,
   getAiReplyDraftForGmailSave,
   getGmailMessageMutationContext,
+  getGmailReplyContext,
   getGmailProviderWriteContext,
   getGmailProviderWriteContextForAccount,
   getGmailThreadMutationContext,
@@ -615,6 +616,21 @@ test(
       );
       assert.equal(message?.accountId, accountId);
       assert.equal(message?.providerMessageId, `provider-message-${messageId}`);
+      const replyContext = await getGmailReplyContext(
+        { userId, accountId, messageId },
+        database,
+      );
+      assert.equal(
+        replyContext?.providerThreadId,
+        `provider-thread-${threadId}`,
+      );
+      for (const inaccessible of [
+        { userId: otherUserId, accountId, messageId },
+        { userId, accountId: uuidv4(), messageId },
+        { userId, accountId, messageId: uuidv4() },
+      ]) {
+        assert.equal(await getGmailReplyContext(inaccessible, database), null);
+      }
       assert.equal(
         await getGmailMessageMutationContext(
           { userId: otherUserId, messageId },
