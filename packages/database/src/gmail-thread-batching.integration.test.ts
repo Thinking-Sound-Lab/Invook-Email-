@@ -12,7 +12,9 @@ import {
   connectedAccounts,
   gmailReplicaStates,
   gmailSyncItems,
+  labels,
   mailSyncRuns,
+  messageLabels,
   messages,
   profiles,
   temporalCommands,
@@ -25,7 +27,10 @@ import {
   isMailSyncThreadComplete,
   recordMailSyncPage,
 } from "./workflows";
-import { upsertMailboxThreadMessages } from "./repositories";
+import {
+  upsertMailboxMessage,
+  upsertMailboxThreadMessages,
+} from "./repositories";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -304,6 +309,125 @@ test(
         .from(gmailSyncItems)
         .where(eq(gmailSyncItems.runId, runId));
       assert.equal(checkpoint?.status, "running");
+    } finally {
+      await database.delete(profiles).where(eq(profiles.id, userId));
+      await client.end();
+    }
+  },
+);
+
+test(
+  "a stale thread-batch snapshot does not overwrite a newer history apply",
+  { skip: !testDatabaseUrl },
+  async () => {
+    if (!testDatabaseUrl) return;
+    const client = postgres(testDatabaseUrl, { max: 1, prepare: false });
+    const database = drizzle(client, { schema });
+    const userId = uuidv4();
+    const accountId = uuidv4();
+    const runId = uuidv4();
+    const providerThreadId = `provider-thread-${uuidv4()}`;
+    const providerMessageId = `provider-message-${uuidv4()}`;
+    const sentAt = new Date("2026-08-28T08:00:00.000Z");
+    const message = (
+      providerHistoryId: string,
+      gmailLabels: Array<{ providerLabelId: string; name: string }>,
+    ): IndexedMessage => ({
+      userId,
+      accountId,
+      providerThreadId,
+      providerMessageId,
+      subject: "Live archive",
+      snippet: "Archived during ingest",
+      participants: ["sender@example.test"],
+      gmailLabels,
+      providerHistoryId,
+      internalDate: sentAt,
+      sizeEstimate: 128,
+      headerLines: [],
+      sentAt,
+      direction: "incoming" as const,
+      sender: { raw: "sender@example.test", email: "sender@example.test" },
+      recipients: [`${accountId}@example.com`],
+      bodyText: "Archived during ingest",
+      bodyHtml: null,
+      isMemoryEligible: false,
+      ingestionMode: "initial" as const,
+      memoryContactEmails: ["sender@example.test"],
+      attachments: [],
+    });
+    try {
+      await database.insert(profiles).values({
+        id: userId,
+        displayName: "Stale snapshot test",
+        email: `${userId}@example.test`,
+      });
+      await database.insert(connectedAccounts).values({
+        id: accountId,
+        userId,
+        providerAccountId: `provider-${accountId}`,
+        email: `${accountId}@example.com`,
+        memoryAcknowledgedAt: sentAt,
+      });
+      await database.insert(mailSyncRuns).values({
+        id: runId,
+        userId,
+        accountId,
+        status: "running",
+        startingHistoryCursor: "100",
+        idempotencyKey: `stale-snapshot-test:${runId}`,
+      });
+      await database.insert(gmailSyncItems).values({
+        runId,
+        providerThreadId,
+        status: "running",
+      });
+
+      await upsertMailboxMessage(
+        message("105", [{ providerLabelId: "SENT", name: "Sent" }]),
+        database,
+      );
+      const staleWrite = await upsertMailboxThreadMessages(
+        {
+          messages: [
+            message("100", [{ providerLabelId: "INBOX", name: "Inbox" }]),
+          ],
+          activeRunId: runId,
+        },
+        database,
+      );
+      assert.equal(staleWrite.changed, false);
+
+      const [storedMessage] = await database
+        .select({
+          id: messages.id,
+          providerHistoryId: messages.providerHistoryId,
+        })
+        .from(messages)
+        .where(eq(messages.accountId, accountId));
+      assert.ok(storedMessage);
+      assert.equal(storedMessage.providerHistoryId, "105");
+      const storedLabelIds = (
+        await database
+          .select({ providerLabelId: labels.providerLabelId })
+          .from(messageLabels)
+          .innerJoin(labels, eq(labels.id, messageLabels.labelId))
+          .where(eq(messageLabels.messageId, storedMessage.id))
+      )
+        .map((row) => row.providerLabelId)
+        .sort();
+      assert.deepEqual(storedLabelIds, ["SENT"]);
+
+      const newerWrite = await upsertMailboxMessage(
+        message("110", [{ providerLabelId: "INBOX", name: "Inbox" }]),
+        database,
+      );
+      assert.equal(newerWrite.changed, true);
+      const [updatedMessage] = await database
+        .select({ providerHistoryId: messages.providerHistoryId })
+        .from(messages)
+        .where(eq(messages.id, storedMessage.id));
+      assert.equal(updatedMessage?.providerHistoryId, "110");
     } finally {
       await database.delete(profiles).where(eq(profiles.id, userId));
       await client.end();
