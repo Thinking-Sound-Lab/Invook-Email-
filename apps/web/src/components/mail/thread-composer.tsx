@@ -14,7 +14,7 @@ import {
   GMAIL_COMPOSE_MAX_SUBJECT_LENGTH,
   type AiReplyDraft,
 } from "@invook/contracts";
-import { useId, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useThreadComposer } from "@/hooks/use-thread-composer";
 
 import { useMailShell } from "./mail-shell-provider";
+import { QuotedTextToggle } from "./quoted-text-toggle";
 import type {
   ThreadComposeMessage,
   ThreadComposeMode,
@@ -33,6 +34,62 @@ export interface ThreadComposerProps {
   accountEmail: string;
   message: ThreadComposeMessage | null;
   initialDraft: AiReplyDraft | null;
+}
+
+interface RecipientRowProps {
+  id: string;
+  label: "To" | "Cc" | "Bcc";
+  value: string;
+  placeholder: string;
+  isDisabled: boolean;
+  autoFocus?: boolean;
+  trailing?: ReactNode;
+  onChange: (value: string) => void;
+}
+
+function RecipientRow({
+  id,
+  label,
+  value,
+  placeholder,
+  isDisabled,
+  autoFocus,
+  trailing,
+  onChange,
+}: RecipientRowProps) {
+  return (
+    <div className="flex min-h-10 items-center gap-3 px-4 sm:px-5">
+      <label
+        htmlFor={id}
+        className="w-8 shrink-0 text-xs text-muted-foreground"
+      >
+        {label}
+      </label>
+      <Input
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        disabled={isDisabled}
+        autoFocus={autoFocus}
+        autoComplete="off"
+        className="min-w-0 flex-1 border-0 px-0 text-sm shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
+      />
+      {value && !isDisabled ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="rounded-md text-muted-foreground"
+          aria-label={`Clear ${label} recipients`}
+          onClick={() => onChange("")}
+        >
+          <HugeiconsIcon icon={Cancel01Icon} size={12} />
+        </Button>
+      ) : null}
+      {trailing}
+    </div>
+  );
 }
 
 export function ThreadComposer({
@@ -47,6 +104,7 @@ export function ThreadComposer({
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [isCcOpen, setIsCcOpen] = useState(false);
+  const [isForwardQuoteExpanded, setIsForwardQuoteExpanded] = useState(false);
   const [instruction, setInstruction] = useState("");
   const composer = useThreadComposer({
     threadId,
@@ -70,7 +128,10 @@ export function ThreadComposer({
     options: { withAi?: boolean } = {},
   ): void {
     if (!composer.open(mode, options)) return;
-    if (session?.mode !== mode) setIsCcOpen(false);
+    if (session?.mode !== mode) {
+      setIsCcOpen(false);
+      setIsForwardQuoteExpanded(false);
+    }
     setIsAiOpen(Boolean(options.withAi));
     bodyRef.current?.focus();
   }
@@ -134,99 +195,72 @@ export function ThreadComposer({
             void composer.send();
           }}
         >
-          <div className="flex min-h-11 items-center gap-3 border-b border-border/50 px-4 sm:px-5">
-            <label
-              htmlFor={`${formId}-to`}
-              className="text-xs text-muted-foreground"
-            >
-              To
-            </label>
-            <Input
+          <div className="border-b border-border/50 py-0.5">
+            <RecipientRow
               id={`${formId}-to`}
+              label="To"
               value={session.recipients}
-              onChange={(event) =>
-                composer.edit("recipients", event.target.value)
-              }
-              placeholder="Recipients"
-              disabled={isLocked}
+              onChange={(value) => composer.edit("recipients", value)}
+              placeholder="Add recipient"
+              isDisabled={isLocked}
               autoFocus={session.mode === "forward"}
-              autoComplete="off"
-              className="min-w-0 flex-1 border-0 px-0 text-sm shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
-            />
-            {session.recipients && !isLocked ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                className="rounded-md text-muted-foreground"
-                aria-label="Clear recipients"
-                onClick={() => composer.edit("recipients", "")}
-              >
-                <HugeiconsIcon icon={Cancel01Icon} size={12} />
-              </Button>
-            ) : null}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="rounded-md font-normal text-muted-foreground"
-              onClick={() => setIsCcOpen(!isCcOpen)}
-              aria-expanded={isCcOpen}
-              disabled={isLocked}
-            >
-              Cc/Bcc
-            </Button>
-          </div>
-          {isCcOpen ? (
-            <div className="space-y-1 px-4 pt-2 sm:px-5">
-              {(["ccRecipients", "bccRecipients"] as const).map((field) => (
-                <div key={field} className="flex items-center gap-3">
-                  <label
-                    htmlFor={`${formId}-${field}`}
-                    className="w-6 text-xs text-muted-foreground"
-                  >
-                    {field === "ccRecipients" ? "Cc" : "Bcc"}
-                  </label>
-                  <Input
-                    id={`${formId}-${field}`}
-                    value={session[field]}
-                    onChange={(event) =>
-                      composer.edit(field, event.target.value)
-                    }
+              trailing={
+                !isCcOpen ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="rounded-md font-normal text-muted-foreground"
+                    onClick={() => setIsCcOpen(true)}
+                    aria-expanded={false}
                     disabled={isLocked}
-                    autoComplete="off"
-                    className="border-0 px-0 text-sm shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
-                  />
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 pt-3 text-[11px] text-muted-foreground sm:px-5">
-            <span>From {accountEmail}</span>
-            {session.mode === "reply" ? (
-              <span className="truncate">{session.subject}</span>
+                  >
+                    Cc/Bcc
+                  </Button>
+                ) : null
+              }
+            />
+            {isCcOpen ? (
+              <>
+                <RecipientRow
+                  id={`${formId}-ccRecipients`}
+                  label="Cc"
+                  value={session.ccRecipients}
+                  onChange={(value) => composer.edit("ccRecipients", value)}
+                  placeholder="Add recipient"
+                  isDisabled={isLocked}
+                />
+                <RecipientRow
+                  id={`${formId}-bccRecipients`}
+                  label="Bcc"
+                  value={session.bccRecipients}
+                  onChange={(value) => composer.edit("bccRecipients", value)}
+                  placeholder="Add recipient"
+                  isDisabled={isLocked}
+                />
+              </>
+            ) : null}
+            {session.mode === "forward" ? (
+              <div className="flex min-h-10 items-center px-4 sm:px-5">
+                <label
+                  htmlFor={`${formId}-subject`}
+                  className="sr-only"
+                >
+                  Subject
+                </label>
+                <Input
+                  id={`${formId}-subject`}
+                  value={session.subject}
+                  onChange={(event) =>
+                    composer.edit("subject", event.target.value)
+                  }
+                  disabled={isLocked}
+                  maxLength={GMAIL_COMPOSE_MAX_SUBJECT_LENGTH}
+                  className="min-w-0 flex-1 border-0 px-0 text-sm shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
+                />
+              </div>
             ) : null}
           </div>
-          {session.mode === "forward" ? (
-            <div className="flex items-center gap-3 px-4 pt-2 sm:px-5">
-              <label
-                htmlFor={`${formId}-subject`}
-                className="text-xs text-muted-foreground"
-              >
-                Subject
-              </label>
-              <Input
-                id={`${formId}-subject`}
-                value={session.subject}
-                onChange={(event) =>
-                  composer.edit("subject", event.target.value)
-                }
-                disabled={isLocked}
-                maxLength={GMAIL_COMPOSE_MAX_SUBJECT_LENGTH}
-                className="border-0 px-0 text-sm shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
-              />
-            </div>
-          ) : null}
           {isAiOpen && session.mode === "reply" ? (
             <div className="m-4 flex flex-wrap items-center gap-2 rounded-lg bg-background/60 p-2 sm:mx-5">
               <Input
@@ -261,6 +295,27 @@ export function ThreadComposer({
             autoFocus={session.mode === "reply"}
             className="min-h-48 resize-y border-0 bg-transparent px-4 py-4 text-sm leading-6 shadow-none focus-visible:ring-0 md:text-sm sm:px-5 dark:bg-transparent"
           />
+          {session.forwardedMessageText ? (
+            <div className="px-4 pb-4 sm:px-5">
+              <QuotedTextToggle
+                controls={`${formId}-forwarded-message`}
+                isExpanded={isForwardQuoteExpanded}
+                onToggle={() =>
+                  setIsForwardQuoteExpanded((value) => !value)
+                }
+              />
+              {isForwardQuoteExpanded ? (
+                <div
+                  id={`${formId}-forwarded-message`}
+                  role="region"
+                  aria-label="Forwarded message"
+                  className="mt-4 whitespace-pre-wrap break-words border-l border-border/60 pl-4 text-sm leading-6 text-foreground/68"
+                >
+                  {session.forwardedMessageText}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {session.mode === "forward" && session.message.attachmentCount > 0 ? (
             <p className="px-5 pb-3 text-xs text-muted-foreground">
               Original attachments are not included in this forward.

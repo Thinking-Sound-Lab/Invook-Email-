@@ -112,7 +112,9 @@ async function renderComposer(
 
 function button(label: string): HTMLButtonElement {
   const found = [...document.querySelectorAll("button")].find(
-    (candidate) => candidate.textContent?.trim() === label,
+    (candidate) =>
+      candidate.textContent?.trim() === label ||
+      candidate.getAttribute("aria-label") === label,
   );
   assert.ok(found, `Missing button: ${label}`);
   return found;
@@ -180,10 +182,35 @@ test("only the three action chips appear until Reply or Forward is selected", as
     document.querySelector<HTMLInputElement>('input[id$="-to"]')?.value,
     "",
   );
+  assert.equal(document.querySelector("textarea")?.value, "");
+  assert.equal(
+    document.querySelector('[aria-label="Forwarded message"]'),
+    null,
+  );
+  assert.doesNotMatch(
+    document.querySelector("form")?.textContent ?? "",
+    /From owner@example\.com/,
+  );
+  await click("Show quoted text");
   assert.match(
-    document.querySelector("textarea")?.value ?? "",
+    document.querySelector('[aria-label="Forwarded message"]')?.textContent ??
+      "",
     /Original message/,
   );
+  assert.ok(button("Hide quoted text"));
+  await click("Cc/Bcc");
+  for (const field of ["ccRecipients", "bccRecipients"] as const) {
+    const input = document.querySelector<HTMLInputElement>(
+      `input[id$="-${field}"]`,
+    );
+    assert.ok(input);
+    assert.equal(input.placeholder, "Add recipient");
+    assert.equal(
+      document.querySelector(`label[for="${input.id}"]`)?.textContent?.trim(),
+      field === "ccRecipients" ? "Cc" : "Bcc",
+    );
+  }
+  assert.ok(document.querySelector('label[for$="-subject"]'));
 });
 
 test("manual edits survive server refreshes and Send submits the current text once", async () => {
@@ -412,6 +439,7 @@ test("Forward cannot send without a recipient and sends without reply threading"
     /recipient/,
   );
   await enter('input[id$="-to"]', "forward@example.com");
+  await enter("textarea", "Please see below.");
   await click("Send");
   const request = requests[0];
   assert.ok(request && typeof request === "object");
@@ -419,6 +447,10 @@ test("Forward cannot send without a recipient and sends without reply threading"
   assert.deepEqual("recipients" in request && request.recipients, [
     "forward@example.com",
   ]);
+  assert.match(
+    "body" in request && typeof request.body === "string" ? request.body : "",
+    /^Please see below\.\n\n---------- Forwarded message ----------[\s\S]*Original message$/,
+  );
   assert.equal(requests.length, 2);
 });
 

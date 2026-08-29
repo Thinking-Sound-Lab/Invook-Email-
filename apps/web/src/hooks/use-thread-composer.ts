@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from "uuid";
 import { useMailShell } from "@/components/mail/mail-shell-provider";
 import {
   acceptThreadAiDraft,
+  buildThreadComposeSendBody,
   createThreadComposeSession,
   type ThreadComposeMessage,
   type ThreadComposeMode,
@@ -187,12 +188,13 @@ export function useThreadComposer({
 
   async function handleSend(): Promise<void> {
     if (!session || busyRef.current || !isConnected) return;
+    const sendBody = buildThreadComposeSendBody(session);
     const validation = validateGmailComposeDraftFields({
       recipients: parseGmailComposeRecipients(session.recipients),
       ccRecipients: parseGmailComposeRecipients(session.ccRecipients),
       bccRecipients: parseGmailComposeRecipients(session.bccRecipients),
       subject: session.subject,
-      body: session.body,
+      body: sendBody,
     });
     if (!validation.valid) {
       setError(validation.error.message);

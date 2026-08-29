@@ -22,6 +22,7 @@ export interface ThreadComposeSession {
   bccRecipients: string;
   subject: string;
   body: string;
+  forwardedMessageText: string | null;
   aiDraft: AiReplyDraft | null;
   hasEdits: boolean;
 }
@@ -43,6 +44,29 @@ function addresses(value: string): string[] {
     .filter(Boolean);
 }
 
+function buildForwardedMessageText(message: ThreadComposeMessage): string {
+  return [
+    "---------- Forwarded message ----------",
+    `From: ${message.sender.raw || message.sender.email}`,
+    `Date: ${message.sentAt}`,
+    `Subject: ${message.subject}`,
+    ...(header(message, "to") ? [`To: ${header(message, "to")}`] : []),
+    ...(header(message, "cc") ? [`Cc: ${header(message, "cc")}`] : []),
+    "",
+    message.bodyText,
+  ].join("\n");
+}
+
+export function buildThreadComposeSendBody(
+  session: ThreadComposeSession,
+): string {
+  if (!session.forwardedMessageText) return session.body;
+  const authoredBody = session.body.trim();
+  return authoredBody
+    ? `${authoredBody}\n\n${session.forwardedMessageText}`
+    : session.forwardedMessageText;
+}
+
 export function createThreadComposeSession(input: {
   mode: ThreadComposeMode;
   message: ThreadComposeMessage;
@@ -52,14 +76,20 @@ export function createThreadComposeSession(input: {
   const { mode, message } = input;
   const isReply = mode === "reply";
   const replyTo = header(message, "reply-to");
-  const hiddenRecipientEmails = new Set(addresses(header(message, "bcc") ?? "").map((email) => email.toLowerCase()));
+  const hiddenRecipientEmails = new Set(
+    addresses(header(message, "bcc") ?? "").map((email) =>
+      email.toLowerCase(),
+    ),
+  );
   const recipients =
     message.direction === "incoming"
       ? addresses(replyTo ?? (message.sender.email || message.sender.raw))
       : addresses(
           header(message, "to") ?? message.recipients.join(", "),
         ).filter(
-          (email) => email.toLowerCase() !== input.accountEmail.toLowerCase() && !hiddenRecipientEmails.has(email.toLowerCase()),
+          (email) =>
+            email.toLowerCase() !== input.accountEmail.toLowerCase() &&
+            !hiddenRecipientEmails.has(email.toLowerCase()),
         );
   const prefix = isReply ? "Re" : "Fwd";
   const hasPrefix = isReply
@@ -73,20 +103,10 @@ export function createThreadComposeSession(input: {
     ccRecipients: "",
     bccRecipients: "",
     subject: hasPrefix ? message.subject : `${prefix}: ${message.subject}`,
-    body: isReply
-      ? (aiDraft?.currentText ?? "")
-      : [
-          "",
-          "",
-          "---------- Forwarded message ----------",
-          `From: ${message.sender.raw || message.sender.email}`,
-          `Date: ${message.sentAt}`,
-          `Subject: ${message.subject}`,
-        ...(header(message, "to") ? [`To: ${header(message, "to")}`] : []),
-        ...(header(message, "cc") ? [`Cc: ${header(message, "cc")}`] : []),
-          "",
-          message.bodyText,
-        ].join("\n"),
+    body: isReply ? (aiDraft?.currentText ?? "") : "",
+    forwardedMessageText: isReply
+      ? null
+      : buildForwardedMessageText(message),
     aiDraft,
     hasEdits: false,
   };

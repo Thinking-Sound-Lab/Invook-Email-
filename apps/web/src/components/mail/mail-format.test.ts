@@ -5,6 +5,7 @@ import {
   formatMailDate,
   formatRecipientDetails,
   formatRecipientSummary,
+  splitMailBodyQuotedContent,
 } from "./mail-format";
 
 test("mail time formatting respects the viewer timezone", () => {
@@ -42,5 +43,49 @@ test("message recipients preserve an honest unavailable state", () => {
   assert.equal(
     formatRecipientSummary([], "abhishek@example.com"),
     "Recipients unavailable",
+  );
+});
+
+test("plain-text replies separate visible text from quoted history", () => {
+  assert.deepEqual(
+    splitMailBodyQuotedContent(`Thanks, that works for me.
+
+On Fri, Aug 28, 2026 at 10:00 AM Sender <sender@example.com> wrote:
+> Earlier message
+> More history`),
+    {
+      visibleText: "Thanks, that works for me.",
+      quotedText:
+        "On Fri, Aug 28, 2026 at 10:00 AM Sender <sender@example.com> wrote:\n> Earlier message\n> More history",
+    },
+  );
+});
+
+test("plain-text forwards separate an original-message section", () => {
+  assert.deepEqual(
+    splitMailBodyQuotedContent(`Please see below.
+
+-----Original Message-----
+From: sender@example.com
+Subject: Earlier message`),
+    {
+      visibleText: "Please see below.",
+      quotedText:
+        "-----Original Message-----\nFrom: sender@example.com\nSubject: Earlier message",
+    },
+  );
+});
+
+test("plain-text content is not collapsed without a visible current message", () => {
+  assert.deepEqual(splitMailBodyQuotedContent("> Quoted line only"), {
+    visibleText: "> Quoted line only",
+    quotedText: null,
+  });
+  assert.deepEqual(
+    splitMailBodyQuotedContent("On this project I wrote:\nA fresh sentence."),
+    {
+      visibleText: "On this project I wrote:\nA fresh sentence.",
+      quotedText: null,
+    },
   );
 });

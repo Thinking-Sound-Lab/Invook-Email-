@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   acceptThreadAiDraft,
+  buildThreadComposeSendBody,
   createThreadComposeSession,
   type ThreadComposeMessage,
 } from "./thread-composer-state";
@@ -83,10 +84,31 @@ test("Forward requires a new recipient and includes only the original message an
   assert.equal(session.ccRecipients, "");
   assert.equal(session.bccRecipients, "");
   assert.equal(session.subject, "Fwd: Question");
-  assert.match(session.body, /From: Sender <sender@example.com>/);
-  assert.match(session.body, /To: owner@example.com/);
-  assert.match(session.body, /Original message text$/);
-  assert.doesNotMatch(session.body, /private@example.com/);
+  assert.equal(session.body, "");
+  assert.match(
+    session.forwardedMessageText ?? "",
+    /From: Sender <sender@example.com>/,
+  );
+  assert.match(session.forwardedMessageText ?? "", /To: owner@example.com/);
+  assert.match(
+    session.forwardedMessageText ?? "",
+    /Original message text$/,
+  );
+  assert.doesNotMatch(
+    session.forwardedMessageText ?? "",
+    /private@example.com/,
+  );
+  assert.equal(
+    buildThreadComposeSendBody(session),
+    session.forwardedMessageText,
+  );
+  assert.match(
+    buildThreadComposeSendBody({
+      ...session,
+      body: "Please see the forwarded message.",
+    }),
+    /^Please see the forwarded message\.\n\n---------- Forwarded message ----------/,
+  );
 });
 
 test("accepting an AI draft retains recipients, message identity, and feedback provenance", () => {

@@ -9,16 +9,19 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 
 import {
   displayName,
-  formatMailBody,
   formatMailText,
   initials,
 } from "./mail-format";
 import { ThreadComposer } from "./thread-composer";
 import { EmailHtmlContent } from "./email-html-content";
-import { buildEmailHtmlContent, buildEmailPlainText } from "./email-html-sanitizer";
+import {
+  buildEmailHtmlPresentation,
+  buildEmailPlainText,
+} from "./email-html-sanitizer";
 import { LocalMailDate } from "./local-mail-date";
 import { MessageRecipientDetails } from "./message-recipient-details";
 import { MessageStarButton } from "./message-star-button";
+import { PlainTextMailContent } from "./plain-text-mail-content";
 import { SmartLabelControls } from "./smart-label-controls";
 import { ThreadReadTracker } from "./thread-read-tracker";
 import { getThreadReadTrackerKey } from "./thread-read-state";
@@ -121,8 +124,8 @@ export async function ThreadReader({
               );
               const senderLabel =
                 message.direction === "outgoing" ? "You" : senderName;
-              const emailHtml = message.bodyHtml
-                ? buildEmailHtmlContent(message.bodyHtml)
+              const emailPresentation = message.bodyHtml
+                ? buildEmailHtmlPresentation(message.bodyHtml)
                 : null;
               return (
                 <article
@@ -160,18 +163,21 @@ export async function ThreadReader({
                         </div>
                       </div>
 
-                      {emailHtml ? (
+                      {emailPresentation ? (
                         <div className="mt-7 flex justify-center">
                           <EmailHtmlContent
                             className="max-w-[720px]"
-                            sanitizedHtml={emailHtml}
+                            hasQuotedContent={
+                              emailPresentation.hasQuotedContent
+                            }
+                            sanitizedHtml={emailPresentation.sanitizedHtml}
                           />
                         </div>
                       ) : (
-                        <div className="mx-auto mt-7 max-w-[720px] whitespace-pre-wrap break-words text-[15px] leading-7 text-foreground/88">
-                          {formatMailBody(message.bodyText) ||
-                            "This email has no readable body."}
-                        </div>
+                        <PlainTextMailContent
+                          bodyText={message.bodyText}
+                          className="mx-auto mt-7 max-w-[720px] text-[15px] leading-7 text-foreground/88"
+                        />
                       )}
 
                       {message.attachments.length > 0 ? (
@@ -225,7 +231,11 @@ export async function ThreadReader({
                     recipients: composeMessage.recipients,
                     headers: composeMessage.headers,
                     subject: composeMessage.subject,
-                bodyText: composeMessage.bodyText || (composeMessage.bodyHtml ? buildEmailPlainText(composeMessage.bodyHtml) : ""),
+                    bodyText:
+                      composeMessage.bodyText ||
+                      (composeMessage.bodyHtml
+                        ? buildEmailPlainText(composeMessage.bodyHtml)
+                        : ""),
                     sentAt: composeMessage.sentAt,
                     attachmentCount: composeMessage.attachments.length,
                   }
