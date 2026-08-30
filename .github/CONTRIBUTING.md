@@ -36,16 +36,17 @@ Put the two different generated values in `BETTER_AUTH_SECRET` and
 `TOKEN_ENCRYPTION_KEY`, respectively. Fill every other blank value required by
 the services you intend to run; authentication requires the Better Auth Google
 client values, while a complete Gmail connection also requires the Gmail OAuth
-and Pub/Sub values documented in the README. Never commit `.env.local` or real
-credentials. Start the complete local stack with:
+and Pub/Sub values documented in the development guide. Never commit
+`.env.local` or real credentials. Start the complete local stack with:
 
 ```bash
 make dev
 ```
 
-See the [README](../README.md) for Google OAuth, Gmail, Pub/Sub, model, and
-object-storage configuration. If an external integration is not configured,
-preserve an honest unavailable state rather than adding fake data.
+See the [development guide](../docs/development.md#configuration) for Google
+OAuth, Gmail, Pub/Sub, Temporal Cloud, model, and object-storage configuration.
+If an external integration is not configured, preserve an honest unavailable
+state rather than adding fake data.
 
 ## Repository Boundaries
 
