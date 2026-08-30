@@ -5,6 +5,8 @@ import type { BeginGmailDraftWriteResult } from "@invook/database";
 
 import { parseGmailComposeDraftRequest } from "../routes/compose-drafts";
 import {
+  GmailReplyContextUnavailableError,
+  GmailForwardContextUnavailableError,
   saveComposeDraft,
   type ComposeDraftDependencies,
 } from "./compose-drafts";
@@ -38,15 +40,19 @@ function gmailDraft(
   };
 }
 
-function memoryDependencies(input: {
-  failFirstCatchup?: boolean;
-} = {}): {
+function memoryDependencies(
+  input: {
+    failFirstCatchup?: boolean;
+  } = {},
+): {
   dependencies: ComposeDraftDependencies;
   counts: { create: number; update: number; catchup: number };
 } {
   let stored: BeginGmailDraftWriteResult | null = null;
   const counts = { create: 0, update: 0, catchup: 0 };
   const dependencies: ComposeDraftDependencies = {
+    getReplyContext: async () => null,
+    getForwardContext: async () => null,
     beginWrite: async () => {
       if (stored) return stored;
       stored = { outcome: "claimed", operationId: "operation-1" };
@@ -132,7 +138,9 @@ test("a completed create retry reuses the provider result without creating a dup
 });
 
 test("a retry after catch-up failure does not repeat the completed provider write", async () => {
-  const { dependencies, counts } = memoryDependencies({ failFirstCatchup: true });
+  const { dependencies, counts } = memoryDependencies({
+    failFirstCatchup: true,
+  });
   const input = {
     userId,
     access,
@@ -141,7 +149,10 @@ test("a retry after catch-up failure does not repeat the completed provider writ
     fields,
   };
 
-  await assert.rejects(saveComposeDraft(input, dependencies), /outbox unavailable/);
+  await assert.rejects(
+    saveComposeDraft(input, dependencies),
+    /outbox unavailable/,
+  );
   const retry = await saveComposeDraft(input, dependencies);
 
   assert.equal(retry.stepId, "catchup-step");
@@ -152,6 +163,8 @@ test("a retry after catch-up failure does not repeat the completed provider writ
 test("an ambiguous pending write recovers by its stable RFC 822 message ID", async () => {
   let completed = false;
   const dependencies: ComposeDraftDependencies = {
+    getReplyContext: async () => null,
+    getForwardContext: async () => null,
     beginWrite: async () => ({
       outcome: "pending",
       operationId: "operation-1",
@@ -226,4 +239,312 @@ test("updating reads the provider thread and replaces the existing Gmail draft",
   assert.equal(counts.create, 0);
   assert.equal(counts.update, 1);
   assert.equal(updateThreadId, "provider-thread");
+});
+
+test("reply admission validates message identifiers and copied recipients", () => {
+  const request = {
+    accountId,
+    idempotencyKey,
+    ...fields,
+    replyToMessageId: userId,
+    ccRecipients: ["copy@example.com"],
+    bccRecipients: ["private@example.com"],
+  };
+  assert.deepEqual(parseGmailComposeDraftRequest(request), request);
+  for (const override of [
+    { replyToMessageId: "provider-thread-id" },
+    { replyToMessageId: null },
+    { ccRecipients: "copy@example.com" },
+    { bccRecipients: [12] },
+    { bccRecipients: ["person@example.com\r\nCc: hidden@example.com"] },
+  ]) {
+    assert.equal(
+      parseGmailComposeDraftRequest({ ...request, ...override }),
+      null,
+    );
+  }
+});
+
+test("forward admission accepts a source reference, validates authored text, and rejects conflicting targets", () => {
+  const request = {
+    accountId,
+    idempotencyKey,
+    ...fields,
+    body: "",
+    forwardOfMessageId: userId,
+  };
+  assert.deepEqual(parseGmailComposeDraftRequest(request), request);
+  for (const override of [
+    { forwardOfMessageId: "invalid" },
+    { forwardOfMessageId: null },
+    { forwardOfMessageId: undefined },
+    { replyToMessageId: userId },
+    { body: "x".repeat(10_001) },
+    { quotedBody: "Untrusted quote" },
+  ]) {
+    assert.equal(
+      parseGmailComposeDraftRequest({ ...request, ...override }),
+      null,
+    );
+  }
+});
+
+test("long forwards resolve owned content before writing and preserve all quoted text without reply threading", async () => {
+  const originalText = "Original message line\n".repeat(5_000);
+  for (const operation of ["create", "update"] as const) {
+    for (const body of ["", "Please see below."]) {
+      const { dependencies, counts } = memoryDependencies();
+      let hasResolvedContext = false;
+      const beginWrite = dependencies.beginWrite;
+      dependencies.beginWrite = async (input) => {
+        assert.equal(hasResolvedContext, true);
+        return beginWrite(input);
+      };
+      dependencies.getForwardContext = async (input) => {
+        assert.deepEqual(input, {
+          userId,
+          accountId,
+          messageId: "original-message",
+        });
+        hasResolvedContext = true;
+        return {
+          sender: {
+            raw: "Sender <sender@example.com>",
+            email: "sender@example.com",
+          },
+          headers: [
+            { name: "To", value: "owner@example.com" },
+            { name: "Bcc", value: "private@example.com" },
+          ],
+          subject: "Original subject",
+          sentAt: "2026-08-28T12:00:00.000Z",
+          bodyText: originalText,
+        };
+      };
+      const checkRawMessage = (raw: Buffer): void => {
+        const text = raw.toString("utf8").replace(/\r\n/g, "\n");
+        assert.ok(text.endsWith(originalText));
+        assert.match(text, /Subject: Subject\n/);
+        assert.ok(
+          text.includes(
+            `\n\n${body ? `${body}\n\n` : ""}---------- Forwarded message ----------\n`,
+          ),
+        );
+        assert.doesNotMatch(
+          text,
+          /In-Reply-To:|References:|private@example.com/,
+        );
+      };
+      dependencies.createDraft = async (_token, write) => {
+        counts.create += 1;
+        assert.equal(write.threadId, undefined);
+        checkRawMessage(write.raw);
+        return gmailDraft();
+      };
+      dependencies.updateDraft = async (_token, _draftId, write) => {
+        counts.update += 1;
+        assert.equal(write.threadId, "provider-thread");
+        checkRawMessage(write.raw);
+        return gmailDraft();
+      };
+      const input = {
+        userId,
+        access,
+        operation,
+        idempotencyKey,
+        fields: { ...fields, body },
+        source: { forwardOfMessageId: "original-message" },
+        providerDraftId: "provider-draft",
+      };
+      const first = await saveComposeDraft(input, dependencies);
+      assert.deepEqual(await saveComposeDraft(input, dependencies), first);
+      assert.equal(counts.create + counts.update, 1);
+    }
+  }
+});
+
+test("an unavailable forward source cannot admit draft work", async () => {
+  const { dependencies, counts } = memoryDependencies();
+  dependencies.beginWrite = async () =>
+    assert.fail("an inaccessible forward must not admit work");
+  await assert.rejects(
+    saveComposeDraft(
+      {
+        userId,
+        access,
+        operation: "create",
+        idempotencyKey,
+        fields,
+        source: { forwardOfMessageId: "inaccessible-message" },
+      },
+      dependencies,
+    ),
+    GmailForwardContextUnavailableError,
+  );
+  assert.equal(counts.create, 0);
+});
+
+test("forward fingerprints distinguish the source without depending on mutable quoted content", async () => {
+  const fingerprints: string[] = [];
+  for (const [forwardOfMessageId, bodyText] of [
+    ["first-message", "Original"],
+    ["second-message", "Original"],
+    ["first-message", "Updated projection"],
+  ]) {
+    assert.ok(forwardOfMessageId);
+    assert.ok(bodyText);
+    const { dependencies } = memoryDependencies();
+    dependencies.getForwardContext = async () => ({
+      sender: { raw: "sender@example.com", email: "sender@example.com" },
+      headers: [],
+      subject: "Original",
+      sentAt: "2026-08-28T12:00:00.000Z",
+      bodyText,
+    });
+    dependencies.beginWrite = async (input) => {
+      fingerprints.push(input.requestFingerprint);
+      return { outcome: "claimed", operationId: "operation-1" };
+    };
+    await saveComposeDraft(
+      {
+        userId,
+        access,
+        operation: "create",
+        idempotencyKey,
+        fields,
+        source: { forwardOfMessageId },
+      },
+      dependencies,
+    );
+  }
+  assert.notEqual(fingerprints[0], fingerprints[1]);
+  assert.equal(fingerprints[0], fingerprints[2]);
+});
+
+test("reply creation resolves owned message context before admitting a provider write", async () => {
+  const { dependencies, counts } = memoryDependencies();
+  let hasResolvedContext = false;
+  const beginWrite = dependencies.beginWrite;
+  dependencies.beginWrite = async (input) => {
+    assert.equal(hasResolvedContext, true);
+    return beginWrite(input);
+  };
+  dependencies.getReplyContext = async (input) => {
+    assert.deepEqual(input, { userId, accountId, messageId: "message-1" });
+    hasResolvedContext = true;
+    return {
+      subject: "Original subject",
+      providerThreadId: "original-thread",
+      headerLines: [
+        { key: "message-id", line: "Message-ID: <original@example.com>" },
+        { key: "references", line: "References: <earlier@example.com>" },
+      ],
+    };
+  };
+  dependencies.createDraft = async (_token, write) => {
+    counts.create += 1;
+    assert.equal(write.threadId, "original-thread");
+    const raw = write.raw.toString("utf8");
+    assert.match(raw, /Subject: Re: Original subject\r\n/);
+    assert.match(raw, /In-Reply-To: <original@example.com>\r\n/);
+    assert.match(
+      raw,
+      /References: <earlier@example.com> <original@example.com>\r\n/,
+    );
+    assert.match(raw, /To: recipient@example.com\r\n/);
+    return gmailDraft("reply-draft", "reply-message", "original-thread");
+  };
+  const input = {
+    userId,
+    access,
+    operation: "create" as const,
+    idempotencyKey,
+    fields,
+    source: { replyToMessageId: "message-1" },
+  };
+  const result = await saveComposeDraft(input, dependencies);
+  assert.equal(result.draft.providerThreadId, "original-thread");
+  assert.deepEqual(await saveComposeDraft(input, dependencies), result);
+  assert.equal(counts.create, 1);
+});
+
+test("a missing or cross-account reply target cannot admit draft work", async () => {
+  const { dependencies, counts } = memoryDependencies();
+  dependencies.beginWrite = async () => {
+    assert.fail("an unauthorized reply must not admit work");
+  };
+  await assert.rejects(
+    saveComposeDraft(
+      {
+        userId,
+        access,
+        operation: "create",
+        idempotencyKey,
+        fields,
+        source: { replyToMessageId: "inaccessible-message" },
+      },
+      dependencies,
+    ),
+    GmailReplyContextUnavailableError,
+  );
+  assert.equal(counts.create, 0);
+});
+
+test("reply fingerprints distinguish the target and Cc/Bcc recipients", async () => {
+  const fingerprints: string[] = [];
+  for (const override of [
+    {},
+    { source: { replyToMessageId: "another-message" } },
+    { fields: { ...fields, ccRecipients: ["copy@example.com"] } },
+    { fields: { ...fields, bccRecipients: ["private@example.com"] } },
+  ]) {
+    const { dependencies } = memoryDependencies();
+    dependencies.getReplyContext = async () => ({
+      subject: "Subject",
+      providerThreadId: "provider-thread",
+      headerLines: [],
+    });
+    dependencies.beginWrite = async (input) => {
+      fingerprints.push(input.requestFingerprint);
+      return { outcome: "claimed", operationId: "operation-1" };
+    };
+    await saveComposeDraft(
+      {
+        userId,
+        access,
+        operation: "create",
+        idempotencyKey,
+        fields,
+        source: { replyToMessageId: "message-1" },
+        ...override,
+      },
+      dependencies,
+    );
+  }
+  assert.equal(new Set(fingerprints).size, 4);
+});
+
+test("updating a reply cannot move a different provider draft into the thread", async () => {
+  const { dependencies, counts } = memoryDependencies();
+  dependencies.getReplyContext = async () => ({
+    subject: "Subject",
+    providerThreadId: "other-thread",
+    headerLines: [],
+  });
+  await assert.rejects(
+    saveComposeDraft(
+      {
+        userId,
+        access,
+        operation: "update",
+        idempotencyKey,
+        fields,
+        source: { replyToMessageId: "message-1" },
+        providerDraftId: "provider-draft",
+      },
+      dependencies,
+    ),
+    GmailReplyContextUnavailableError,
+  );
+  assert.equal(counts.update, 0);
 });

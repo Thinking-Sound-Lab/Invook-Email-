@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./gmail-forward": "./src/gmail-forward.ts",
+    "./mail-body": "./src/mail-body.ts"
   },
   "scripts": {
     "test": "node --import tsx --test src/*.test.ts",
@@ -12,7 +14,11 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/sanitize-html": "^2.16.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "sanitize-html": "^2.17.6"
   }
 }

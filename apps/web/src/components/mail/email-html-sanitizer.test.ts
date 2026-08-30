@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildEmailHtmlContent } from "./email-html-sanitizer";
+import {
+  buildEmailHtmlContent,
+  buildEmailHtmlPresentation,
+} from "./email-html-sanitizer";
 
 test("email HTML preserves sender presentation while removing active content", () => {
   const content = buildEmailHtmlContent(`
@@ -114,13 +117,15 @@ test("email HTML preserves sender color rules and legacy color attributes", () =
     `
       <style>
         p { color: #222222; }
+        a.sender-link { color: #2867b2; }
         @media (prefers-color-scheme: dark) { p { color: #eeeeee; } }
       </style>
-      <table bgcolor="#ffffff"><tr><td><font color="#525151">Hello</font></td></tr></table>
+      <table bgcolor="#ffffff"><tr><td><font color="#525151">Hello</font><a class="sender-link" href="https://example.com">Link</a></td></tr></table>
     `,
   );
 
   assert.match(content, /p \{ color: #222222; \}/);
+  assert.match(content, /a\.sender-link \{ color: #2867b2; \}/);
   assert.match(content, /@media \(prefers-color-scheme: dark\)/);
   assert.match(content, /bgcolor="#ffffff"/);
   assert.match(content, /color="#525151"/);
@@ -130,9 +135,49 @@ test("email HTML includes the isolated viewer root without a document wrapper", 
   const content = buildEmailHtmlContent("<p>Hello</p>");
 
   assert.match(content, /:host \{/);
-  assert.match(content, /color-scheme: only light/);
-  assert.match(content, /background-color: #ffffff/);
-  assert.match(content, /color: #202124/);
+  assert.match(content, /color-scheme: inherit/);
+  assert.match(content, /background-color: transparent/);
+  assert.match(content, /color: inherit/);
+  assert.match(content, /font-family: inherit/);
+  assert.match(
+    content,
+    /color: color-mix\(in oklch, var\(--foreground\) 58%, var\(--chart-2\) 42%\)/,
+  );
+  assert.match(content, /text-underline-offset: 0\.14em/);
+  assert.doesNotMatch(content, /background-color: #ffffff|color: #202124/);
   assert.match(content, /class="invook-email-body" role="document"/);
   assert.doesNotMatch(content, /<!doctype|<html|<body|postMessage|ResizeObserver/);
+});
+
+test("email HTML marks common quoted reply containers for collapsed display", () => {
+  const presentation = buildEmailHtmlPresentation(`
+    <p>Current reply</p>
+    <div class="gmail_quote gmail_quote_container">
+      <div>On Fri, Aug 28, Sender wrote:</div>
+      <blockquote type="cite">Earlier message</blockquote>
+    </div>
+  `);
+
+  assert.equal(presentation.hasQuotedContent, true);
+  assert.match(
+    presentation.sanitizedHtml,
+    /class="gmail_quote gmail_quote_container" data-invook-quoted="true"/,
+  );
+  assert.match(
+    presentation.sanitizedHtml,
+    /:host\(:not\(\[data-show-quoted="true"\]\)\)/,
+  );
+});
+
+test("email HTML leaves ordinary blockquotes visible", () => {
+  const presentation = buildEmailHtmlPresentation(
+    '<p data-invook-quoted="true">Current reply</p><blockquote>A deliberate quotation</blockquote>',
+  );
+
+  assert.equal(presentation.hasQuotedContent, false);
+  assert.match(presentation.sanitizedHtml, /<p>Current reply<\/p>/);
+  assert.doesNotMatch(
+    presentation.sanitizedHtml,
+    /<blockquote[^>]*data-invook-quoted/,
+  );
 });

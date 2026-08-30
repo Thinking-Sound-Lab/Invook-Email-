@@ -46,3 +46,50 @@ test("new Gmail message headers cannot be injected and unicode subjects are enco
   assert.doesNotMatch(message, /\r\nCc:/);
   assert.doesNotMatch(message, /\r\nX-Injected:/);
 });
+
+test("reply MIME keeps recipients, Cc/Bcc, encoded subject, and the reference chain", () => {
+  const raw = composePlainTextGmailMessage({
+    accountEmail: "owner@example.com",
+    recipients: ["reply-to@example.com"],
+    ccRecipients: ["copy@example.com"],
+    bccRecipients: ["private@example.com"],
+    subject: "Re: Résumé",
+    body: "Reply",
+    messageId: "reply@example.com",
+    replyTarget: {
+      headerLines: [
+        { key: "message-id", line: "Message-ID: <original@example.com>" },
+        {
+          key: "references",
+          line: "References: <earlier@example.com>\r\n <original@example.com>",
+        },
+      ],
+    },
+  });
+  assert.ok(raw);
+  const mime = raw.toString("utf8");
+  assert.match(
+    mime,
+    /To: reply-to@example.com\r\nCc: copy@example.com\r\nBcc: private@example.com\r\n/,
+  );
+  assert.match(mime, /Subject: =\?UTF-8\?B\?/);
+  assert.match(mime, /In-Reply-To: <original@example.com>\r\n/);
+  assert.match(
+    mime,
+    /References: <earlier@example.com> <original@example.com>\r\n/,
+  );
+  assert.doesNotMatch(mime, /<original@example.com> <original@example.com>/);
+});
+
+test("forwards use new-message MIME without reply headers", () => {
+  const raw = composePlainTextGmailMessage({
+    accountEmail: "owner@example.com",
+    recipients: ["recipient@example.com"],
+    subject: "Fwd: Update",
+    body: "Forwarded message",
+    messageId: "forward@example.com",
+  });
+  assert.ok(raw);
+  assert.match(raw.toString("utf8"), /Subject: Fwd: Update\r\n/);
+  assert.doesNotMatch(raw.toString("utf8"), /In-Reply-To:|References:/);
+});

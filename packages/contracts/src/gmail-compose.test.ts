@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  GMAIL_COMPOSE_MAX_BODY_LENGTH,
   parseGmailComposeRecipients,
   validateGmailComposeDraftFields,
 } from "./gmail-compose";
@@ -12,6 +13,36 @@ test("compose recipients are parsed as an explicit comma-separated list", () => 
     ["first@example.com", "second@example.com"],
   );
   assert.deepEqual(parseGmailComposeRecipients("  "), []);
+});
+
+test("forward validation limits only authored text and permits a quote-only forward", () => {
+  const fields = {
+    recipients: ["recipient@example.com"],
+    subject: "Fwd: Subject",
+    body: "",
+  };
+  const source = { forwardOfMessageId: "message-1" };
+  for (const body of ["", " \n ", "x".repeat(GMAIL_COMPOSE_MAX_BODY_LENGTH)]) {
+    assert.equal(
+      validateGmailComposeDraftFields({ ...fields, body }, source).valid,
+      true,
+    );
+  }
+  const oversized = validateGmailComposeDraftFields(
+    {
+      ...fields,
+      body: "x".repeat(GMAIL_COMPOSE_MAX_BODY_LENGTH + 1),
+    },
+    source,
+  );
+  assert.equal(oversized.valid, false);
+  if (!oversized.valid) assert.equal(oversized.error.field, "body");
+  assert.equal(validateGmailComposeDraftFields(fields).valid, false);
+  assert.equal(
+    validateGmailComposeDraftFields(fields, { replyToMessageId: "message-1" })
+      .valid,
+    false,
+  );
 });
 
 test("compose validation rejects invalid and duplicate recipients", () => {
@@ -69,4 +100,52 @@ test("compose validation preserves valid user-authored subject and body text", (
       body: "First line\nSecond line",
     },
   });
+});
+
+test("Cc and Bcc share validation, deduplication, and total recipient limits", () => {
+  const fields = {
+    recipients: ["to@example.com"],
+    subject: "Subject",
+    body: "Body",
+  };
+  assert.deepEqual(
+    validateGmailComposeDraftFields({
+      ...fields,
+      ccRecipients: [" cc@example.com "],
+      bccRecipients: ["private@example.com"],
+    }),
+    {
+      valid: true,
+      fields: {
+        ...fields,
+        ccRecipients: ["cc@example.com"],
+        bccRecipients: ["private@example.com"],
+      },
+    },
+  );
+  for (const field of ["ccRecipients", "bccRecipients"] as const) {
+    assert.equal(
+      validateGmailComposeDraftFields({
+        ...fields,
+        [field]: ["TO@example.com"],
+      }).valid,
+      false,
+    );
+    const invalid = validateGmailComposeDraftFields({
+      ...fields,
+      [field]: ["bad\r\nBcc: address"],
+    });
+    assert.equal(invalid.valid, false);
+    if (!invalid.valid) assert.equal(invalid.error.field, field);
+    assert.equal(
+      validateGmailComposeDraftFields({
+        ...fields,
+        [field]: Array.from(
+          { length: 50 },
+          (_, index) => `person${index}@example.com`,
+        ),
+      }).valid,
+      false,
+    );
+  }
 });

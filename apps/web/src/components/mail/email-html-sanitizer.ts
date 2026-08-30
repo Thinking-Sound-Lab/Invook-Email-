@@ -131,6 +131,36 @@ function rewriteCssRemoteImages(css: string): string {
   return parsed.toString();
 }
 
+const QUOTED_CONTAINER_CLASS =
+  /(?:^|\s)(?:gmail_quote|gmail_extra|yahoo_quoted|protonmail_quote|moz-cite-prefix|moz-forward-container)(?:\s|$)/i;
+const QUOTED_CONTAINER_IDS = new Set([
+  "divrplyfwdmsg",
+  "replyforwardmessage",
+]);
+
+function prepareEmailAttributes(
+  tagName: string,
+  attributes: Record<string, string>,
+): Record<string, string> {
+  const sourceAttributes = { ...attributes };
+  delete sourceAttributes["data-invook-quoted"];
+  const preparedAttributes = sourceAttributes.style
+    ? {
+        ...sourceAttributes,
+        style: rewriteCssRemoteImages(sourceAttributes.style),
+      }
+    : sourceAttributes;
+  const isQuotedContainer =
+    QUOTED_CONTAINER_CLASS.test(sourceAttributes.class ?? "") ||
+    QUOTED_CONTAINER_IDS.has((sourceAttributes.id ?? "").toLowerCase()) ||
+    (tagName === "blockquote" &&
+      (sourceAttributes.type ?? "").toLowerCase() === "cite");
+
+  return isQuotedContainer
+    ? { ...preparedAttributes, "data-invook-quoted": "true" }
+    : preparedAttributes;
+}
+
 function sanitizeEmailHtml(bodyHtml: string): string {
   const sanitizedBodyHtml = sanitizeHtml(bodyHtml, {
     allowedTags: [...EMAIL_HTML_TAGS],
@@ -141,6 +171,7 @@ function sanitizeEmailHtml(bodyHtml: string): string {
         "bgcolor",
         "class",
         "color",
+        "data-invook-quoted",
         "dir",
         "height",
         "id",
@@ -152,6 +183,7 @@ function sanitizeEmailHtml(bodyHtml: string): string {
         "width",
       ],
       a: ["href", "name", "rel", "target"],
+      blockquote: ["type"],
       col: ["span"],
       img: ["alt", "referrerpolicy", "src"],
       ol: ["start", "type"],
@@ -171,11 +203,11 @@ function sanitizeEmailHtml(bodyHtml: string): string {
     transformTags: {
       a: (_tagName, attributes) => ({
         tagName: "a",
-        attribs: {
+        attribs: prepareEmailAttributes("a", {
           ...attributes,
           rel: "noopener noreferrer nofollow",
           target: "_blank",
-        },
+        }),
       }),
       img: (_tagName, attributes) => {
         const originalSource = attributes.src ?? "";
@@ -183,28 +215,26 @@ function sanitizeEmailHtml(bodyHtml: string): string {
         if (!source) {
           return {
             tagName: "img",
-            attribs: /^(?:https?:)?\/\//i.test(originalSource.trim())
-              ? { ...attributes, src: "data:," }
-              : attributes,
+            attribs: prepareEmailAttributes(
+              "img",
+              /^(?:https?:)?\/\//i.test(originalSource.trim())
+                ? { ...attributes, src: "data:," }
+                : attributes,
+            ),
           };
         }
         return {
           tagName: "img",
-          attribs: {
+          attribs: prepareEmailAttributes("img", {
             ...attributes,
             referrerpolicy: "no-referrer",
             src: source,
-          },
+          }),
         };
       },
       "*": (tagName, attributes) => ({
         tagName,
-        attribs: attributes.style
-          ? {
-              ...attributes,
-              style: rewriteCssRemoteImages(attributes.style),
-            }
-          : attributes,
+        attribs: prepareEmailAttributes(tagName, attributes),
       }),
     },
   });
@@ -217,19 +247,21 @@ function sanitizeEmailHtml(bodyHtml: string): string {
 
 const EMAIL_CONTENT_STYLES = `
   :host {
-    color-scheme: only light;
+    color: inherit;
+    color-scheme: inherit;
     display: block;
+    font-family: inherit;
     min-width: 0;
     width: 100%;
   }
   .invook-email-body {
     all: initial;
-    background-color: #ffffff;
+    background-color: transparent;
     display: flow-root;
     min-width: 0;
     width: 100%;
-    color: #202124;
-    font-family: Arial, Helvetica, sans-serif;
+    color: inherit;
+    font-family: inherit;
     font-size: 14px;
     line-height: 1.5;
     overflow-wrap: anywhere;
@@ -240,6 +272,11 @@ const EMAIL_CONTENT_STYLES = `
     height: auto;
     max-width: 100%;
   }
+  :where(.invook-email-body) a {
+    color: color-mix(in oklch, var(--foreground) 58%, var(--chart-2) 42%);
+    text-decoration-color: color-mix(in oklch, currentColor, transparent 42%);
+    text-underline-offset: 0.14em;
+  }
   .invook-email-body table {
     max-width: 100%;
   }
@@ -248,8 +285,30 @@ const EMAIL_CONTENT_STYLES = `
     overflow-wrap: anywhere;
     white-space: pre-wrap;
   }
+  :host(:not([data-show-quoted="true"]))
+    .invook-email-body [data-invook-quoted="true"] {
+    display: none !important;
+  }
 `;
 
+export interface EmailHtmlPresentation {
+  sanitizedHtml: string;
+  hasQuotedContent: boolean;
+}
+
+export function buildEmailHtmlPresentation(
+  bodyHtml: string,
+): EmailHtmlPresentation {
+  const sanitizedBodyHtml = sanitizeEmailHtml(bodyHtml);
+  return {
+    sanitizedHtml: `<style>${EMAIL_CONTENT_STYLES}</style><div class="invook-email-body" role="document">${sanitizedBodyHtml}</div>`,
+    hasQuotedContent:
+      /<[a-z][^>]*\sdata-invook-quoted="true"(?:\s|>)/i.test(
+        sanitizedBodyHtml,
+      ),
+  };
+}
+
 export function buildEmailHtmlContent(bodyHtml: string): string {
-  return `<style>${EMAIL_CONTENT_STYLES}</style><div class="invook-email-body" role="document">${sanitizeEmailHtml(bodyHtml)}</div>`;
+  return buildEmailHtmlPresentation(bodyHtml).sanitizedHtml;
 }

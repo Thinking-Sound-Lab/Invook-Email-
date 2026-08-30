@@ -1,6 +1,8 @@
 import { and, desc, eq, inArray, isNotNull, not } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
+import type { GmailForwardMessage } from "@invook/contracts/gmail-forward";
+
 import { getDatabase, type Database } from "./client";
 import { insertMailboxChange } from "./mailbox-change-events";
 import { visibleThreadCondition } from "./mailbox-visibility";
@@ -139,6 +141,88 @@ export async function getGmailThreadMutationContext(
     )
     .limit(1);
   return thread ?? null;
+}
+
+export interface GmailReplyContext {
+  providerThreadId: string;
+  subject: string;
+  headerLines: { key: string; line: string }[];
+}
+
+export async function getGmailReplyContext(
+  input: { userId: string; accountId: string; messageId: string },
+  database: Database = getDatabase(),
+): Promise<GmailReplyContext | null> {
+  const [message] = await database
+    .select({
+      providerThreadId: threads.providerThreadId,
+      subject: messages.subject,
+      headerLines: messages.headerLines,
+    })
+    .from(messages)
+    .innerJoin(
+      threads,
+      and(
+        eq(threads.id, messages.threadId),
+        eq(threads.accountId, messages.accountId),
+        eq(threads.userId, messages.userId),
+      ),
+    )
+    .innerJoin(connectedAccounts, eq(connectedAccounts.id, messages.accountId))
+    .where(
+      and(
+        eq(messages.id, input.messageId),
+        eq(messages.userId, input.userId),
+        eq(messages.accountId, input.accountId),
+        eq(connectedAccounts.userId, input.userId),
+        eq(connectedAccounts.status, "connected"),
+        visibleThreadCondition(),
+      ),
+    )
+    .limit(1);
+  return message ?? null;
+}
+
+export async function getGmailForwardContext(
+  input: { userId: string; accountId: string; messageId: string },
+  database: Database = getDatabase(),
+): Promise<GmailForwardMessage | null> {
+  const [message] = await database
+    .select({
+      sender: messages.sender,
+      subject: messages.subject,
+      headerLines: messages.headerLines,
+      bodyText: messages.bodyText,
+      bodyHtml: messages.bodyHtml,
+      sentAt: messages.sentAt,
+    })
+    .from(messages)
+    .innerJoin(connectedAccounts, eq(connectedAccounts.id, messages.accountId))
+    .where(
+      and(
+        eq(messages.id, input.messageId),
+        eq(messages.userId, input.userId),
+        eq(messages.accountId, input.accountId),
+        eq(connectedAccounts.userId, input.userId),
+        eq(connectedAccounts.status, "connected"),
+      ),
+    )
+    .limit(1);
+  if (!message) return null;
+  return {
+    sender: message.sender,
+    subject: message.subject,
+    bodyText: message.bodyText,
+    bodyHtml: message.bodyHtml,
+    sentAt: message.sentAt.toISOString(),
+    headers: message.headerLines.map((header) => {
+      const separator = header.line.indexOf(":");
+      return {
+        name: header.key,
+        value: separator >= 0 ? header.line.slice(separator + 1).trimStart() : "",
+      };
+    }),
+  };
 }
 
 export async function getGmailDraftResourceForUser(

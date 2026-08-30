@@ -1,3 +1,5 @@
+import { decodeMailEntities, formatMailBody } from "@invook/contracts/mail-body";
+
 function extractEmail(value: string): string {
   const angleAddress = value.match(/<([^>]+)>/);
   return (angleAddress?.[1] ?? value).trim().toLowerCase();
@@ -66,50 +68,64 @@ export function initials(value: string): string {
     .join("");
 }
 
-function decodeCharacterReference(reference: string, value: string): string {
-  if (reference === "amp") return "&";
-  if (reference === "lt") return "<";
-  if (reference === "gt") return ">";
-  if (reference === "quot") return '"';
-  if (reference === "apos" || reference === "#39") return "'";
-  if (reference === "nbsp") return " ";
-
-  const numeric = reference.startsWith("#x")
-    ? Number.parseInt(reference.slice(2), 16)
-    : reference.startsWith("#")
-      ? Number.parseInt(reference.slice(1), 10)
-      : Number.NaN;
-
-  return Number.isInteger(numeric) && numeric >= 0 && numeric <= 0x10ffff
-    ? String.fromCodePoint(numeric)
-    : value;
-}
-
-function decodeMailEntities(value: string): string {
-  let decoded = value;
-  for (let pass = 0; pass < 3; pass += 1) {
-    const next = decoded.replace(
-      /&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,
-      (match, reference: string) => decodeCharacterReference(reference.toLowerCase(), match),
-    );
-    if (next === decoded) break;
-    decoded = next;
-  }
-
-  return decoded.replace(/[\u034f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "");
-}
-
 export function formatMailText(value: string): string {
   return decodeMailEntities(value).replace(/\s+/g, " ").trim();
 }
 
-export function formatMailBody(value: string): string {
-  return decodeMailEntities(value)
-    .replace(/\r/g, "")
-    .replace(/[^\S\n]+/g, " ")
-    .replace(/ *\n */g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+export interface MailBodyParts {
+  visibleText: string;
+  quotedText: string | null;
+}
+
+const QUOTED_TEXT_BOUNDARIES = [
+  /(^|\n)-{2,}\s*Original Message\s*-{2,}\s*(?=\n|$)/i,
+  /(^|\n)-{2,}\s*Forwarded message\s*-{2,}\s*(?=\n|$)/i,
+  /(^|\n)Begin forwarded message:\s*(?=\n|$)/i,
+] as const;
+
+function findQuotedTextBoundary(value: string): number | null {
+  const boundaryIndexes = QUOTED_TEXT_BOUNDARIES.flatMap((pattern) => {
+    const match = pattern.exec(value);
+    if (match?.index === undefined) return [];
+    return [match.index + (match[1]?.length ?? 0)];
+  });
+  const replyHeader = /(^|\n)On [^\n]*(?:\n[^\n]*){0,2}\bwrote:\s*(?=\n|$)/i.exec(
+    value,
+  );
+  if (replyHeader?.index !== undefined) {
+    const replyHeaderIndex = replyHeader.index + (replyHeader[1]?.length ?? 0);
+    const replyHeaderText = replyHeader[0];
+    const replyBody = value.slice(replyHeaderIndex + replyHeaderText.length);
+    if (
+      /<[^>\n]+>|@/.test(replyHeaderText) ||
+      /(^|\n)\s*>/.test(replyBody)
+    ) {
+      boundaryIndexes.push(replyHeaderIndex);
+    }
+  }
+
+  const quotedLine = /(^|\n)\s*>/.exec(value);
+  if (quotedLine?.index !== undefined) {
+    boundaryIndexes.push(quotedLine.index + (quotedLine[1]?.length ?? 0));
+  }
+
+  return boundaryIndexes.length > 0 ? Math.min(...boundaryIndexes) : null;
+}
+
+export function splitMailBodyQuotedContent(value: string): MailBodyParts {
+  const formattedBody = formatMailBody(value);
+  const boundaryIndex = findQuotedTextBoundary(formattedBody);
+  if (boundaryIndex === null) {
+    return { visibleText: formattedBody, quotedText: null };
+  }
+
+  const visibleText = formattedBody.slice(0, boundaryIndex).trim();
+  const quotedText = formattedBody.slice(boundaryIndex).trim();
+  if (!visibleText || !quotedText) {
+    return { visibleText: formattedBody, quotedText: null };
+  }
+
+  return { visibleText, quotedText };
 }
 
 interface FormatMailDateOptions {
