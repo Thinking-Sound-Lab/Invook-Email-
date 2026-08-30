@@ -1533,6 +1533,32 @@ export async function upsertMailboxThreadMessages(
       changed ||= stored.changed;
     }
     if (!threadId) throw new Error("The Gmail thread stored no messages.");
+    const fetchedProviderMessageIds = input.messages.map(
+      (message) => message.providerMessageId,
+    );
+    // Full-thread ingest is Gmail's current snapshot of the thread. Repair
+    // cannot replay deletes that happened before its fresh baseline, so extras
+    // that Gmail no longer returned must be removed in this same transaction.
+    const staleMessages = await transaction
+      .select({ providerMessageId: messages.providerMessageId })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.threadId, threadId),
+          eq(messages.accountId, firstMessage.accountId),
+          not(inArray(messages.providerMessageId, fetchedProviderMessageIds)),
+        ),
+      );
+    for (const staleMessage of staleMessages) {
+      const deleted = await deleteIndexedMessageWithExecutor(
+        {
+          accountId: firstMessage.accountId,
+          providerMessageId: staleMessage.providerMessageId,
+        },
+        transaction,
+      );
+      changed ||= deleted.changed;
+    }
     const completed = await completeMailSyncThreadWithExecutor(
       {
         runId: input.activeRunId,
@@ -1545,6 +1571,80 @@ export async function upsertMailboxThreadMessages(
   });
 }
 
+async function deleteIndexedMessageWithExecutor(
+  input: {
+    accountId: string;
+    providerMessageId: string;
+    providerHistoryId?: string | null;
+  },
+  database: DatabaseExecutor,
+) {
+  const [storedMessage] = await database
+    .select({
+      id: messages.id,
+      userId: messages.userId,
+      threadId: messages.threadId,
+      providerThreadId: threads.providerThreadId,
+      providerHistoryId: messages.providerHistoryId,
+      assignmentId: threadLabelAssignments.id,
+      updatedAt: messages.updatedAt,
+    })
+    .from(messages)
+    .innerJoin(threads, eq(threads.id, messages.threadId))
+    .leftJoin(
+      threadLabelAssignments,
+      eq(threadLabelAssignments.threadId, threads.id),
+    )
+    .where(
+      and(
+        eq(threads.accountId, input.accountId),
+        eq(messages.providerMessageId, input.providerMessageId),
+      ),
+    )
+    .limit(1);
+  if (!storedMessage) {
+    return { changed: false, threadId: null, wasVisible: false };
+  }
+
+  const attachmentObjects = await database
+    .select({ objectKey: messageAttachments.objectKey })
+    .from(messageAttachments)
+    .where(eq(messageAttachments.messageId, storedMessage.id));
+  const objectKeys = attachmentObjects
+    .map((attachment) => attachment.objectKey)
+    .filter((key): key is string => Boolean(key))
+    .sort();
+  await enqueueWorkflowStepWithExecutor(
+    {
+      userId: storedMessage.userId,
+      accountId: input.accountId,
+      stepType: "gmail.objects.delete",
+      payload: {
+        manifest: {
+          providerMessageId: input.providerMessageId,
+          providerThreadId: storedMessage.providerThreadId,
+          providerHistoryId:
+            input.providerHistoryId ?? storedMessage.providerHistoryId,
+          objectKeys,
+        },
+      },
+      idempotencyKey: `gmail-object-delete:${input.accountId}:${input.providerMessageId}:${storedMessage.updatedAt.toISOString()}`,
+      maxAttempts: 10,
+    },
+    database,
+  );
+
+  await database.delete(messages).where(eq(messages.id, storedMessage.id));
+  await refreshThreadProjection(database, storedMessage.threadId);
+
+  return {
+    changed: true,
+    threadId: storedMessage.threadId,
+    objectKeys,
+    wasVisible: storedMessage.assignmentId !== null,
+  };
+}
+
 export async function deleteIndexedMessage(
   input: {
     accountId: string;
@@ -1553,72 +1653,9 @@ export async function deleteIndexedMessage(
   },
   database: Database = getDatabase(),
 ) {
-  return database.transaction(async (transaction) => {
-    const [storedMessage] = await transaction
-      .select({
-        id: messages.id,
-        userId: messages.userId,
-        threadId: messages.threadId,
-        providerThreadId: threads.providerThreadId,
-        providerHistoryId: messages.providerHistoryId,
-        assignmentId: threadLabelAssignments.id,
-        updatedAt: messages.updatedAt,
-      })
-      .from(messages)
-      .innerJoin(threads, eq(threads.id, messages.threadId))
-      .leftJoin(
-        threadLabelAssignments,
-        eq(threadLabelAssignments.threadId, threads.id),
-      )
-      .where(
-        and(
-          eq(threads.accountId, input.accountId),
-          eq(messages.providerMessageId, input.providerMessageId),
-        ),
-      )
-      .limit(1);
-    if (!storedMessage) {
-      return { changed: false, threadId: null, wasVisible: false };
-    }
-
-    const attachmentObjects = await transaction
-      .select({ objectKey: messageAttachments.objectKey })
-      .from(messageAttachments)
-      .where(eq(messageAttachments.messageId, storedMessage.id));
-    const objectKeys = attachmentObjects
-      .map((attachment) => attachment.objectKey)
-      .filter((key): key is string => Boolean(key))
-      .sort();
-    await enqueueWorkflowStepWithExecutor(
-      {
-        userId: storedMessage.userId,
-        accountId: input.accountId,
-        stepType: "gmail.objects.delete",
-        payload: {
-          manifest: {
-            providerMessageId: input.providerMessageId,
-            providerThreadId: storedMessage.providerThreadId,
-            providerHistoryId:
-              input.providerHistoryId ?? storedMessage.providerHistoryId,
-            objectKeys,
-          },
-        },
-        idempotencyKey: `gmail-object-delete:${input.accountId}:${input.providerMessageId}:${storedMessage.updatedAt.toISOString()}`,
-        maxAttempts: 10,
-      },
-      transaction,
-    );
-
-    await transaction.delete(messages).where(eq(messages.id, storedMessage.id));
-    await refreshThreadProjection(transaction, storedMessage.threadId);
-
-    return {
-      changed: true,
-      threadId: storedMessage.threadId,
-      objectKeys,
-      wasVisible: storedMessage.assignmentId !== null,
-    };
-  });
+  return database.transaction((transaction) =>
+    deleteIndexedMessageWithExecutor(input, transaction),
+  );
 }
 
 export async function getIndexedMessageIds(
