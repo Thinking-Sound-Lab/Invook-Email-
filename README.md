@@ -111,7 +111,6 @@ Sender-hosted images currently load directly from their original URLs. Opening a
 | Start here | You'll find |
 | --- | --- |
 | [Development guide](./docs/development.md) | Configuration, local services, commands, architecture, and repository map |
-| [Product requirements](./docs/product-requirements.md) | Product behavior, Memory, labeling, and drafting contracts |
 | [Contributing guide](./.github/CONTRIBUTING.md) | How to propose changes, verify your work, and open a pull request |
 | [Engineering guidelines](./AGENTS.md) | Code conventions and ownership boundaries |
 
