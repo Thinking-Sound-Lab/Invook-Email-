@@ -49,7 +49,7 @@ History work is operation-specific:
 
 - A new or content-changed message uses `messages.get(format=full)`, normalizes Gmail's parsed part tree, stores attachment objects, and upserts relational state.
 - A label-only change updates recognized Gmail system memberships from minimal message state without downloading MIME. Opaque Gmail user-label IDs are ignored.
-- A deletion creates a durable `gmail.objects.delete` workflow step containing an immutable provider/object-key manifest before deleting relational state.
+- A deletion creates a durable `gmail.objects.delete` workflow step containing an immutable provider/object-key manifest before deleting relational state. The delete activity skips keys still referenced by stored attachments, so a later re-ingest of the same Gmail message cannot race cleanup and wipe live objects.
 - A draft-related change lists draft references and refreshes or removes only the affected Gmail Draft resource.
 - A newly eligible unassigned Inbox thread is admitted to the durable live label queue in the same transaction that stores the history range. New content in an already-assigned thread never triggers reclassification.
 - A label visibility event is emitted in the transaction that commits the assignment or a manual replacement.

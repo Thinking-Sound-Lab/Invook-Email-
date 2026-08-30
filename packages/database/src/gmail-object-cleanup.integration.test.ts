@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { v4 as uuidv4 } from "uuid";
 
+import { listReferencedGmailObjectKeys } from "./replica";
 import { deleteIndexedMessage } from "./repositories";
 import {
   connectedAccounts,
@@ -275,6 +276,122 @@ test(
         shouldExecute: true,
         result: null,
       });
+    } finally {
+      await database.delete(profiles).where(eq(profiles.id, userId));
+      await client.end();
+    }
+  },
+);
+
+test(
+  "object cleanup can observe keys that became live again after re-ingest",
+  { skip: !testDatabaseUrl },
+  async () => {
+    if (!testDatabaseUrl) return;
+    const client = postgres(testDatabaseUrl, { max: 1, prepare: false });
+    const database = drizzle(client, { schema });
+    const userId = uuidv4();
+    const accountId = uuidv4();
+    const threadId = uuidv4();
+    const messageId = uuidv4();
+    const restoredMessageId = uuidv4();
+    const objectKey = `${accountId}/messages/provider-message/attachments/0-abc`;
+    try {
+      await database.insert(profiles).values({
+        id: userId,
+        displayName: "Database Test User",
+        email: `${userId}@example.test`,
+      });
+      await database.insert(connectedAccounts).values({
+        id: accountId,
+        userId,
+        providerAccountId: `provider-${accountId}`,
+        email: `${accountId}@example.com`,
+        memoryAcknowledgedAt: new Date(),
+      });
+      await database.insert(threads).values({
+        id: threadId,
+        userId,
+        accountId,
+        providerThreadId: "provider-thread",
+        messageCount: 1,
+      });
+      await database.insert(messages).values({
+        id: messageId,
+        userId,
+        accountId,
+        threadId,
+        providerMessageId: "provider-message",
+        providerHistoryId: "100",
+        direction: "incoming",
+        sender: { raw: "Sender <sender@example.com>", email: "sender@example.com" },
+        internalDate: new Date("2026-08-14T10:00:00.000Z"),
+        sentAt: new Date("2026-08-14T10:00:00.000Z"),
+      });
+      await database.insert(messageAttachments).values({
+        userId,
+        accountId,
+        messageId,
+        filename: "document.pdf",
+        objectKey,
+      });
+
+      assert.deepEqual(
+        await listReferencedGmailObjectKeys(
+          { accountId, objectKeys: [objectKey, "unrelated/key"] },
+          database,
+        ),
+        [objectKey],
+      );
+
+      await deleteIndexedMessage(
+        {
+          accountId,
+          providerMessageId: "provider-message",
+        },
+        database,
+      );
+      assert.deepEqual(
+        await listReferencedGmailObjectKeys(
+          { accountId, objectKeys: [objectKey] },
+          database,
+        ),
+        [],
+      );
+
+      await database.insert(threads).values({
+        id: threadId,
+        userId,
+        accountId,
+        providerThreadId: "provider-thread",
+        messageCount: 1,
+      });
+      await database.insert(messages).values({
+        id: restoredMessageId,
+        userId,
+        accountId,
+        threadId,
+        providerMessageId: "provider-message",
+        providerHistoryId: "180",
+        direction: "incoming",
+        sender: { raw: "Sender <sender@example.com>", email: "sender@example.com" },
+        internalDate: new Date("2026-08-14T10:00:00.000Z"),
+        sentAt: new Date("2026-08-14T10:00:00.000Z"),
+      });
+      await database.insert(messageAttachments).values({
+        userId,
+        accountId,
+        messageId: restoredMessageId,
+        filename: "document.pdf",
+        objectKey,
+      });
+      assert.deepEqual(
+        await listReferencedGmailObjectKeys(
+          { accountId, objectKeys: [objectKey] },
+          database,
+        ),
+        [objectKey],
+      );
     } finally {
       await database.delete(profiles).where(eq(profiles.id, userId));
       await client.end();

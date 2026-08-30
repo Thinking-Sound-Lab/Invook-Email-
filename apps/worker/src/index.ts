@@ -69,6 +69,8 @@ import {
   listenForTemporalCommandNotifications,
   listActiveTemporalTenantIds,
   listGmailObjectKeysForAccount,
+  listReferencedGmailObjectKeys,
+  selectUnreferencedGmailObjectKeys,
   markGmailAccountCleanupRunning,
   listSubmittedThreadLabelBatchIds,
   markGmailReplicaReady,
@@ -1299,19 +1301,39 @@ async function runGmailAccountCleanup(job: WorkflowStepJob) {
 }
 
 async function runGmailObjectDelete(job: WorkflowStepJob) {
+  if (!job.accountId) {
+    throw new Error("The Gmail object cleanup job is missing its account.");
+  }
   const manifest = job.payload.manifest;
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error("The Gmail object cleanup manifest is invalid.");
   }
   const objectKeys = "objectKeys" in manifest ? manifest.objectKeys : undefined;
-  if (
-    !Array.isArray(objectKeys) ||
-    objectKeys.some((key) => typeof key !== "string" || !key.trim())
-  ) {
+  if (!Array.isArray(objectKeys)) {
     throw new Error("The Gmail object cleanup keys are invalid.");
   }
-  await objectStorage.deleteObjects(objectKeys);
-  return { objectCount: objectKeys.length };
+  const requestedObjectKeys: string[] = [];
+  for (const objectKey of objectKeys) {
+    if (typeof objectKey !== "string" || !objectKey.trim()) {
+      throw new Error("The Gmail object cleanup keys are invalid.");
+    }
+    requestedObjectKeys.push(objectKey);
+  }
+  const referencedObjectKeys = await listReferencedGmailObjectKeys({
+    accountId: job.accountId,
+    objectKeys: requestedObjectKeys,
+  });
+  const keysToDelete = selectUnreferencedGmailObjectKeys({
+    objectKeys: requestedObjectKeys,
+    referencedObjectKeys,
+  });
+  if (keysToDelete.length > 0) {
+    await objectStorage.deleteObjects(keysToDelete);
+  }
+  return {
+    objectCount: keysToDelete.length,
+    skippedLiveObjectCount: new Set(requestedObjectKeys).size - keysToDelete.length,
+  };
 }
 
 type StoredMemoryThread = Awaited<ReturnType<typeof getMemoryAnalysisThreads>>[number];
