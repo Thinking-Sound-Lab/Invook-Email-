@@ -447,11 +447,71 @@ test("Forward cannot send without a recipient and sends without reply threading"
   assert.deepEqual("recipients" in request && request.recipients, [
     "forward@example.com",
   ]);
-  assert.match(
+  assert.equal(
     "body" in request && typeof request.body === "string" ? request.body : "",
-    /^Please see below\.\n\n---------- Forwarded message ----------[\s\S]*Original message$/,
+    "Please see below.",
+  );
+  assert.equal(
+    "forwardOfMessageId" in request && request.forwardOfMessageId,
+    "message-1",
   );
   assert.equal(requests.length, 2);
+});
+
+test("a long collapsed forward sends only its source ID and authored text", async () => {
+  const originalText = "Original message line\n".repeat(5_000);
+  const requests: unknown[] = [];
+  axios.defaults.adapter = async (config) => {
+    requests.push(
+      typeof config.data === "string" ? JSON.parse(config.data) : config.data,
+    );
+    return {
+      config,
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      data: config.url?.endsWith("/send")
+        ? {
+            message: {
+              providerMessageId: "sent",
+              providerThreadId: "new-thread",
+            },
+            stepId: "send-step",
+          }
+        : {
+            draft: {
+              providerDraftId: "forward-draft",
+              providerMessageId: "forward-message",
+              providerThreadId: "new-thread",
+            },
+            stepId: "save-step",
+          },
+    };
+  };
+  assert.ok(props.message);
+  await renderComposer({
+    ...props,
+    message: { ...props.message, bodyText: originalText },
+  });
+  await click("Forward");
+  assert.equal(document.querySelector("textarea")?.value, "");
+  assert.equal(
+    document.querySelector('[aria-label="Forwarded message"]'),
+    null,
+  );
+  await enter('input[id$="-to"]', "forward@example.com");
+  await click("Send");
+  assert.equal(requests.length, 2);
+  const request = requests[0];
+  assert.ok(request && typeof request === "object");
+  assert.equal("body" in request && request.body, "");
+  assert.equal(
+    "forwardOfMessageId" in request && request.forwardOfMessageId,
+    "message-1",
+  );
+  assert.ok(JSON.stringify(request).length < 65_536);
+  assert.equal(document.querySelector('[role="alert"]'), null);
+  assert.equal(document.querySelector("form"), null);
 });
 
 test("two immediate submit events admit only one send attempt", async () => {

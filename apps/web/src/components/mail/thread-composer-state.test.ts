@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   acceptThreadAiDraft,
-  buildThreadComposeSendBody,
   createThreadComposeSession,
   type ThreadComposeMessage,
 } from "./thread-composer-state";
@@ -97,17 +96,6 @@ test("Forward requires a new recipient and includes only the original message an
   assert.doesNotMatch(
     session.forwardedMessageText ?? "",
     /private@example.com/,
-  );
-  assert.equal(
-    buildThreadComposeSendBody(session),
-    session.forwardedMessageText,
-  );
-  assert.match(
-    buildThreadComposeSendBody({
-      ...session,
-      body: "Please see the forwarded message.",
-    }),
-    /^Please see the forwarded message\.\n\n---------- Forwarded message ----------/,
   );
 });
 

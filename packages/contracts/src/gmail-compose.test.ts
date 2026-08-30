@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  GMAIL_COMPOSE_MAX_BODY_LENGTH,
   parseGmailComposeRecipients,
   validateGmailComposeDraftFields,
 } from "./gmail-compose";
@@ -12,6 +13,36 @@ test("compose recipients are parsed as an explicit comma-separated list", () => 
     ["first@example.com", "second@example.com"],
   );
   assert.deepEqual(parseGmailComposeRecipients("  "), []);
+});
+
+test("forward validation limits only authored text and permits a quote-only forward", () => {
+  const fields = {
+    recipients: ["recipient@example.com"],
+    subject: "Fwd: Subject",
+    body: "",
+  };
+  const source = { forwardOfMessageId: "message-1" };
+  for (const body of ["", " \n ", "x".repeat(GMAIL_COMPOSE_MAX_BODY_LENGTH)]) {
+    assert.equal(
+      validateGmailComposeDraftFields({ ...fields, body }, source).valid,
+      true,
+    );
+  }
+  const oversized = validateGmailComposeDraftFields(
+    {
+      ...fields,
+      body: "x".repeat(GMAIL_COMPOSE_MAX_BODY_LENGTH + 1),
+    },
+    source,
+  );
+  assert.equal(oversized.valid, false);
+  if (!oversized.valid) assert.equal(oversized.error.field, "body");
+  assert.equal(validateGmailComposeDraftFields(fields).valid, false);
+  assert.equal(
+    validateGmailComposeDraftFields(fields, { replyToMessageId: "message-1" })
+      .valid,
+    false,
+  );
 });
 
 test("compose validation rejects invalid and duplicate recipients", () => {

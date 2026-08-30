@@ -1,4 +1,5 @@
 import type { AiReplyDraft, MailboxThreadMessage } from "@invook/contracts";
+import { buildGmailForwardedMessageText } from "@invook/contracts/gmail-forward";
 
 export type ThreadComposeMode = "reply" | "forward";
 
@@ -12,7 +13,7 @@ export type ThreadComposeMessage = Pick<
   | "subject"
   | "bodyText"
   | "sentAt"
-> & { attachmentCount: number };
+> & { attachmentCount: number; bodyHtml?: string | null };
 
 export interface ThreadComposeSession {
   mode: ThreadComposeMode;
@@ -42,29 +43,6 @@ function addresses(value: string): string[] {
     .split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)
     .map((address) => (address.match(/<([^>]+)>/)?.[1] ?? address).trim())
     .filter(Boolean);
-}
-
-function buildForwardedMessageText(message: ThreadComposeMessage): string {
-  return [
-    "---------- Forwarded message ----------",
-    `From: ${message.sender.raw || message.sender.email}`,
-    `Date: ${message.sentAt}`,
-    `Subject: ${message.subject}`,
-    ...(header(message, "to") ? [`To: ${header(message, "to")}`] : []),
-    ...(header(message, "cc") ? [`Cc: ${header(message, "cc")}`] : []),
-    "",
-    message.bodyText,
-  ].join("\n");
-}
-
-export function buildThreadComposeSendBody(
-  session: ThreadComposeSession,
-): string {
-  if (!session.forwardedMessageText) return session.body;
-  const authoredBody = session.body.trim();
-  return authoredBody
-    ? `${authoredBody}\n\n${session.forwardedMessageText}`
-    : session.forwardedMessageText;
 }
 
 export function createThreadComposeSession(input: {
@@ -106,7 +84,7 @@ export function createThreadComposeSession(input: {
     body: isReply ? (aiDraft?.currentText ?? "") : "",
     forwardedMessageText: isReply
       ? null
-      : buildForwardedMessageText(message),
+      : buildGmailForwardedMessageText(message),
     aiDraft,
     hasEdits: false,
   };

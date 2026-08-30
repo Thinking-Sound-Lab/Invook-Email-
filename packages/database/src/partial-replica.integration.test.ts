@@ -19,6 +19,7 @@ import {
   enqueueGmailHistoryCatchup,
   getAiReplyDraftForGmailSave,
   getGmailMessageMutationContext,
+  getGmailForwardContext,
   getGmailReplyContext,
   getGmailProviderWriteContext,
   getGmailProviderWriteContextForAccount,
@@ -620,6 +621,16 @@ test(
         { userId, accountId, messageId },
         database,
       );
+      const forwardContext = await getGmailForwardContext(
+        { userId, accountId, messageId },
+        database,
+      );
+      assert.equal(forwardContext?.sender.email, "partial-sender@example.com");
+      assert.equal(
+        forwardContext?.bodyText,
+        "The synchronization keyword is present in committed mail.",
+      );
+      assert.equal(forwardContext?.sentAt, "2026-08-15T08:00:00.000Z");
       assert.equal(
         replyContext?.providerThreadId,
         `provider-thread-${threadId}`,
@@ -630,6 +641,7 @@ test(
         { userId, accountId, messageId: uuidv4() },
       ]) {
         assert.equal(await getGmailReplyContext(inaccessible, database), null);
+        assert.equal(await getGmailForwardContext(inaccessible, database), null);
       }
       assert.equal(
         await getGmailMessageMutationContext(
@@ -673,6 +685,18 @@ test(
       assert.deepEqual(
         await getGmailThreadMutationContext({ userId, threadId }, database),
         { accountId, providerThreadId: `provider-thread-${threadId}` },
+      );
+
+      await database
+        .update(connectedAccounts)
+        .set({ status: "reconnect_required" })
+        .where(eq(connectedAccounts.id, accountId));
+      assert.equal(
+        await getGmailForwardContext(
+          { userId, accountId, messageId },
+          database,
+        ),
+        null,
       );
     });
   },

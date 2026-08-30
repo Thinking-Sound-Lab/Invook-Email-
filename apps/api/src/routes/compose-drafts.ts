@@ -4,6 +4,7 @@ import { validate as validateUuid } from "uuid";
 import {
   validateGmailComposeDraftFields,
   type CreateGmailComposeDraftRequest,
+  type GmailComposeDraftSource,
   type SendGmailComposeDraftRequest,
 } from "@invook/contracts";
 import {
@@ -20,6 +21,7 @@ import { mutationAccessHooks } from "../access";
 import { sendJson, sendProblem } from "../responses";
 import {
   GmailDraftWritePendingError,
+  GmailForwardContextUnavailableError,
   GmailReplyContextUnavailableError,
   saveComposeDraft,
 } from "../services/compose-drafts";
@@ -49,6 +51,7 @@ export function parseGmailComposeDraftRequest(
     "ccRecipients",
     "bccRecipients",
     "replyToMessageId",
+    "forwardOfMessageId",
     "subject",
     "body",
   ]);
@@ -69,6 +72,11 @@ export function parseGmailComposeDraftRequest(
     (body.replyToMessageId !== undefined &&
       (typeof body.replyToMessageId !== "string" ||
         !validateUuid(body.replyToMessageId))) ||
+    (body.forwardOfMessageId !== undefined &&
+      (typeof body.forwardOfMessageId !== "string" ||
+        !validateUuid(body.forwardOfMessageId))) ||
+    (body.replyToMessageId !== undefined &&
+      body.forwardOfMessageId !== undefined) ||
     [body.ccRecipients, body.bccRecipients].some(
       (recipients) =>
         recipients !== undefined &&
@@ -77,35 +85,42 @@ export function parseGmailComposeDraftRequest(
     )
   )
     return null;
-  const validation = validateGmailComposeDraftFields({
-    recipients: body.recipients.filter(
-      (recipient): recipient is string => typeof recipient === "string",
-    ),
-    subject: body.subject,
-    body: body.body,
-    ...(Array.isArray(body.ccRecipients)
-      ? {
-          ccRecipients: body.ccRecipients.filter(
-            (recipient): recipient is string => typeof recipient === "string",
-          ),
-        }
-      : {}),
-    ...(Array.isArray(body.bccRecipients)
-      ? {
-          bccRecipients: body.bccRecipients.filter(
-            (recipient): recipient is string => typeof recipient === "string",
-          ),
-        }
-      : {}),
-  });
+  const source: GmailComposeDraftSource =
+    typeof body.forwardOfMessageId === "string"
+      ? { forwardOfMessageId: body.forwardOfMessageId }
+      : typeof body.replyToMessageId === "string"
+        ? { replyToMessageId: body.replyToMessageId }
+        : {};
+  const validation = validateGmailComposeDraftFields(
+    {
+      recipients: body.recipients.filter(
+        (recipient): recipient is string => typeof recipient === "string",
+      ),
+      subject: body.subject,
+      body: body.body,
+      ...(Array.isArray(body.ccRecipients)
+        ? {
+            ccRecipients: body.ccRecipients.filter(
+              (recipient): recipient is string => typeof recipient === "string",
+            ),
+          }
+        : {}),
+      ...(Array.isArray(body.bccRecipients)
+        ? {
+            bccRecipients: body.bccRecipients.filter(
+              (recipient): recipient is string => typeof recipient === "string",
+            ),
+          }
+        : {}),
+    },
+    source,
+  );
   if (!validation.valid) return null;
   return {
     accountId: body.accountId,
     idempotencyKey: body.idempotencyKey,
     ...validation.fields,
-    ...(typeof body.replyToMessageId === "string"
-      ? { replyToMessageId: body.replyToMessageId }
-      : {}),
+    ...source,
   };
 }
 
@@ -137,6 +152,15 @@ async function sendComposeDraftError(
   request: Parameters<typeof sendProblem>[0],
   reply: Parameters<typeof sendProblem>[1],
 ): Promise<boolean> {
+  if (error instanceof GmailForwardContextUnavailableError) {
+    await sendProblem(
+      request,
+      reply,
+      404,
+      "Forwarded message is unavailable for this Gmail account",
+    );
+    return true;
+  }
   if (error instanceof GmailReplyContextUnavailableError) {
     await sendProblem(
       request,
@@ -222,7 +246,9 @@ export const registerComposeDraftRoutes: FastifyPluginAsync = async (api) => {
           access,
           operation: "create",
           idempotencyKey: draft.idempotencyKey,
-          replyToMessageId: draft.replyToMessageId,
+          source: draft.forwardOfMessageId
+            ? { forwardOfMessageId: draft.forwardOfMessageId }
+            : { replyToMessageId: draft.replyToMessageId },
           fields: {
             recipients: draft.recipients,
             ccRecipients: draft.ccRecipients,
@@ -279,7 +305,9 @@ export const registerComposeDraftRoutes: FastifyPluginAsync = async (api) => {
           access,
           operation: "update",
           idempotencyKey: draft.idempotencyKey,
-          replyToMessageId: draft.replyToMessageId,
+          source: draft.forwardOfMessageId
+            ? { forwardOfMessageId: draft.forwardOfMessageId }
+            : { replyToMessageId: draft.replyToMessageId },
           fields: {
             recipients: draft.recipients,
             ccRecipients: draft.ccRecipients,

@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import type {
   GmailComposeDraftFields,
   GmailComposeDraftResponse,
+  GmailComposeDraftSource,
 } from "@invook/contracts";
+import { buildGmailForwardedMessageText } from "@invook/contracts/gmail-forward";
 import {
   abandonPendingGmailDraftWrite,
   beginGmailDraftWrite,
   completeGmailDraftWrite,
   enqueueGmailHistoryCatchup,
+  getGmailForwardContext,
   getGmailReplyContext,
   type BeginGmailDraftWriteResult,
   type GmailDraftWriteOperation,
@@ -41,6 +44,13 @@ export class GmailReplyContextUnavailableError extends Error {
   }
 }
 
+export class GmailForwardContextUnavailableError extends Error {
+  constructor() {
+    super("Forwarded message is unavailable for this Gmail account.");
+    this.name = "GmailForwardContextUnavailableError";
+  }
+}
+
 export interface SaveComposeDraftInput {
   userId: string;
   access: GmailProviderAccess;
@@ -48,7 +58,7 @@ export interface SaveComposeDraftInput {
   idempotencyKey: string;
   fields: GmailComposeDraftFields;
   providerDraftId?: string;
-  replyToMessageId?: string;
+  source?: GmailComposeDraftSource;
 }
 
 export interface ComposeDraftDependencies {
@@ -61,6 +71,7 @@ export interface ComposeDraftDependencies {
   updateDraft: typeof updateGmailDraft;
   enqueueCatchup: typeof enqueueGmailHistoryCatchup;
   getReplyContext: typeof getGmailReplyContext;
+  getForwardContext: typeof getGmailForwardContext;
 }
 
 const defaultDependencies: ComposeDraftDependencies = {
@@ -73,6 +84,7 @@ const defaultDependencies: ComposeDraftDependencies = {
   updateDraft: updateGmailDraft,
   enqueueCatchup: enqueueGmailHistoryCatchup,
   getReplyContext: getGmailReplyContext,
+  getForwardContext: getGmailForwardContext,
 };
 
 function requestFingerprint(input: SaveComposeDraftInput): string {
@@ -90,8 +102,11 @@ function requestFingerprint(input: SaveComposeDraftInput): string {
         ...(input.fields.bccRecipients
           ? { bccRecipients: input.fields.bccRecipients }
           : {}),
-        ...(input.replyToMessageId
-          ? { replyToMessageId: input.replyToMessageId }
+        ...(input.source?.replyToMessageId
+          ? { replyToMessageId: input.source.replyToMessageId }
+          : {}),
+        ...(input.source?.forwardOfMessageId
+          ? { forwardOfMessageId: input.source.forwardOfMessageId }
           : {}),
       }),
       "utf8",
@@ -169,16 +184,34 @@ export async function saveComposeDraft(
   input: SaveComposeDraftInput,
   dependencies: ComposeDraftDependencies = defaultDependencies,
 ): Promise<GmailComposeDraftResponse> {
-  const replyContext = input.replyToMessageId
+  const replyContext = input.source?.replyToMessageId
     ? await dependencies.getReplyContext({
         userId: input.userId,
         accountId: input.access.accountId,
-        messageId: input.replyToMessageId,
+        messageId: input.source.replyToMessageId,
       })
     : null;
-  if (input.replyToMessageId && !replyContext) {
+  if (input.source?.replyToMessageId && !replyContext) {
     throw new GmailReplyContextUnavailableError();
   }
+  const forwardContext = input.source?.forwardOfMessageId
+    ? await dependencies.getForwardContext({
+        userId: input.userId,
+        accountId: input.access.accountId,
+        messageId: input.source.forwardOfMessageId,
+      })
+    : null;
+  if (input.source?.forwardOfMessageId && !forwardContext) {
+    throw new GmailForwardContextUnavailableError();
+  }
+  const forwardedMessageText = forwardContext
+    ? buildGmailForwardedMessageText(forwardContext)
+    : null;
+  const body = forwardedMessageText
+    ? [input.fields.body.trim(), forwardedMessageText]
+        .filter(Boolean)
+        .join("\n\n")
+    : input.fields.body;
   const write = await dependencies.beginWrite({
     userId: input.userId,
     accountId: input.access.accountId,
@@ -201,6 +234,7 @@ export async function saveComposeDraft(
   const raw = composePlainTextGmailMessage({
     accountEmail: input.access.email,
     ...input.fields,
+    body,
     ...(replyContext
       ? { subject: replyContext.subject, replyTarget: replyContext }
       : {}),

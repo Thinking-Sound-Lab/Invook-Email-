@@ -4,6 +4,7 @@ import {
   parseGmailComposeRecipients,
   validateGmailComposeDraftFields,
   type AiReplyDraft,
+  type GmailComposeDraftSource,
 } from "@invook/contracts";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -12,7 +13,6 @@ import { v4 as uuidv4 } from "uuid";
 import { useMailShell } from "@/components/mail/mail-shell-provider";
 import {
   acceptThreadAiDraft,
-  buildThreadComposeSendBody,
   createThreadComposeSession,
   type ThreadComposeMessage,
   type ThreadComposeMode,
@@ -188,14 +188,20 @@ export function useThreadComposer({
 
   async function handleSend(): Promise<void> {
     if (!session || busyRef.current || !isConnected) return;
-    const sendBody = buildThreadComposeSendBody(session);
-    const validation = validateGmailComposeDraftFields({
-      recipients: parseGmailComposeRecipients(session.recipients),
-      ccRecipients: parseGmailComposeRecipients(session.ccRecipients),
-      bccRecipients: parseGmailComposeRecipients(session.bccRecipients),
-      subject: session.subject,
-      body: sendBody,
-    });
+    const source: GmailComposeDraftSource =
+      session.mode === "reply"
+        ? { replyToMessageId: session.message.id }
+        : { forwardOfMessageId: session.message.id };
+    const validation = validateGmailComposeDraftFields(
+      {
+        recipients: parseGmailComposeRecipients(session.recipients),
+        ccRecipients: parseGmailComposeRecipients(session.ccRecipients),
+        bccRecipients: parseGmailComposeRecipients(session.bccRecipients),
+        subject: session.subject,
+        body: session.body,
+      },
+      source,
+    );
     if (!validation.valid) {
       setError(validation.error.message);
       return;
@@ -212,9 +218,7 @@ export function useThreadComposer({
           ...validation.fields,
           accountId,
           idempotencyKey: uuidv4(),
-          ...(session.mode === "reply"
-            ? { replyToMessageId: session.message.id }
-            : {}),
+          ...source,
         },
         sendIdempotencyKey: uuidv4(),
       };

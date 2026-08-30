@@ -4,14 +4,7 @@ import test from "node:test";
 import {
   buildEmailHtmlContent,
   buildEmailHtmlPresentation,
-  buildEmailPlainText,
 } from "./email-html-sanitizer";
-
-test("HTML-only forwarded mail retains readable paragraphs without active content", () => {
-  const text = buildEmailPlainText('<head><title>Hidden title</title><style>body {color:red}</style></head><p>Hello &amp; welcome</p><div>First<br>Second</div><script>unsafe()</script><img src="https://example.com/tracker">');
-  assert.equal(text, "Hello & welcome\n\nFirst\nSecond");
-  assert.doesNotMatch(text, /unsafe|Hidden|color|tracker|<script/);
-});
 
 test("email HTML preserves sender presentation while removing active content", () => {
   const content = buildEmailHtmlContent(`

@@ -19,11 +19,15 @@ export type GmailComposeDraftValidationResult =
   | { valid: true; fields: GmailComposeDraftFields }
   | { valid: false; error: GmailComposeDraftValidationError };
 
-export type CreateGmailComposeDraftRequest = GmailComposeDraftFields & {
-  accountId: string;
-  idempotencyKey: string;
-  replyToMessageId?: string;
-};
+export type GmailComposeDraftSource =
+  | { replyToMessageId?: string; forwardOfMessageId?: never }
+  | { replyToMessageId?: never; forwardOfMessageId: string };
+
+export type CreateGmailComposeDraftRequest = GmailComposeDraftFields &
+  GmailComposeDraftSource & {
+    accountId: string;
+    idempotencyKey: string;
+  };
 
 export type UpdateGmailComposeDraftRequest = CreateGmailComposeDraftRequest;
 
@@ -64,6 +68,7 @@ export function parseGmailComposeRecipients(value: string): string[] {
 
 export function validateGmailComposeDraftFields(
   input: GmailComposeDraftFields,
+  source: GmailComposeDraftSource = {},
 ): GmailComposeDraftValidationResult {
   if (
     input.recipients.length === 0 ||
@@ -146,7 +151,7 @@ export function validateGmailComposeDraftFields(
     };
   }
 
-  if (!input.body.trim()) {
+  if (!input.body.trim() && !source.forwardOfMessageId) {
     return {
       valid: false,
       error: { field: "body", message: "Enter a message body." },

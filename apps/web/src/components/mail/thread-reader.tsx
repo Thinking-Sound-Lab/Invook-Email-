@@ -14,10 +14,7 @@ import {
 } from "./mail-format";
 import { ThreadComposer } from "./thread-composer";
 import { EmailHtmlContent } from "./email-html-content";
-import {
-  buildEmailHtmlPresentation,
-  buildEmailPlainText,
-} from "./email-html-sanitizer";
+import { buildEmailHtmlPresentation } from "./email-html-sanitizer";
 import { LocalMailDate } from "./local-mail-date";
 import { MessageRecipientDetails } from "./message-recipient-details";
 import { MessageStarButton } from "./message-star-button";
@@ -231,11 +228,8 @@ export async function ThreadReader({
                     recipients: composeMessage.recipients,
                     headers: composeMessage.headers,
                     subject: composeMessage.subject,
-                    bodyText:
-                      composeMessage.bodyText ||
-                      (composeMessage.bodyHtml
-                        ? buildEmailPlainText(composeMessage.bodyHtml)
-                        : ""),
+                    bodyText: composeMessage.bodyText,
+                    bodyHtml: composeMessage.bodyHtml,
                     sentAt: composeMessage.sentAt,
                     attachmentCount: composeMessage.attachments.length,
                   }

@@ -1,20 +1,6 @@
 import sanitizeHtml from "sanitize-html";
 import valueParser from "postcss-value-parser";
 
-import { formatMailBody } from "./mail-format";
-
-export function buildEmailPlainText(bodyHtml: string): string {
-  const separatedHtml = bodyHtml.replace(
-    /<\/?(?:br|p|div|li|tr|h[1-6]|blockquote)\b[^>]*>/gi,
-    "\n$&",
-  );
-  return formatMailBody(sanitizeHtml(separatedHtml, {
-    allowedTags: [],
-    allowedAttributes: {},
-    nonTextTags: ["script", "style", "textarea", "option", "title", "head"],
-  }));
-}
-
 const EMAIL_HTML_TAGS = [
   "a",
   "abbr",
