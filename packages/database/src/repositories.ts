@@ -40,6 +40,7 @@ import {
   ensureBuiltInInvookLabels,
   refreshThreadProjection,
 } from "./thread-label-analysis";
+import { isOlderGmailHistoryId } from "./gmail-history-id";
 import { enqueueDailyGmailWatchRenewal } from "./gmail-watch";
 import { deriveMailSyncProgress } from "./mail-sync-progress";
 import {
@@ -1206,7 +1207,20 @@ async function upsertMailboxMessageWithTransaction(
           eq(messages.providerMessageId, input.providerMessageId),
         ),
       )
+      .for("update")
       .limit(1);
+    // Thread batches fetch before they lock, so a later snapshot can race a
+    // live history apply. A strictly older Gmail history ID must not revive
+    // labels or body that catch-up already wrote.
+    if (
+      existingMessage &&
+      isOlderGmailHistoryId(
+        input.providerHistoryId,
+        existingMessage.providerHistoryId,
+      )
+    ) {
+      return { messageId: existingMessage.id, threadId, changed: false };
+    }
     const existingMemberships = existingMessage
       ? await transaction
           .select({ providerLabelId: labels.providerLabelId })
