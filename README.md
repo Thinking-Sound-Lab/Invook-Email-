@@ -1,12 +1,70 @@
-# Invook
+<h1 align="center">Invook</h1>
 
-Invook is an open-source, AI-native Gmail client. It keeps a local, lossless Gmail replica, organizes mail with user-controlled AI labels, and drafts replies using Memory that the user can inspect and edit.
+<p align="center">
+  <strong>Your inbox. Your priorities. Your voice.</strong><br />
+  An open-source, AI-native alternative for Gmail.
+</p>
 
-Google Identity sign-in and Gmail access are separate. Signing in creates an Invook session with Better Auth; a signed-in user then explicitly connects each Gmail mailbox. Gmail remains the source of truth.
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-2563eb?style=flat-square" alt="License: Apache 2.0" /></a>
+  <a href="./.github/SECURITY.md#supported-versions"><img src="https://img.shields.io/badge/status-early_development-64748b?style=flat-square" alt="Status: early development" /></a>
+  <a href="./package.json"><img src="https://img.shields.io/badge/built_with-TypeScript-3178c6?style=flat-square" alt="Built with TypeScript" /></a>
+</p>
 
-## Quickstart
+<p align="center">
+  <a href="#features">Features</a> &nbsp; / &nbsp;
+  <a href="#get-started">Get started</a> &nbsp; / &nbsp;
+  <a href="#built-for-contributors">Development</a> &nbsp; / &nbsp;
+  <a href="./.github/CONTRIBUTING.md">Contribute</a>
+</p>
 
-**Requirements:** [Node.js 22+](https://nodejs.org/), pnpm 11+, and [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+Invook brings your Gmail accounts into one workspace, organizes your inbox with labels you control, and helps you write with Memory you can inspect and edit. Run it on your own infrastructure and connect the AI providers you choose.
+
+> [!NOTE]
+> Invook is in early development, with no stable release yet. The current setup uses Google OAuth, Gmail Pub/Sub, and Temporal Cloud; Docker provides the local applications, PostgreSQL, and MinIO.
+
+## Features
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>Every account, one workspace</h3>
+      Connect multiple Gmail accounts. Browse and search them together, or focus on a single inbox.
+    </td>
+    <td width="50%" valign="top">
+      <h3>Labels on your terms</h3>
+      Start with Important, Newsletter, Billing, and Others. Describe your own labels, preview matches, and keep the final say over assignments.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>Memory you can edit</h3>
+      Inspect the writing preferences, contact rules, and scheduling habits learned from your sent mail. Add, correct, or delete them at any time.
+    </td>
+    <td valign="top">
+      <h3>Replies in your voice</h3>
+      Draft with the current conversation and relevant Memory. Edit the result, save a Gmail draft, and send when you choose.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>Find the conversation</h3>
+      Search message text, metadata, and attachment filenames. Ask the mail agent to find a thread, read it, or prepare a reply.
+    </td>
+    <td valign="top">
+      <h3>Stay connected to Gmail</h3>
+      Read, star, archive, and manage drafts with Gmail as the source of truth. Browse stored mail while the rest of your mailbox synchronizes.
+    </td>
+  </tr>
+</table>
+
+**You stay in control.** Invook's AI labels are separate from Gmail labels. The mail agent can read stored mail and prepare local drafts, but it has no tools to send email or change Gmail.
+
+## Get started
+
+You'll need **Node.js 22+**, **pnpm 11.10.0** (pinned in the repository), and **Docker with Compose**.
+
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/Thinking-Sound-Lab/Invook-Email-.git
@@ -14,187 +72,51 @@ cd Invook-Email-
 corepack enable
 pnpm install --frozen-lockfile
 cp .env.example .env.local
-openssl rand -base64 32
-openssl rand -base64 32
 ```
 
-Use the two generated values for `BETTER_AUTH_SECRET` and `TOKEN_ENCRYPTION_KEY`. Add your Google OAuth credentials to `.env.local`, then start the complete stack:
+### 2. Connect your services
+
+Use the settings documented in [`.env.example`](./.env.example) to fill in `.env.local` before starting:
+
+| Service | What it's for |
+| --- | --- |
+| Google OAuth + Gmail Pub/Sub | Sign-in, mailbox access, and ongoing synchronization |
+| Temporal Cloud | Durable sync and background work; no local Temporal server is bundled |
+| AI providers | An OpenAI-compatible endpoint for interactive features, plus native Batch configuration for historical labels and Memory |
+
+Generate `BETTER_AUTH_SECRET` and `TOKEN_ENCRYPTION_KEY` independently with `openssl rand -base64 32`. Gmail Pub/Sub and Batch webhooks require public HTTPS endpoints. Local database and object-storage defaults are already in `.env.example`.
+
+### 3. Start Invook
 
 ```bash
 make dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Stop the stack with `make down`.
+Open [localhost:3000](http://localhost:3000), sign in with Google, then connect a Gmail account. Signing in does not grant mailbox access; connecting Gmail is a separate step.
 
-See [Configuration](#configuration) before signing in or connecting Gmail.
+`make down` stops the containers and preserves local data.
 
-## Capabilities
+## Your mail and your data
 
-- Mirror the complete Gmail mailbox, including Spam, Trash, drafts, parsed message content, and attachments.
-- Search mail with text, metadata, and attachment filenames.
-- Assign exactly one Invook-owned Important, Newsletter, Billing, Others, or custom label to each Inbox thread without changing Gmail labels.
-- Learn editable Memory for writing preferences, contacts, and scheduling behavior.
-- Draft replies with only the current thread and relevant Memory as context.
-- Save, edit, and send Gmail drafts through an explicit user-confirmed flow.
-- Use a read-only mail agent to find messages, inspect threads, and prepare local reply drafts.
+Gmail owns your messages, read state, stars, and drafts. Invook writes provider actions to Gmail first, then brings its stored replica up to date through Gmail history. Invook owns your AI labels, editable Memory, and local reply drafts.
 
-## How it works
+Mailbox data lives in your configured PostgreSQL database; attachment bytes live in S3-compatible storage. AI features send the mail context they need to the providers you configure. Self-hosting does not mean every operation stays on your machine.
 
-1. Better Auth handles global Google Identity sign-in and database-backed browser sessions. It requests identity scopes only, never Gmail access.
-2. A signed-in user separately connects a Gmail mailbox. The Fastify API validates the mailbox, encrypts its credentials, registers a Gmail watch, and creates durable synchronization work.
-3. Workers normalize Gmail full-format thread data into PostgreSQL and store attachment bytes in S3-compatible object storage.
-4. PostgreSQL owns product state and transactionally records Temporal commands. Temporal Cloud durably schedules, executes, and retries worker Activities.
-5. The mail reader sanitizes stored HTML and renders it inside an isolated Shadow DOM. Sender-hosted images load directly from their original URLs, so opening mail can disclose the request time and browser IP address to the image host.
-6. AI jobs classify labels, learn Memory, and create drafts. The Next.js app reads the resulting local replica through the API.
+Sender-hosted images currently load directly from their original URLs. Opening an email can reveal your browser's IP address and the request time to the image host.
 
-Provider-owned changes are written to Gmail first and then converge locally through Gmail history.
+## Built for contributors
 
-```text
-Browser -> Next.js -> Fastify API -> Better Auth / PostgreSQL
-                         |                    |
-                         v                    v
-                       Gmail        temporal_commands
-                                              |
-                                              v
-                                    Temporal Cloud -> Worker
-                                              |        |
-                                              v        v
-                                        S3 storage   AI providers
-```
+**TypeScript throughout.** Next.js and React on the web, Fastify at the API, PostgreSQL with Drizzle for persistence, and Temporal Cloud for durable work.
 
-For the detailed synchronization and ownership rules, read the [Gmail mailbox replica contract](./docs/gmail-replica-contract.md).
-
-## Repository map
-
-| Path | Responsibility |
+| Start here | You'll find |
 | --- | --- |
-| `apps/web` | Next.js App Router UI and same-origin API/SSE proxies |
-| `apps/api` | Fastify authentication, authorization, Gmail OAuth, webhooks, and product routes |
-| `apps/worker` | Durable Gmail sync, labeling, Memory, and feedback jobs |
-| `packages/auth` | Better Auth Google Identity and database-backed sessions |
-| `packages/ai` | Model, Memory, label, draft, and mail-agent logic |
-| `packages/contracts` | Shared browser/server product and wire contracts |
-| `packages/database` | Drizzle schema, migrations, repositories, and workflows |
-| `packages/gmail` | Gmail OAuth, Gmail API, history mapping, full-message normalization, and draft MIME parsing |
-| `packages/object-storage` | S3-compatible attachment storage |
-| `packages/workflows` | Deterministic Temporal Workflows and shared execution contracts |
-| `docker` | Local services and application images |
-| `docs` | Product and implementation contracts |
+| [Contributing guide](./.github/CONTRIBUTING.md) | How to propose changes, verify your work, and open a pull request |
+| [Engineering guidelines](./AGENTS.md) | Code conventions and ownership boundaries |
 
-Applications may import public `@invook/*` package exports. Packages never import from `apps/*`, and the web app never imports server-only database, Gmail, credential, object-storage, or worker code.
+Bug fixes, documentation, tests, and design improvements are welcome. For larger changes, [open an issue](https://github.com/Thinking-Sound-Lab/Invook-Email-/issues) first so the scope is agreed before you build.
 
-## Configuration
-
-The root `.env.local` is used by both Docker and local application processes. Never commit it.
-
-### Google Identity and Gmail
-
-Create a Google Cloud OAuth web application. One OAuth client can serve both flows because each request uses its own scopes. Register both local callback URLs:
-
-```text
-http://localhost:3000/v1/auth/callback/google
-http://localhost:3000/connections/gmail/callback
-```
-
-Configure the identity flow:
-
-- `BETTER_AUTH_GOOGLE_CLIENT_ID`
-- `BETTER_AUTH_GOOGLE_CLIENT_SECRET`
-- `BETTER_AUTH_SECRET`
-
-Enable the Gmail API, then configure the mailbox connection flow:
-
-- `GMAIL_GOOGLE_CLIENT_ID`
-- `GMAIL_GOOGLE_CLIENT_SECRET`
-- `TOKEN_ENCRYPTION_KEY`
-- `GMAIL_PUBSUB_TOPIC`
-- `GOOGLE_PUBSUB_PUSH_AUDIENCE`
-- `GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL`
-- `GOOGLE_PUBSUB_SUBSCRIPTION`
-
-You can reuse the same OAuth client ID and secret for both flows or use separate clients. The Pub/Sub push subscription must target the public HTTPS route `/v1/webhooks/google-pubsub`. Gmail connection remains unavailable until its complete OAuth and watch configuration is present.
-
-### AI
-
-AI configuration is feature-specific:
-
-- `AI_BASE_URL`, `AI_MODEL`, and optional `AI_API_KEY` power fast new/recent-thread labels, label previews/historical custom-label scans, feedback analysis, and drafting through an OpenAI-compatible endpoint.
-- `OPENAI_API_KEY`, optional `OPENAI_LABEL_BATCH_MODEL`, `OPENAI_LABEL_BATCH_INPUT_TOKEN_LIMIT`, and `OPENAI_WEBHOOK_SECRET` power serialized historical thread-label Batch analysis.
-- `MEMORY_BATCH_PROVIDER=openai` uses OpenAI Batch for Memory.
-- `MEMORY_BATCH_PROVIDER=azure-openai` uses the `AZURE_OPENAI_*` Batch settings.
-
-When the Docker worker calls a model running on the host, use a host-reachable URL such as `http://host.docker.internal:11434/v1`. See [`.env.example`](./.env.example) for every setting and its local default.
-
-### Temporal Cloud
-
-Create a Temporal Cloud namespace and API key, then configure `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`, `TEMPORAL_API_KEY`, and `TEMPORAL_TASK_QUEUE_PREFIX`. Use a different lowercase task-queue prefix for every environment. Invook does not start a local Temporal server.
-
-Temporal execution is isolated by Invook user. Every user receives deterministic `control`, `live`, and `bulk` task queues; all Gmail accounts owned by that user share those queues. Gmail history catch-up and Workflow Tasks use `control`, label and other incremental AI work uses `live`, and snapshots and historical derivations use `bulk`. This prevents one user's historical mailbox synchronization from consuming another user's Activity capacity, lets new Gmail history bypass the same user's bulk backlog, and runs label analysis in parallel with Gmail synchronization. `MAIL_BULK_CONCURRENCY` (default `3`) bounds a user's concurrent bulk activities; keep it above one so a user's Gmail accounts synchronize in parallel.
-
-`TEMPORAL_TENANT_SHARD_COUNT` and `TEMPORAL_TENANT_SHARD_INDEX` assign tenant queues to worker groups. They default to `1` and `0`. Every highly available replica in one group must use the same pair; different groups use distinct indexes in `[0, count)`. Queue names do not contain Gmail addresses or account IDs.
-
-## Local services
-
-`make dev` builds the applications, applies database migrations, and starts:
-
-| Service | Local address | Purpose |
-| --- | --- | --- |
-| Web | [localhost:3000](http://localhost:3000) | Invook UI |
-| API | [localhost:4000](http://localhost:4000) | Fastify API |
-| PostgreSQL | `localhost:54322` | Mailbox, product, and workflow state |
-| MinIO API | [localhost:9000](http://localhost:9000) | Attachment objects |
-| MinIO console | [localhost:9001](http://localhost:9001) | Local object-storage administration |
-
-Named Docker volumes preserve local data across `make down`.
-
-## Common commands
-
-| Command | Purpose |
-| --- | --- |
-| `make dev` | Build and run the complete Docker stack |
-| `make down` | Stop containers without deleting local data |
-| `pnpm dev` | Run the web and API processes from source |
-| `pnpm worker` | Run the worker from source |
-| `pnpm db:generate` | Generate a Drizzle migration after a schema change |
-| `pnpm db:migrate` | Apply pending database migrations |
-| `make verify` | Run typechecking, linting, tests, and the production web build |
-| `make reset-local` | Clear local Invook data while keeping schemas, buckets, and Docker volumes |
-
-For a source-based development loop, keep PostgreSQL and MinIO available, configure Temporal Cloud, apply migrations, run `pnpm dev`, and run `pnpm worker` in a second terminal.
-
-`make reset-local` is intentionally guarded and destructive to local application data. Read [Reset local signup and mailbox data](./docs/local-development-reset.md) before using it.
-
-## Tech stack
-
-<details>
-<summary>Next.js · React · Fastify · Better Auth · PostgreSQL · Temporal · MinIO</summary>
-
-- **Language:** TypeScript
-- **Web:** Next.js 16, React 19, Tailwind CSS, shadcn/ui, Zustand
-- **API:** Fastify 5 and Better Auth
-- **Database:** PostgreSQL 17 with Drizzle ORM
-- **Jobs:** Temporal Cloud Workflows and Activities with a PostgreSQL transactional command handoff
-- **Storage:** S3-compatible object storage; MinIO locally
-- **Mail:** Gmail API, Google OAuth, and Gmail Pub/Sub notifications
-- **AI:** Vercel AI SDK, OpenAI-compatible models, OpenAI Batch, or Azure OpenAI Batch
-- **Workspace:** pnpm workspaces
-
-</details>
-
-## Project documents
-
-- [Product requirements](./docs/product-requirements.md)
-- [Gmail mailbox replica contract](./docs/gmail-replica-contract.md)
-- [Local data reset](./docs/local-development-reset.md)
-- [Engineering guidelines](./AGENTS.md)
+Please follow the [Code of Conduct](./.github/CODE_OF_CONDUCT.md). Report vulnerabilities privately through the [Security Policy](./.github/SECURITY.md).
 
 ## License
 
-## Community and License
-
-- [Contributing guide](./.github/CONTRIBUTING.md)
-- [Code of Conduct](./.github/CODE_OF_CONDUCT.md)
-- [Security Policy](./.github/SECURITY.md)
-
-Invook is licensed under the [Apache License 2.0](./LICENSE). See
-[NOTICE](./NOTICE) for attribution information.
+[Apache License 2.0](./LICENSE). See [NOTICE](./NOTICE) for attribution.
