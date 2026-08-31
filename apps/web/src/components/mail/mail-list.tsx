@@ -91,12 +91,7 @@ function MailRow({
   user,
 }: MailRowProps) {
   const people = threadPeople(thread.participants, account.email);
-  const isUnread = thread.gmailLabels.some(
-    (label) => label.providerLabelId === "UNREAD",
-  );
-  const isStarred = thread.gmailLabels.some(
-    (label) => label.providerLabelId === "STARRED",
-  );
+  const { isUnread, isStarred } = thread;
   const labels = listMailRowLabels(thread);
 
   return (

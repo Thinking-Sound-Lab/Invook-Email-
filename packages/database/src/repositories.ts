@@ -36,10 +36,11 @@ import {
   LabelPreviewReceiptConflictError,
 } from "./label-preview-receipts";
 import {
-  enqueueHistoricalThreadLabelScanCoordinator,
+  enqueueLiveInboxThreadLabelAnalyses,
   ensureBuiltInInvookLabels,
   refreshThreadProjection,
 } from "./thread-label-analysis";
+import { createHistoricalThreadLabelScan } from "./historical-thread-label-batches";
 import { enqueueDailyGmailWatchRenewal } from "./gmail-watch";
 import { deriveMailSyncProgress } from "./mail-sync-progress";
 import {
@@ -1460,7 +1461,7 @@ async function upsertMailboxMessageWithTransaction(
       const shouldPlanIncrementalLabel =
         input.ingestionMode === "incremental" &&
         currentThread?.isInbox &&
-        !currentThread.assignmentId &&
+        currentThread.assignmentSource !== "user" &&
         (contentChanged || !threadEligibilityBefore?.isInbox);
       const shouldRefreshSnapshotLabel =
         Boolean(activeRunId) &&
@@ -1472,7 +1473,8 @@ async function upsertMailboxMessageWithTransaction(
           .update(threads)
           .set({
             labelAnalysisVersion: sql`${threads.labelAnalysisVersion} + 1`,
-            labelAnalysisState: "pending",
+            labelAnalysisState: "not_requested",
+            labelAnalysisAfter: null,
             labelAnalysisError: null,
             labelAnalyzedAt: null,
             updatedAt: new Date(),
@@ -1541,6 +1543,20 @@ export async function upsertMailboxThreadMessages(
       transaction,
     );
     if (!completed) throw new InactiveMailSyncRunError(input.activeRunId);
+    const [run] = await transaction
+      .select({ createdAt: mailSyncRuns.createdAt })
+      .from(mailSyncRuns)
+      .where(eq(mailSyncRuns.id, input.activeRunId)).limit(1);
+    if (!run) throw new InactiveMailSyncRunError(input.activeRunId);
+    await enqueueLiveInboxThreadLabelAnalyses(
+      {
+        userId: firstMessage.userId,
+        accountId: firstMessage.accountId,
+        threadIds: [threadId],
+        referenceAt: run.createdAt,
+      },
+      transaction,
+    );
     return { threadId, changed };
   });
 }
@@ -1800,7 +1816,8 @@ export async function replaceGmailMessageLabels(
           .update(threads)
           .set({
             labelAnalysisVersion: sql`${threads.labelAnalysisVersion} + 1`,
-            labelAnalysisState: "pending",
+            labelAnalysisState: "not_requested",
+            labelAnalysisAfter: null,
             labelAnalysisError: null,
             labelAnalyzedAt: null,
             updatedAt: new Date(),
@@ -1939,10 +1956,11 @@ export async function createInvookLabel(
             transaction,
           );
         }
-        await enqueueHistoricalThreadLabelScanCoordinator(
+        await createHistoricalThreadLabelScan(
           {
             historicalScanId,
             previewReceiptId: input.previewReceiptId ?? null,
+            before: admittedAt,
             userId: input.userId,
             accountId: account.id,
             labelId: label.id,
@@ -2084,16 +2102,18 @@ export async function setInvookLabelEnabled(
         ? input.applyToPastDays ?? null
         : null;
     if (windowDays) {
-      await enqueueHistoricalThreadLabelScanCoordinator(
+      const admittedAt = new Date();
+      await createHistoricalThreadLabelScan(
         {
           historicalScanId: uuidv4(),
           previewReceiptId: null,
+          before: admittedAt,
           userId: input.userId,
           accountId: currentLabel.accountId,
           labelId: label.id,
           definitionVersion: label.definitionVersion,
           enablementVersion: label.enablementVersion,
-          after: new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000),
+          after: new Date(admittedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000),
         },
         transaction,
       );

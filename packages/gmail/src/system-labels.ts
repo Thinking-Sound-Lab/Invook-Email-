@@ -1,5 +1,4 @@
 export const GMAIL_SYSTEM_LABEL_IDS = [
-  "IMPORTANT",
   "INBOX",
   "SENT",
   "DRAFT",
@@ -17,7 +16,6 @@ export type GmailSystemLabel = {
 };
 
 const GMAIL_SYSTEM_LABEL_NAMES = {
-  IMPORTANT: "Important",
   INBOX: "Inbox",
   SENT: "Sent",
   DRAFT: "Drafts",

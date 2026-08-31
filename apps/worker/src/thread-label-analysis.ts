@@ -3,22 +3,15 @@ import { validate as validateUuid } from "uuid";
 import {
   AiConfigurationError,
   classifyStoredThreadLabel,
-  createStoredThreadLabelInputHash,
   isAiConfigured,
   ThreadLabelClassificationContractError,
-  type InvookLabelDefinitionForAnalysis,
-  type StoredThreadLabelClassification,
   type StoredThreadLabelClassifierInput,
 } from "@invook/ai";
 import {
-  beginHistoricalThreadLabelScan,
   beginThreadLabelAnalysis,
-  completeHistoricalThreadLabelScan,
   completeThreadLabelAnalysis,
   failThreadLabelAnalysis,
-  scanHistoricalThreadLabelPage,
-  type HistoricalThreadLabelCheckpoint,
-  type HistoricalThreadLabelScanCoordinatorCheckpoint,
+  scanRecentThreadLabelPage,
   type ThreadLabelAnalysisCheckpoint,
   type WorkflowStepJob,
 } from "@invook/database";
@@ -27,18 +20,6 @@ export type ThreadLabelAnalysisJob = {
   userId: string;
   accountId: string;
   checkpoint: ThreadLabelAnalysisCheckpoint;
-};
-
-export type HistoricalThreadLabelScanJob = {
-  userId: string;
-  accountId: string;
-  checkpoint: HistoricalThreadLabelCheckpoint;
-};
-
-export type HistoricalThreadLabelScanCoordinatorJob = {
-  userId: string;
-  accountId: string;
-  checkpoint: HistoricalThreadLabelScanCoordinatorCheckpoint;
 };
 
 function requiredString(value: unknown, name: string): string {
@@ -69,18 +50,6 @@ function requiredPositiveInteger(value: unknown, name: string): number {
   return value;
 }
 
-function nullablePositiveInteger(value: unknown, name: string): number | null {
-  return value === null ? null : requiredPositiveInteger(value, name);
-}
-
-function nullableString(value: unknown, name: string): string | null {
-  return value === null ? null : requiredString(value, name);
-}
-
-function nullableUuid(value: unknown, name: string): string | null {
-  return value === null ? null : requiredUuid(value, name);
-}
-
 function requiredDate(value: unknown, name: string): Date {
   const serialized = requiredString(value, name);
   const parsed = new Date(serialized);
@@ -88,87 +57,6 @@ function requiredDate(value: unknown, name: string): Date {
     throw new Error(`${name} must be an ISO timestamp.`);
   }
   return parsed;
-}
-
-export function parseHistoricalThreadLabelScanCoordinatorJob(
-  job: WorkflowStepJob,
-): HistoricalThreadLabelScanCoordinatorJob {
-  if (job.stepType !== "label.historical.scan") {
-    throw new Error(`Unsupported historical label coordinator step: ${job.stepType}`);
-  }
-  return {
-    userId: requiredString(job.userId, "Historical label coordinator user ID"),
-    accountId: requiredString(
-      job.accountId,
-      "Historical label coordinator account ID",
-    ),
-    checkpoint: {
-      historicalScanId: requiredUuid(
-        job.payload.historicalScanId,
-        "Historical label coordinator scan ID",
-      ),
-      previewReceiptId: nullableUuid(
-        job.payload.previewReceiptId,
-        "Historical label coordinator preview receipt ID",
-      ),
-      labelId: requiredString(
-        job.payload.labelId,
-        "Historical label coordinator label ID",
-      ),
-      definitionVersion: requiredPositiveInteger(
-        job.payload.definitionVersion,
-        "Historical label coordinator definition version",
-      ),
-      enablementVersion: requiredPositiveInteger(
-        job.payload.enablementVersion,
-        "Historical label coordinator enablement version",
-      ),
-      after: requiredDate(
-        job.payload.after,
-        "Historical label coordinator cutoff",
-      ),
-      cursorThreadId: nullableString(
-        job.payload.cursorThreadId,
-        "Historical label coordinator cursor",
-      ),
-    },
-  };
-}
-
-export function parseHistoricalThreadLabelScanJob(
-  job: WorkflowStepJob,
-): HistoricalThreadLabelScanJob {
-  if (job.stepType !== "label.thread.scan") {
-    throw new Error(`Unsupported historical thread label step: ${job.stepType}`);
-  }
-  return {
-    userId: requiredString(job.userId, "Historical label user ID"),
-    accountId: requiredString(job.accountId, "Historical label account ID"),
-    checkpoint: {
-      historicalScanId: requiredUuid(
-        job.payload.historicalScanId,
-        "Historical label scan ID",
-      ),
-      previewReceiptId: nullableUuid(
-        job.payload.previewReceiptId,
-        "Historical label preview receipt ID",
-      ),
-      threadId: requiredString(job.payload.threadId, "Historical label thread ID"),
-      labelId: requiredString(job.payload.labelId, "Historical label ID"),
-      definitionVersion: requiredPositiveInteger(
-        job.payload.definitionVersion,
-        "Historical label definition version",
-      ),
-      enablementVersion: requiredPositiveInteger(
-        job.payload.enablementVersion,
-        "Historical label enablement version",
-      ),
-      assignmentVersion: nullablePositiveInteger(
-        job.payload.assignmentVersion,
-        "Historical label assignment version",
-      ),
-    },
-  };
 }
 
 export function parseThreadLabelAnalysisJob(
@@ -216,54 +104,6 @@ function classifierThread(thread: {
   };
 }
 
-type HistoricalThreadLabelClassification = {
-  modelId: string;
-  matched: boolean;
-  confidence: number;
-  source: "preview" | "model";
-};
-
-export async function classifyHistoricalThreadLabel(
-  input: {
-    thread: StoredThreadLabelClassifierInput["thread"];
-    definition: InvookLabelDefinitionForAnalysis;
-    previewResult: {
-      classifierInputHash: string;
-      matched: boolean;
-      confidence: number;
-      modelId: string;
-    } | null;
-  },
-  classify: (
-    input: StoredThreadLabelClassifierInput,
-  ) => Promise<StoredThreadLabelClassification> = classifyStoredThreadLabel,
-): Promise<HistoricalThreadLabelClassification> {
-  if (
-    input.previewResult &&
-    input.previewResult.classifierInputHash ===
-      createStoredThreadLabelInputHash(input.thread)
-  ) {
-    return {
-      modelId: input.previewResult.modelId,
-      matched: input.previewResult.matched,
-      confidence: input.previewResult.confidence,
-      source: "preview",
-    };
-  }
-  const noMatchLabelId = `no-match:${input.definition.id}`;
-  const classification = await classify({
-    thread: input.thread,
-    labelDefinitions: [input.definition],
-    fallbackLabelId: noMatchLabelId,
-  });
-  return {
-    modelId: classification.modelId,
-    matched: classification.labelId === input.definition.id,
-    confidence: classification.confidence,
-    source: "model",
-  };
-}
-
 export async function runThreadLabelAnalysis(
   job: WorkflowStepJob,
 ): Promise<Record<string, unknown>> {
@@ -274,7 +114,7 @@ export async function runThreadLabelAnalysis(
       errorCode: "label_analysis_model_unavailable",
     });
     return {
-      status: deferred ? "batch_fallback" : "superseded",
+      status: deferred ? "failed" : "superseded",
       threadId: parsed.checkpoint.threadId,
     };
   }
@@ -296,63 +136,39 @@ export async function runThreadLabelAnalysis(
   return { ...completion, threadId: parsed.checkpoint.threadId };
 }
 
-export async function runHistoricalThreadLabelScan(
-  job: WorkflowStepJob,
-): Promise<Record<string, unknown>> {
-  const parsed = parseHistoricalThreadLabelScanJob(job);
-  const analysis = await beginHistoricalThreadLabelScan(parsed);
-  if (analysis.status !== "ready") {
-    return {
-      status: analysis.status,
-      threadId: parsed.checkpoint.threadId,
-      labelId: parsed.checkpoint.labelId,
-    };
-  }
-  const classification = await classifyHistoricalThreadLabel({
-    thread: classifierThread(analysis.thread),
-    definition: analysis.definition,
-    previewResult: analysis.previewResult,
-  });
-  const completion = await completeHistoricalThreadLabelScan({
-    ...parsed,
-    modelId: classification.modelId,
-    matched: classification.matched,
-    confidence: classification.confidence,
-  });
+export function parseRecentThreadLabelScanJob(job: WorkflowStepJob): {
+  userId: string;
+  accountId: string;
+  referenceAt: Date;
+  cursorThreadId: string | null;
+} {
+  if (job.stepType !== "label.recent.scan")
+    throw new Error("The recent label scan type is invalid.");
   return {
-    ...completion,
-    threadId: parsed.checkpoint.threadId,
-    labelId: parsed.checkpoint.labelId,
-    classificationSource: classification.source,
+    userId: requiredString(job.userId, "Recent label user ID"),
+    accountId: requiredString(job.accountId, "Recent label account ID"),
+    referenceAt: requiredDate(
+      job.payload.referenceAt,
+      "Recent label reference time",
+    ),
+    cursorThreadId:
+      job.payload.cursorThreadId === null
+        ? null
+        : requiredUuid(job.payload.cursorThreadId, "Recent label cursor"),
   };
 }
 
-export async function runHistoricalThreadLabelScanCoordinator(
-  job: WorkflowStepJob,
-): Promise<Record<string, unknown>> {
-  return scanHistoricalThreadLabelPage(
-    parseHistoricalThreadLabelScanCoordinatorJob(job),
-  );
-}
-
 export function isThreadLabelWorkflowStep(stepType: string): boolean {
-  return (
-    stepType === "label.thread.assign" ||
-    stepType === "label.thread.scan" ||
-    stepType === "label.historical.scan"
-  );
+  return stepType.startsWith("label.");
 }
 
 export async function runLabelSubmission(
   job: WorkflowStepJob,
 ): Promise<Record<string, unknown>> {
-  if (job.stepType === "label.historical.scan") {
-    return runHistoricalThreadLabelScanCoordinator(job);
-  }
-  if (job.stepType === "label.thread.assign") return runThreadLabelAnalysis(job);
-  if (job.stepType === "label.thread.scan") {
-    return runHistoricalThreadLabelScan(job);
-  }
+  if (job.stepType === "label.recent.scan")
+    return scanRecentThreadLabelPage(parseRecentThreadLabelScanJob(job));
+  if (job.stepType === "label.thread.assign")
+    return runThreadLabelAnalysis(job);
   throw new Error(`Unsupported thread label step: ${job.stepType}`);
 }
 

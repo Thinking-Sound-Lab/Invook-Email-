@@ -66,6 +66,96 @@ test("Gmail notification cursors must be decimal integers", async () => {
   );
 });
 
+test(
+  "Gmail pushes release query connections during replay and persist on redelivery",
+  { skip: !testDatabaseUrl },
+  async () => {
+    if (!testDatabaseUrl) return;
+    const client = postgres(testDatabaseUrl, { max: 2, prepare: false });
+    const database = drizzle(client, { schema });
+    const userId = uuidv4();
+    const accountId = uuidv4();
+    const emailAddress = `${accountId}@example.com`;
+    try {
+      await database.insert(profiles).values({
+        id: userId,
+        displayName: "Database Test User",
+        email: `${userId}@example.test`,
+      });
+      await database.insert(connectedAccounts).values({
+        id: accountId,
+        userId,
+        providerAccountId: `provider-${accountId}`,
+        email: emailAddress,
+        memoryAcknowledgedAt: new Date(),
+      });
+      await database.insert(gmailReplicaStates).values({
+        accountId,
+        initialHistoryId: "100",
+        historyCursor: "100",
+        state: "ready",
+      });
+
+      for (const lockTarget of ["account", "replica"] as const) {
+        await database.transaction(async (replay) => {
+          if (lockTarget === "account") {
+            await replay.select().from(connectedAccounts)
+              .where(eq(connectedAccounts.id, accountId)).for("update");
+          } else {
+            await replay.select().from(gmailReplicaStates)
+              .where(eq(gmailReplicaStates.accountId, accountId)).for("update");
+          }
+
+          // More deliveries than pool connections must finish while replay still
+          // holds its row lock. An unrelated read must also retain pool access.
+          const [results, readableReplica] = await Promise.all([
+            Promise.all(Array.from({ length: 12 }, () =>
+              recordGmailPushNotification(
+                { emailAddress, notificationHistoryId: "150" },
+                database,
+              ),
+            )),
+            database.select().from(gmailReplicaStates)
+              .where(eq(gmailReplicaStates.accountId, accountId)),
+          ]);
+          assert.deepEqual(
+            results,
+            Array.from({ length: 12 }, () => ({ status: "retry" })),
+          );
+          assert.equal(readableReplica[0]?.pendingHistoryCursor, null);
+          const admittedSteps = await database.select().from(workflowSteps)
+            .where(eq(workflowSteps.accountId, accountId));
+          assert.equal(admittedSteps.length, 0);
+        });
+      }
+
+      const redelivered = await recordGmailPushNotification(
+        { emailAddress, notificationHistoryId: "150" },
+        database,
+      );
+      assert.equal(redelivered.status, "queued");
+      const duplicate = await recordGmailPushNotification(
+        { emailAddress, notificationHistoryId: "150" },
+        database,
+      );
+      assert.equal(duplicate.status, "coalesced");
+      const [replica] = await database.select().from(gmailReplicaStates)
+        .where(eq(gmailReplicaStates.accountId, accountId));
+      assert.equal(replica?.pendingHistoryCursor, "150");
+      const admittedSteps = await database.select().from(workflowSteps)
+        .where(eq(workflowSteps.accountId, accountId));
+      assert.equal(admittedSteps.length, 1);
+      const commands = await database.select().from(temporalCommands)
+        .innerJoin(workflowSteps, eq(workflowSteps.id, temporalCommands.workflowStepId))
+        .where(eq(workflowSteps.accountId, accountId));
+      assert.equal(commands.length, 1);
+    } finally {
+      await database.delete(profiles).where(eq(profiles.id, userId));
+      await client.end();
+    }
+  },
+);
+
 test("duplicate and reordered Gmail notifications retain the highest cursor", () => {
   assert.equal(highestGmailHistoryCursor(null, "100"), "100");
   assert.equal(highestGmailHistoryCursor("150", "150"), "150");
@@ -360,7 +450,7 @@ test(
         {
           userId,
           accountId,
-          stepType: "label.thread.scan",
+          stepType: "label.recent.scan",
           payload: {},
           idempotencyKey: `bulk-label:${accountId}`,
         },
@@ -385,7 +475,7 @@ test(
           {
             userId,
             accountId,
-            stepType: "label.thread.scan",
+            stepType: "label.recent.scan",
             payload: {},
             idempotencyKey: `bulk-label:${accountId}:${index}`,
           },
@@ -413,7 +503,7 @@ test(
         (job) => job.accountId === accountId,
       );
       const firstLabelIndex = accountJobs.findIndex(
-        (job) => job.stepType === "label.thread.scan",
+        (job) => job.stepType === "label.recent.scan",
       );
       assert.ok(firstLabelIndex >= 2);
       assert.ok(
@@ -437,7 +527,7 @@ test(
       );
       assert.ok(
         accountJobs.slice(firstLabelIndex).every(
-          (job) => job.stepType === "label.thread.scan",
+          (job) => job.stepType === "label.recent.scan",
         ),
       );
 

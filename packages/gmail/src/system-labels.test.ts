@@ -9,7 +9,6 @@ import {
 
 test("only the product-owned Gmail system label allowlist crosses ingestion", () => {
   assert.deepEqual(GMAIL_SYSTEM_LABEL_IDS, [
-    "IMPORTANT",
     "INBOX",
     "SENT",
     "DRAFT",
@@ -49,7 +48,6 @@ test("only the product-owned Gmail system label allowlist crosses ingestion", ()
       "IMPORTANT",
     ]),
     [
-      { providerLabelId: "IMPORTANT", name: "Important" },
       { providerLabelId: "INBOX", name: "Inbox" },
       { providerLabelId: "SENT", name: "Sent" },
       { providerLabelId: "DRAFT", name: "Drafts" },

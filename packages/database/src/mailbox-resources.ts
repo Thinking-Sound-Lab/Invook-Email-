@@ -72,7 +72,7 @@ type MailboxAccountRow = {
 
 type ThreadBaseRow = Omit<
   MailboxThreadSummary,
-  "gmailLabels" | "invookLabel" | "latestMessageAt"
+  "isUnread" | "isStarred" | "isDraft" | "invookLabel" | "latestMessageAt"
 > & {
   latestMessageAt: Date | null;
 };
@@ -274,10 +274,7 @@ async function attachThreadLabels<T extends ThreadBaseRow>(
     database
       .select({
         threadId: messages.threadId,
-        id: labels.id,
         providerLabelId: labels.providerLabelId,
-        name: labels.name,
-        type: labels.providerType,
       })
       .from(messages)
       .innerJoin(messageLabels, eq(messageLabels.messageId, messages.id))
@@ -306,27 +303,19 @@ async function attachThreadLabels<T extends ThreadBaseRow>(
       confidence: label.confidence === null ? null : Number(label.confidence),
     });
   }
-  const gmailLabelsByThread = new Map<
-    string,
-    MailboxThreadSummary["gmailLabels"]
-  >();
+  const stateByThreadId = new Map<string, Set<string>>();
   for (const label of gmailLabelRows) {
-    if (!label.providerLabelId || label.type !== "system") continue;
-    const current = gmailLabelsByThread.get(label.threadId) ?? [];
-    if (!current.some((entry) => entry.id === label.id)) {
-      current.push({
-        id: label.id,
-        providerLabelId: label.providerLabelId,
-        name: label.name,
-        type: label.type,
-      });
-      gmailLabelsByThread.set(label.threadId, current);
-    }
+    if (!label.providerLabelId) continue;
+    const state = stateByThreadId.get(label.threadId) ?? new Set<string>();
+    state.add(label.providerLabelId);
+    stateByThreadId.set(label.threadId, state);
   }
   return input.threadRows.map((thread) => ({
     ...thread,
     latestMessageAt: thread.latestMessageAt?.toISOString() ?? null,
-    gmailLabels: gmailLabelsByThread.get(thread.id) ?? [],
+    isUnread: stateByThreadId.get(thread.id)?.has("UNREAD") ?? false,
+    isStarred: stateByThreadId.get(thread.id)?.has("STARRED") ?? false,
+    isDraft: stateByThreadId.get(thread.id)?.has("DRAFT") ?? false,
     invookLabel: invookLabelsByThread.get(thread.id) ?? null,
   }));
 }
@@ -726,10 +715,7 @@ export async function getMailboxThreadDetail(
         database
           .select({
             messageId: messageLabels.messageId,
-            id: labels.id,
             providerLabelId: labels.providerLabelId,
-            name: labels.name,
-            type: labels.providerType,
           })
           .from(messageLabels)
           .innerJoin(messages, eq(messages.id, messageLabels.messageId))
@@ -753,20 +739,12 @@ export async function getMailboxThreadDetail(
     current.push(attachment);
     attachmentsByMessage.set(attachment.messageId, current);
   }
-  const gmailLabelsByMessage = new Map<
-    string,
-    MailboxSelectedThread["messages"][number]["gmailLabels"]
-  >();
+  const stateByMessageId = new Map<string, Set<string>>();
   for (const label of messageGmailLabelRows) {
-    if (!label.providerLabelId || label.type !== "system") continue;
-    const current = gmailLabelsByMessage.get(label.messageId) ?? [];
-    current.push({
-      id: label.id,
-      providerLabelId: label.providerLabelId,
-      name: label.name,
-      type: label.type,
-    });
-    gmailLabelsByMessage.set(label.messageId, current);
+    if (!label.providerLabelId) continue;
+    const state = stateByMessageId.get(label.messageId) ?? new Set<string>();
+    state.add(label.providerLabelId);
+    stateByMessageId.set(label.messageId, state);
   }
   const thread: MailboxSelectedThread = {
     ...baseThread,
@@ -790,7 +768,9 @@ export async function getMailboxThreadDetail(
           value: separator >= 0 ? header.line.slice(separator + 1).trimStart() : "",
         };
       }),
-      gmailLabels: gmailLabelsByMessage.get(message.id) ?? [],
+      isUnread: stateByMessageId.get(message.id)?.has("UNREAD") ?? false,
+      isStarred: stateByMessageId.get(message.id)?.has("STARRED") ?? false,
+      isDraft: stateByMessageId.get(message.id)?.has("DRAFT") ?? false,
       attachments: attachmentsByMessage.get(message.id) ?? [],
     })),
     aiReplyDraft:

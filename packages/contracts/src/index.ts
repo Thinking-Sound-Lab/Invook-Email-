@@ -35,6 +35,7 @@ export type StaticMailboxView = (typeof mailboxViews)[number];
 export type MailboxView = StaticMailboxView | `label:${string}`;
 
 export type ThreadLabelAnalysisState =
+  | "not_requested"
   | "pending"
   | "running"
   | "complete"
@@ -235,13 +236,6 @@ export type SignedInUser = {
   name: string;
 };
 
-export type GmailLabel = {
-  id: string;
-  providerLabelId: string;
-  name: string;
-  type: "system";
-};
-
 export type GmailDraftResource = {
   id: string;
   providerDraftId: string;
@@ -257,7 +251,9 @@ export type MailboxThreadSummary = {
   subject: string;
   snippet: string;
   participants: string[];
-  gmailLabels: GmailLabel[];
+  isUnread: boolean;
+  isStarred: boolean;
+  isDraft: boolean;
   invookLabel: InvookThreadLabel | null;
   latestMessageAt: string | null;
   messageCount: number;
@@ -273,7 +269,9 @@ export type MailboxThreadMessage = {
   internalDate: string;
   sizeEstimate: number | null;
   headers: Array<{ name: string; value: string }>;
-  gmailLabels: GmailLabel[];
+  isUnread: boolean;
+  isStarred: boolean;
+  isDraft: boolean;
   subject: string;
   bodyText: string;
   bodyHtml: string | null;
@@ -323,7 +321,6 @@ export type MailboxQueryMessage = {
   bodyPreview: string;
   isInbox: boolean;
   isUnread: boolean;
-  gmailLabels: Array<{ id: string; name: string }>;
   invookLabel: { id: string; name: string } | null;
 };
 
@@ -331,7 +328,6 @@ export type MailboxQueryResult =
   | {
       status: "available";
       messages: MailboxQueryMessage[];
-      availableGmailLabels: Array<{ accountId: string; id: string; name: string }>;
       availableInvookLabels: Array<{ accountId: string; id: string; name: string }>;
       nextCursor: string | null;
     }
@@ -339,7 +335,6 @@ export type MailboxQueryResult =
       status: "unavailable";
       reason: "mailbox_not_connected";
       messages: [];
-      availableGmailLabels?: never;
       availableInvookLabels?: never;
       nextCursor: null;
     };

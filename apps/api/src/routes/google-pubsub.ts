@@ -20,6 +20,11 @@ type GmailPushNotification = {
   historyId: string;
 };
 
+type GooglePubSubRouteDependencies = {
+  verifyIdentity?: typeof verifyGoogleIdToken;
+  recordNotification?: typeof recordGmailPushNotification;
+};
+
 function bearerToken(request: FastifyRequest): string | null {
   const authorization = request.headers.authorization;
   if (!authorization) return null;
@@ -108,7 +113,11 @@ function parsePublishedAt(value: unknown): Date | null | undefined {
   return Number.isFinite(publishedAt.getTime()) ? publishedAt : undefined;
 }
 
-export const registerGooglePubSubRoutes: FastifyPluginAsync = async (api) => {
+export const registerGooglePubSubRoutes: FastifyPluginAsync<
+  GooglePubSubRouteDependencies
+> = async (api, options) => {
+  const verifyIdentity = options.verifyIdentity ?? verifyGoogleIdToken;
+  const recordNotification = options.recordNotification ?? recordGmailPushNotification;
   api.post<{ Body: GooglePubSubPushBody | null }>(
     "/google-pubsub",
     {
@@ -131,7 +140,7 @@ export const registerGooglePubSubRoutes: FastifyPluginAsync = async (api) => {
         }
 
         try {
-          const identity = await verifyGoogleIdToken(idToken, configuration.audience);
+          const identity = await verifyIdentity(idToken, configuration.audience);
           if (identity.email.toLowerCase() !== configuration.serviceAccountEmail) {
             await sendProblem(
               request,
@@ -191,10 +200,14 @@ export const registerGooglePubSubRoutes: FastifyPluginAsync = async (api) => {
         return;
       }
 
-      await recordGmailPushNotification({
+      const result = await recordNotification({
         emailAddress: notification.emailAddress,
         notificationHistoryId: notification.historyId,
       });
+      if (result.status === "retry") {
+        await sendProblem(request, reply, 503, "Gmail notification admission is busy");
+        return;
+      }
       await reply.code(204).send();
     },
   );

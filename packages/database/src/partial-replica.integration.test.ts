@@ -325,7 +325,7 @@ test(
       );
 
       const structured = await queryInvookMailbox(
-        { userId, gmailLabelIds: [gmailLabelId] },
+        { userId, inboxState: "inbox" },
         database,
       );
       assert.equal(structured.status, "available");
@@ -772,9 +772,7 @@ test(
         "120",
       );
       assert.equal(
-        threadDetail?.thread.gmailLabels.some(
-          (label) => label.providerLabelId === "UNREAD",
-        ),
+        threadDetail?.thread.isUnread,
         true,
       );
     });

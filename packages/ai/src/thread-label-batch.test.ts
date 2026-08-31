@@ -35,8 +35,8 @@ test("thread-label Batch defaults to GPT-5.6 Luna", () => {
 function entry(index: number): ThreadLabelBatchEntry {
   return {
     threadId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
-    analysisVersion: 1,
-    definitionHash: "a".repeat(64),
+    contentVersion: 1,
+    assignmentVersion: null,
     fallbackLabelId: "others-label",
     thread: {
       subject: `Thread ${index}`,

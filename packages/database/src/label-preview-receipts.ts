@@ -24,7 +24,7 @@ import {
 } from "./client";
 import {
   labelPreviewReceipts,
-  workflowSteps,
+  historicalThreadLabelScans,
   type LabelPreviewReceiptResult,
 } from "./schema";
 
@@ -194,53 +194,17 @@ export async function consumeLabelPreviewReceipt(
   if (!consumed) throw new LabelPreviewReceiptConflictError();
 }
 
-export async function getLabelPreviewReceiptResult(
-  input: {
-    receiptId: string;
-    historicalScanId: string;
-    userId: string;
-    accountId: string;
-    name: string;
-    description: string;
-    threadId: string;
-  },
-  database: DatabaseExecutor,
-): Promise<LabelPreviewReceiptResult | null> {
-  const [receipt] = await database
-    .select({ results: labelPreviewReceipts.results })
-    .from(labelPreviewReceipts)
-    .where(
-      and(
-        eq(labelPreviewReceipts.id, input.receiptId),
-        eq(labelPreviewReceipts.userId, input.userId),
-        eq(labelPreviewReceipts.accountId, input.accountId),
-        eq(labelPreviewReceipts.consumedScanId, input.historicalScanId),
-        eq(
-          labelPreviewReceipts.definitionHash,
-          customLabelDefinitionHash(input),
-        ),
-      ),
-    )
-    .limit(1);
-  if (!receipt) return null;
-  return (
-    validateReceiptResults(receipt.results).find(
-      (result) => result.threadId === input.threadId,
-    ) ?? null
-  );
-}
-
 export async function deleteExpiredLabelPreviewReceipts(
   database: Database = getDatabase(),
 ): Promise<number> {
   return database.transaction(async (transaction) => {
     const activeScanStep = transaction
-      .select({ id: workflowSteps.id })
-      .from(workflowSteps)
+      .select({ id: historicalThreadLabelScans.id })
+      .from(historicalThreadLabelScans)
       .where(
         and(
-          inArray(workflowSteps.status, ["queued", "running"]),
-          sql`${workflowSteps.input}->>'historicalScanId' = ${labelPreviewReceipts.consumedScanId}::text`,
+          inArray(historicalThreadLabelScans.status, ["queued", "running"]),
+          eq(historicalThreadLabelScans.id, labelPreviewReceipts.consumedScanId),
         ),
       )
       .limit(1);

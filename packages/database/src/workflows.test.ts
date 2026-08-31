@@ -43,23 +43,23 @@ test("live Gmail work dispatches ahead of bulk synchronization work", () => {
   );
   assert.equal(
     tenantTaskQueueLaneForStep({
-      stepType: "label.thread.scan",
+      stepType: "label.recent.scan",
     }),
     "bulk",
   );
   assert.equal(
     tenantTaskQueueLaneForStep({
-      stepType: "label.historical.scan",
+      stepType: "label.batch.submit",
     }),
     "bulk",
   );
   assert.equal(
     tenantTaskQueueLaneForStepType("label.batch.submit"),
-    "live",
+    "bulk",
   );
   assert.equal(
     tenantTaskQueueLaneForStepType("label.batch.event"),
-    "live",
+    "bulk",
   );
 });
 
@@ -232,7 +232,7 @@ test("ready replicas enqueue only the post-sync Memory derivation", () => {
     "live",
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("label.thread.scan"),
+    tenantTaskQueueLaneForStepType("label.recent.scan"),
     "bulk",
   );
 });

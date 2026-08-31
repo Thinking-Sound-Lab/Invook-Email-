@@ -100,11 +100,15 @@ Open [localhost:3000](http://localhost:3000), sign in with Google, then connect 
 
 Gmail owns your messages, read state, stars, and drafts. Invook writes provider actions to Gmail first, then brings its stored replica up to date through Gmail history. Invook owns your AI labels, editable Memory, and local reply drafts.
 
+Automatic labeling considers Inbox threads with an Inbox message from the last 14 days and uses individual model calls, including during initial sync. Older mail still syncs, but does not start automatic labeling. OpenAI Batch is used for labels only when you explicitly choose to apply a label to past mail in Settings (7, 30, or 90 days); that request considers only the selected label and preserves nonmatches. Gmail categories, custom labels, and Gmail Important are not imported as Invook labels. Operational Gmail state such as read, star, Inbox, and draft status remains synchronized.
+
 Mailbox data lives in your configured PostgreSQL database; attachment bytes live in S3-compatible storage. AI features send the mail context they need to the providers you configure. Self-hosting does not mean every operation stays on your machine.
 
 Sender-hosted images currently load directly from their original URLs. Opening an email can reveal your browser's IP address and the request time to the image host.
 
 ## Built for contributors
+
+When upgrading across the label-policy migration, stop API and worker processes before migrating, then restart them together with the updated web build. The migration retires automatic label jobs, preserves completed assignments and pending explicit settings requests, and removes imported Gmail label metadata. The worker resumes eligible recent labeling and saved settings requests after startup.
 
 **TypeScript throughout.** Next.js and React on the web, Fastify at the API, PostgreSQL with Drizzle for persistence, and Temporal Cloud for durable work.
 

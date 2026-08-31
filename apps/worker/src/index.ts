@@ -36,6 +36,8 @@ import {
   enqueueDailyGmailWatchRenewal,
   ensureDailyGmailWatchRenewals,
   enqueuePendingAnalysisWorkflowSteps,
+  enqueueHistoricalThreadLabelBatchRecoveries,
+  enqueueRecentThreadLabelRecoveries,
   enqueueBatchEvent,
   enqueueMemoryBatchRetry,
   enqueueMissingMailSyncRuns,
@@ -44,10 +46,6 @@ import {
   enqueuePendingGmailHistoryCatchups,
   enqueuePostSyncWorkflowSteps,
   enqueueReadyMailSyncFinalizers,
-  enqueueStartupThreadLabelBatchSubmissions,
-  enqueueInitialSyncLiveThreadLabelAnalyses,
-  enqueueInitialThreadLabelBatchIfReady,
-  enqueueThreadLabelBatchSubmission,
   failMailSyncThread,
   failWorkflowStep,
   getIndexedMessageIds,
@@ -89,7 +87,6 @@ import {
   recordMailboxMessageBatchRefresh,
   recordMailboxMessageRefresh,
   recordMailSyncPage,
-  requeueRetryableThreadLabelBatchFailures,
   startMailSyncRun,
   updateStoredCredential,
   upsertMailboxMessage,
@@ -131,7 +128,6 @@ import type {
 
 import {
   gmailContentConcurrency,
-  parseNonNegativeInteger,
   TemporalRuntime,
 } from "./temporal-runtime";
 import { classifyGmailWorkflowFailure } from "./gmail-workflow-failure";
@@ -163,16 +159,6 @@ import {
 const encryptionKey = process.env.TOKEN_ENCRYPTION_KEY ?? "";
 const googleClientId = process.env.GMAIL_GOOGLE_CLIENT_ID ?? "";
 const googleClientSecret = process.env.GMAIL_GOOGLE_CLIENT_SECRET ?? "";
-const mailLabelHotWindowDays = parseNonNegativeInteger(
-  process.env.MAIL_LABEL_HOT_WINDOW_DAYS,
-  14,
-  "MAIL_LABEL_HOT_WINDOW_DAYS",
-);
-const mailLabelHotWindowMaxThreads = parseNonNegativeInteger(
-  process.env.MAIL_LABEL_HOT_WINDOW_MAX_THREADS,
-  1_000,
-  "MAIL_LABEL_HOT_WINDOW_MAX_THREADS",
-);
 const feedbackBatchSize = 24;
 const credentialRenewalWindowMs = 5 * 60 * 1_000;
 const objectStorage = createObjectStorage();
@@ -861,27 +847,6 @@ async function runGmailThreadBatch(job: WorkflowStepJob) {
     accountId: account.id,
     threadIds: changedThreadIds,
   });
-  // Hot-window threads reserve the live lane before Batch admission runs, so
-  // recent inbox threads get labels without waiting on an OpenAI Batch. This
-  // runs before failure classification so partial batches still label.
-  let hotWindowEnqueuedCount = 0;
-  if (
-    mailLabelHotWindowDays > 0 &&
-    isAiConfigured() &&
-    changedThreadIds.length > 0
-  ) {
-    const hotWindow = await enqueueInitialSyncLiveThreadLabelAnalyses({
-      runId,
-      userId: account.userId,
-      accountId: account.id,
-      threadIds: changedThreadIds,
-      hotWindowDays: mailLabelHotWindowDays,
-      maxThreads: mailLabelHotWindowMaxThreads,
-    });
-    if (hotWindow.status === "enqueued") {
-      hotWindowEnqueuedCount = hotWindow.enqueuedCount;
-    }
-  }
   if (outcome.failures.length > 0) {
     const classifiedFailures = outcome.failures.map((failure) => ({
       ...failure,
@@ -908,18 +873,10 @@ async function runGmailThreadBatch(job: WorkflowStepJob) {
     }
     throw classifiedFailures[0]?.error ?? new Error("Gmail thread batch failed.");
   }
-  const labelBatchAdmission = await enqueueInitialThreadLabelBatchIfReady({
-    runId,
-    userId: account.userId,
-    accountId: account.id,
-    sourceKey: `gmail-thread-storage:${job.id}`,
-  });
   return {
     status: "complete",
     runId,
     threadCount: providerThreadIds.length,
-    hotWindowLiveLabelCount: hotWindowEnqueuedCount,
-    labelBatchAdmission: labelBatchAdmission.status,
   };
 }
 
@@ -1103,14 +1060,6 @@ async function catchUpGmailHistory(options: {
       changedThreadCount: 0,
     };
   }
-  if (replay.changedThreadIds.length > 0) {
-    await enqueueThreadLabelBatchSubmission({
-      userId: account.userId,
-      accountId: account.id,
-      sourceKey: `gmail-history:${options.sourceStepId}:${replay.historyId}`,
-      flushRemainder: true,
-    });
-  }
   if (disposition === "continue_durably") {
     const pendingHistoryCursor = replay.pendingHistoryCursor;
     if (!pendingHistoryCursor) {
@@ -1208,12 +1157,6 @@ async function runGmailFinalize(job: WorkflowStepJob) {
     finalHistoryCursor: historyCursor,
   });
   if (!completed) return { status: "inactive", runId };
-  await enqueueThreadLabelBatchSubmission({
-    userId: account.userId,
-    accountId: account.id,
-    sourceKey: `gmail-finalize:${runId}`,
-    flushRemainder: true,
-  });
   return {
     status: "complete",
     runId,
@@ -2070,9 +2013,8 @@ async function runWorkflowStepHandler(
         return runMemoryBatchEvent(job);
       case "memory.feedback":
         return runMemoryFeedback(job);
-      case "label.historical.scan":
+      case "label.recent.scan":
       case "label.thread.assign":
-      case "label.thread.scan":
         return runLabelSubmission(job);
       case "label.batch.submit":
         return runThreadLabelBatchSubmission(job);
@@ -2288,8 +2230,8 @@ async function run() {
     await enqueueReadyMailSyncFinalizers();
     await ensureDailyGmailWatchRenewals();
     await enqueuePostSyncWorkflowSteps();
-    await requeueRetryableThreadLabelBatchFailures();
-    await enqueueStartupThreadLabelBatchSubmissions();
+    await enqueueHistoricalThreadLabelBatchRecoveries();
+    await enqueueRecentThreadLabelRecoveries();
     await enqueuePendingAnalysisWorkflowSteps();
     await reconcileSubmittedThreadLabelBatches();
     outboxSignal.notify();

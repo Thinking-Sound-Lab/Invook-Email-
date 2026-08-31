@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, before, test } from "node:test";
 
-import type { FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import { validate as validateUuid } from "uuid";
 
 import type { InvookSession } from "@invook/auth";
@@ -17,7 +17,10 @@ import { ObjectStorageObjectNotFoundError } from "@invook/object-storage";
 import { buildApi } from "./app";
 import type { AuthService } from "./auth/auth-service";
 import { getGmailConnectionIdentityError } from "./routes/gmail-connections";
-import { parseGmailNotification } from "./routes/google-pubsub";
+import {
+  parseGmailNotification,
+  registerGooglePubSubRoutes,
+} from "./routes/google-pubsub";
 
 let api: FastifyInstance;
 const originalAppUrl = process.env.APP_URL;
@@ -705,6 +708,74 @@ test("Google Pub/Sub preserves numeric Gmail history IDs exactly", () => {
     emailAddress: "mailbox@example.com",
     historyId: "18446744073709551615",
   });
+});
+
+test("Google Pub/Sub retries busy admission and acknowledges only stored delivery", async () => {
+  process.env.GOOGLE_PUBSUB_PUSH_AUDIENCE = "https://example.test/v1/webhooks/google-pubsub";
+  process.env.GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL = "gmail-push@example.com";
+  process.env.GOOGLE_PUBSUB_SUBSCRIPTION = "projects/invook/subscriptions/gmail-mailbox-changes";
+  const webhookApi = Fastify();
+  let isBusy = true;
+  let admissionCount = 0;
+  try {
+    await webhookApi.register(registerGooglePubSubRoutes, {
+      prefix: "/v1/webhooks",
+      verifyIdentity: async (_token, audience) => ({
+        sub: "test-service-account",
+        email: "gmail-push@example.com",
+        email_verified: true,
+        iss: "https://accounts.google.com",
+        aud: audience,
+        exp: 2_000_000_000,
+        name: null,
+        picture: null,
+      }),
+      recordNotification: async (notification) => {
+        admissionCount += 1;
+        assert.deepEqual(notification, {
+          emailAddress: "mailbox@example.com",
+          notificationHistoryId: "150",
+        });
+        return isBusy
+          ? { status: "retry" }
+          : { status: "queued", accountId: attachmentOwnerId, stepId: attachmentId };
+      },
+    });
+    const payload = {
+      subscription: "projects/invook/subscriptions/gmail-mailbox-changes",
+      message: {
+        messageId: "test-delivery",
+        data: Buffer.from(JSON.stringify({
+          emailAddress: "mailbox@example.com",
+          historyId: "150",
+        })).toString("base64"),
+      },
+    };
+    const unauthenticated = await webhookApi.inject({
+      method: "POST", url: "/v1/webhooks/google-pubsub", payload,
+    });
+    assert.equal(unauthenticated.statusCode, 401);
+    assert.equal(admissionCount, 0);
+
+    const request = {
+      method: "POST" as const,
+      url: "/v1/webhooks/google-pubsub",
+      headers: { authorization: "Bearer test-token" },
+      payload,
+    };
+    const busy = await webhookApi.inject(request);
+    assert.equal(busy.statusCode, 503);
+    assert.equal(busy.json().title, "Gmail notification admission is busy");
+    isBusy = false;
+    const redelivered = await webhookApi.inject(request);
+    assert.equal(redelivered.statusCode, 204);
+    assert.equal(admissionCount, 2);
+  } finally {
+    await webhookApi.close();
+    delete process.env.GOOGLE_PUBSUB_PUSH_AUDIENCE;
+    delete process.env.GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT_EMAIL;
+    delete process.env.GOOGLE_PUBSUB_SUBSCRIPTION;
+  }
 });
 
 test("mailbox change events require an authenticated session", async () => {

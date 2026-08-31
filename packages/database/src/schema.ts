@@ -327,6 +327,10 @@ export const labels = pgTable(
       sql`(${table.kind} = 'gmail' and ${table.providerLabelId} is not null and ${table.providerType} = 'system' and ${table.systemKey} is null) or (${table.kind} = 'invook' and ${table.providerLabelId} is null and ${table.providerType} is null and char_length(btrim(${table.description})) > 0)`,
     ),
     check(
+      "labels_gmail_mailbox_state_check",
+      sql`${table.kind} <> 'gmail' or ${table.providerLabelId} in ('INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM', 'STARRED', 'UNREAD')`,
+    ),
+    check(
       "labels_system_key_check",
       sql`${table.systemKey} is null or ${table.systemKey} in ('important', 'newsletter', 'billing', 'others')`,
     ),
@@ -359,9 +363,10 @@ export const threads = pgTable(
     labelAnalysisState: text("label_analysis_state")
       .$type<ThreadLabelAnalysisState>()
       .notNull()
-      .default("pending"),
+      .default("not_requested"),
     labelAnalysisVersion: integer("label_analysis_version").notNull().default(1),
     labelAnalysisDefinitionHash: text("label_analysis_definition_hash"),
+    labelAnalysisAfter: timestampWithTimezone("label_analysis_after"),
     labelAnalysisError: text("label_analysis_error"),
     labelAnalyzedAt: timestampWithTimezone("label_analyzed_at"),
     createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
@@ -385,7 +390,7 @@ export const threads = pgTable(
     check("threads_content_version_check", sql`${table.contentVersion} > 0`),
     check(
       "threads_label_analysis_state_check",
-      sql`${table.labelAnalysisState} in ('pending', 'running', 'complete', 'failed')`,
+      sql`${table.labelAnalysisState} in ('not_requested', 'pending', 'running', 'complete', 'failed')`,
     ),
     check(
       "threads_label_analysis_version_check",
@@ -1026,6 +1031,60 @@ export const workflowSteps = pgTable(
   ],
 );
 
+export const historicalThreadLabelScans = pgTable(
+  "historical_thread_label_scans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => connectedAccounts.id, { onDelete: "cascade" }),
+    labelId: uuid("label_id")
+      .notNull()
+      .references(() => labels.id, { onDelete: "cascade" }),
+    definitionVersion: integer("definition_version").notNull(),
+    enablementVersion: integer("enablement_version").notNull(),
+    after: timestampWithTimezone("after").notNull(),
+    before: timestampWithTimezone("before").notNull(),
+    previewReceiptId: uuid("preview_receipt_id").references(
+      () => labelPreviewReceipts.id,
+      { onDelete: "set null" },
+    ),
+    cursorThreadId: uuid("cursor_thread_id"),
+    status: text("status")
+      .$type<"queued" | "running" | "complete" | "failed" | "superseded">()
+      .notNull()
+      .default("queued"),
+    lastError: text("last_error"),
+    completedAt: timestampWithTimezone("completed_at"),
+    createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
+    updatedAt: timestampWithTimezone("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index("historical_thread_label_scans_account_status_idx").on(
+      table.accountId,
+      table.status,
+    ),
+    check(
+      "historical_thread_label_scans_status_check",
+      sql`${table.status} in ('queued', 'running', 'complete', 'failed', 'superseded')`,
+    ),
+    check(
+      "historical_thread_label_scans_window_check",
+      sql`${table.after} <= ${table.before}`,
+    ),
+    check(
+      "historical_thread_label_scans_versions_check",
+      sql`${table.definitionVersion} > 0 and ${table.enablementVersion} > 0`,
+    ),
+  ],
+);
+
 export const threadLabelBatchSubmissions = pgTable(
   "thread_label_batch_submissions",
   {
@@ -1046,16 +1105,25 @@ export const threadLabelBatchSubmissions = pgTable(
     errorFileId: text("error_file_id"),
     modelId: text("model_id").notNull(),
     definitionHash: text("definition_hash").notNull(),
-    flushRemainder: boolean("flush_remainder").notNull().default(false),
-    hasMore: boolean("has_more").notNull().default(false),
+    historicalScanId: uuid("historical_scan_id").references(
+      () => historicalThreadLabelScans.id,
+      { onDelete: "cascade" },
+    ),
+    retryAttempt: integer("retry_attempt").notNull().default(0),
+    continuations: jsonb("continuations")
+      .$type<Array<{ retryAttempt: number; threadIds: string[] }>>()
+      .notNull()
+      .default([]),
     requestCount: integer("request_count").notNull(),
     manifest: jsonb("manifest")
-      .$type<Array<{
-        threadId: string;
-        analysisVersion: number;
-        definitionHash: string;
-        fallbackLabelId: string;
-      }>>()
+      .$type<
+        Array<{
+          threadId: string;
+          contentVersion: number;
+          assignmentVersion: number | null;
+          fallbackLabelId: string;
+        }>
+      >()
       .notNull(),
     status: text("status")
       .$type<"preparing" | "submitted" | "complete" | "failed">()
@@ -1078,6 +1146,17 @@ export const threadLabelBatchSubmissions = pgTable(
     uniqueIndex("thread_label_batch_submissions_provider_batch_idx")
       .on(table.provider, table.providerBatchId)
       .where(sql`${table.providerBatchId} is not null`),
+    uniqueIndex("thread_label_batch_submissions_scan_active_idx")
+      .on(table.historicalScanId)
+      .where(sql`${table.status} in ('preparing', 'submitted')`),
+    check(
+      "thread_label_batch_submissions_scope_check",
+      sql`${table.historicalScanId} is not null or ${table.status} in ('complete', 'failed')`,
+    ),
+    check(
+      "thread_label_batch_submissions_retry_check",
+      sql`${table.retryAttempt} between 0 and 6`,
+    ),
     index("thread_label_batch_submissions_account_status_idx").on(
       table.accountId,
       table.status,

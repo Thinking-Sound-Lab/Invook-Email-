@@ -67,7 +67,7 @@ test(
           {
             userId: firstUserId,
             accountId: firstAccountId,
-            stepType: "label.thread.scan",
+            stepType: "label.recent.scan",
             idempotencyKey: `tenant-fairness:${firstUserId}:${index}`,
           },
           database,
@@ -77,7 +77,7 @@ test(
         {
           userId: secondUserId,
           accountId: secondAccountId,
-          stepType: "label.thread.scan",
+          stepType: "label.recent.scan",
           idempotencyKey: `tenant-fairness:${secondUserId}`,
         },
         database,

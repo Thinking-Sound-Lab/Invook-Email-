@@ -253,6 +253,20 @@
       "when": 1787820264273,
       "tag": "0035_wandering_lockheed",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788176158065,
+      "tag": "0036_label_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788176451399,
+      "tag": "0037_historical_batch_continuations",
+      "breakpoints": true
     }
   ]
 }

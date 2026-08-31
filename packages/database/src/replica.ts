@@ -1,4 +1,5 @@
-import { and, desc, eq, inArray, isNotNull, not } from "drizzle-orm";
+import { and, desc, DrizzleQueryError, eq, inArray, isNotNull, not } from "drizzle-orm";
+import postgres from "postgres";
 import { v4 as uuidv4 } from "uuid";
 
 import type { GmailForwardMessage } from "@invook/contracts/gmail-forward";
@@ -321,6 +322,10 @@ export async function recordMailboxMessageRefresh(
       )
       .limit(1);
     if (!account) return false;
+    await enqueueLiveInboxThreadLabelAnalyses(
+      { ...input, threadIds: [input.threadId] },
+      transaction,
+    );
     await insertMailboxChange(transaction, {
       userId: input.userId,
       accountId: input.accountId,
@@ -698,21 +703,23 @@ export async function saveGmailWatchState(
   });
 }
 
+type GmailPushNotificationResult =
+  | { status: "retry" }
+  | { status: "ignored"; accountId: null }
+  | { status: "coalesced" | "queued"; accountId: string; stepId: string };
+
 export async function recordGmailPushNotification(
   input: {
     emailAddress: string;
     notificationHistoryId: string;
   },
   database?: Database,
-): Promise<
-  | { status: "ignored"; accountId: null }
-  | { status: "coalesced" | "queued"; accountId: string; stepId: string }
-> {
+): Promise<GmailPushNotificationResult> {
   if (!/^\d+$/.test(input.notificationHistoryId)) {
     throw new Error("The Gmail notification history cursor is invalid.");
   }
   const executor = database ?? getDatabase();
-  return executor.transaction(async (transaction) => {
+  return executor.transaction<GmailPushNotificationResult>(async (transaction) => {
     const [account] = await transaction
       .select({ id: connectedAccounts.id, userId: connectedAccounts.userId })
       .from(connectedAccounts)
@@ -723,6 +730,9 @@ export async function recordGmailPushNotification(
           eq(connectedAccounts.status, "connected"),
         ),
       )
+      // Reserve the parent key without waiting before admitting child work.
+      // Replay locks the account before its replica state.
+      .for("key share", { noWait: true })
       .limit(1);
     if (!account) return { status: "ignored", accountId: null };
 
@@ -730,7 +740,9 @@ export async function recordGmailPushNotification(
       .select({ pendingHistoryCursor: gmailReplicaStates.pendingHistoryCursor })
       .from(gmailReplicaStates)
       .where(eq(gmailReplicaStates.accountId, account.id))
-      .for("update")
+      // A history apply can hold this row for the entire replay transaction.
+      // Pub/Sub retries must not occupy the API query pool waiting for it.
+      .for("update", { noWait: true })
       .limit(1);
     if (!replica) return { status: "ignored", accountId: null };
     const currentPending = replica.pendingHistoryCursor;
@@ -761,6 +773,13 @@ export async function recordGmailPushNotification(
       accountId: account.id,
       stepId,
     };
+  }).catch((error: unknown): GmailPushNotificationResult => {
+    const cause = error instanceof DrizzleQueryError ? error.cause : error;
+    if (cause instanceof postgres.PostgresError && cause.code === "55P03") {
+      // The transaction has rolled back. Never acknowledge an unstored cursor.
+      return { status: "retry" };
+    }
+    throw error;
   });
 }
 
