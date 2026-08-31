@@ -52,7 +52,6 @@ packages/
   gmail/               Google OAuth/OIDC, Gmail API, history mapping, and MIME parsing
   object-storage/      S3-compatible raw MIME and attachment storage
 docker/                 Container images and local service orchestration
-docs/                   Product and implementation contracts
 ```
 
 - Deployable processes belong in `apps/`; reusable domain and infrastructure code belongs in `packages/`; container assets belong in `docker/`.

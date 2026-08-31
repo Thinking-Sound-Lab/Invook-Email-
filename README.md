@@ -8,13 +8,13 @@
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-2563eb?style=flat-square" alt="License: Apache 2.0" /></a>
   <a href="./.github/SECURITY.md#supported-versions"><img src="https://img.shields.io/badge/status-early_development-64748b?style=flat-square" alt="Status: early development" /></a>
-  <a href="./docs/development.md"><img src="https://img.shields.io/badge/built_with-TypeScript-3178c6?style=flat-square" alt="Built with TypeScript" /></a>
+  <a href="./package.json"><img src="https://img.shields.io/badge/built_with-TypeScript-3178c6?style=flat-square" alt="Built with TypeScript" /></a>
 </p>
 
 <p align="center">
   <a href="#features">Features</a> &nbsp; / &nbsp;
   <a href="#get-started">Get started</a> &nbsp; / &nbsp;
-  <a href="./docs/development.md">Development</a> &nbsp; / &nbsp;
+  <a href="#built-for-contributors">Development</a> &nbsp; / &nbsp;
   <a href="./.github/CONTRIBUTING.md">Contribute</a>
 </p>
 
@@ -76,7 +76,7 @@ cp .env.example .env.local
 
 ### 2. Connect your services
 
-Follow the [configuration guide](./docs/development.md#configuration) to fill in `.env.local` before starting:
+Use the settings documented in [`.env.example`](./.env.example) to fill in `.env.local` before starting:
 
 | Service | What it's for |
 | --- | --- |
@@ -84,7 +84,7 @@ Follow the [configuration guide](./docs/development.md#configuration) to fill in
 | Temporal Cloud | Durable sync and background work; no local Temporal server is bundled |
 | AI providers | An OpenAI-compatible endpoint for interactive features, plus native Batch configuration for historical labels and Memory |
 
-The guide covers OAuth callbacks, a public HTTPS webhook endpoint, independently generated secrets, and the settings required by each AI feature. Local database and object-storage defaults are already in [`.env.example`](./.env.example).
+Generate `BETTER_AUTH_SECRET` and `TOKEN_ENCRYPTION_KEY` independently with `openssl rand -base64 32`. Gmail Pub/Sub and Batch webhooks require public HTTPS endpoints. Local database and object-storage defaults are already in `.env.example`.
 
 ### 3. Start Invook
 
@@ -110,7 +110,6 @@ Sender-hosted images currently load directly from their original URLs. Opening a
 
 | Start here | You'll find |
 | --- | --- |
-| [Development guide](./docs/development.md) | Configuration, local services, commands, architecture, and repository map |
 | [Contributing guide](./.github/CONTRIBUTING.md) | How to propose changes, verify your work, and open a pull request |
 | [Engineering guidelines](./AGENTS.md) | Code conventions and ownership boundaries |
 
