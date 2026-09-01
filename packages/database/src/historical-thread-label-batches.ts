@@ -22,6 +22,13 @@ import { enqueueWorkflowStepWithExecutor } from "./workflows";
 
 const REQUEST_LIMIT = 2_000;
 const RETRY_LIMIT = 6;
+const PROVIDER_RETRY_BASE_DELAY_MS = 5 * 60 * 1_000;
+
+function providerRetryRunAt(retryAttempt: number): Date {
+  return new Date(
+    Date.now() + PROVIDER_RETRY_BASE_DELAY_MS * 2 ** retryAttempt,
+  );
+}
 
 export type ThreadLabelBatchManifestEntry =
   (typeof threadLabelBatchSubmissions.$inferSelect.manifest)[number];
@@ -774,7 +781,7 @@ export async function finalizeThreadLabelBatchSubmission(
             threadIds: retryThreadIds,
             continuations: submission.continuations,
             ...(input.retryableFailure
-              ? { runAt: new Date(Date.now() + 5 * 60 * 1_000) }
+              ? { runAt: providerRetryRunAt(submission.retryAttempt) }
               : {}),
           },
           transaction,

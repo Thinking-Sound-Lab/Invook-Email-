@@ -1059,12 +1059,24 @@ test(
         const batch = await claim(context, stepId);
         assert.ok(batch);
         assert.equal(batch.candidates.length, 1);
+        const failureRecordedAt = Date.now();
         const completion = await finish(context, batch.submissionId, [], {
           providerState: "expired",
           retryableFailure: true,
         });
         if (attempt < 6) {
           assert.ok(completion.continuationStepId);
+          const [retryStep] = await context.database
+            .select({ input: workflowSteps.input })
+            .from(workflowSteps)
+            .where(eq(workflowSteps.id, completion.continuationStepId));
+          const runAt = retryStep?.input.runAt;
+          assert.equal(typeof runAt, "string");
+          if (typeof runAt !== "string") throw new Error("Retry time is missing.");
+          const expectedDelay = 5 * 60 * 1_000 * 2 ** attempt;
+          const actualDelay = new Date(runAt).getTime() - failureRecordedAt;
+          assert.ok(actualDelay >= expectedDelay);
+          assert.ok(actualDelay < expectedDelay + 10_000);
           stepId = completion.continuationStepId;
         } else assert.equal(completion.continuationStepId, null);
       }
