@@ -25,7 +25,6 @@ export type QueryInvookMailboxInput = {
   userId: string;
   accountId?: string | null;
   candidateMessageIds?: string[];
-  gmailLabelIds?: string[];
   invookLabelIds?: string[];
   inboxState?: "any" | "inbox" | "not_inbox";
   readState?: "any" | "read" | "unread";
@@ -92,23 +91,15 @@ export async function queryInvookMailbox(
   const cursor = input.cursor ? parseQueryCursor(input.cursor) : null;
   if (input.cursor && !cursor) throw new Error("The mailbox query cursor is invalid.");
 
-  const [availableGmailLabels, availableInvookLabels] = await Promise.all([
-    database
-      .select({ accountId: labels.accountId, id: labels.id, name: labels.name })
-      .from(labels)
-      .where(and(inArray(labels.accountId, accountIds), eq(labels.kind, "gmail")))
-      .orderBy(asc(labels.name)),
-    database
-      .select({ accountId: labels.accountId, id: labels.id, name: labels.name })
-      .from(labels)
-      .where(and(inArray(labels.accountId, accountIds), eq(labels.kind, "invook")))
-      .orderBy(asc(labels.name)),
-  ]);
+  const availableInvookLabels = await database
+    .select({ accountId: labels.accountId, id: labels.id, name: labels.name })
+    .from(labels)
+    .where(and(inArray(labels.accountId, accountIds), eq(labels.kind, "invook")))
+    .orderBy(asc(labels.name));
   if (input.candidateMessageIds && input.candidateMessageIds.length === 0) {
     return {
       status: "available" as const,
       messages: [],
-      availableGmailLabels,
       availableInvookLabels,
       nextCursor: null,
     };
@@ -120,14 +111,6 @@ export async function queryInvookMailbox(
   ];
   if (input.candidateMessageIds) {
     conditions.push(inArray(messages.id, input.candidateMessageIds));
-  }
-  for (const labelId of input.gmailLabelIds ?? []) {
-    conditions.push(sql<boolean>`exists (
-      select 1 from ${messageLabels} membership
-      where membership.message_id = ${messages.id}
-        and membership.account_id = ${messages.accountId}
-        and membership.label_id = ${labelId}
-    )`);
   }
   for (const labelId of input.invookLabelIds ?? []) {
     conditions.push(sql<boolean>`exists (
@@ -185,8 +168,6 @@ export async function queryInvookMailbox(
         database
           .select({
             messageId: messageLabels.messageId,
-            id: labels.id,
-            name: labels.name,
             kind: labels.kind,
             providerLabelId: labels.providerLabelId,
           })
@@ -198,8 +179,7 @@ export async function queryInvookMailbox(
               inArray(messageLabels.accountId, accountIds),
               eq(labels.accountId, messageLabels.accountId),
             ),
-          )
-          .orderBy(asc(labels.name)),
+          ),
         database
           .select({
             threadId: threadLabelAssignments.threadId,
@@ -243,7 +223,6 @@ export async function queryInvookMailbox(
         isUnread: gmailLabels.some(
           (membership) => membership.providerLabelId === "UNREAD",
         ),
-        gmailLabels: gmailLabels.map(({ id, name }) => ({ id, name })),
         invookLabel: (() => {
           const assignment = assignmentsByThread.get(message.threadId);
           return assignment
@@ -252,7 +231,6 @@ export async function queryInvookMailbox(
         })(),
       };
     }),
-    availableGmailLabels,
     availableInvookLabels,
     nextCursor:
       rows.length > limit && page.length > 0

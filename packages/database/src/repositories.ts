@@ -36,11 +36,13 @@ import {
   LabelPreviewReceiptConflictError,
 } from "./label-preview-receipts";
 import {
-  enqueueHistoricalThreadLabelScanCoordinator,
+  enqueueLiveInboxThreadLabelAnalyses,
   ensureBuiltInInvookLabels,
   refreshThreadProjection,
 } from "./thread-label-analysis";
+import { createHistoricalThreadLabelScan } from "./historical-thread-label-batches";
 import { enqueueDailyGmailWatchRenewal } from "./gmail-watch";
+import { GmailConnectionDeletingError, withGmailIdentityLock } from "./gmail-identity";
 import { deriveMailSyncProgress } from "./mail-sync-progress";
 import {
   inboxThreadCondition,
@@ -146,8 +148,8 @@ export async function checkDatabaseConnection(
 }
 
 export async function getGmailConnectionForOAuth(
-  providerAccountId: string,
-  database: Database = getDatabase(),
+  input: { userId: string; providerAccountId: string },
+  database: DatabaseExecutor = getDatabase(),
 ) {
   const [connection] = await database
     .select({
@@ -160,7 +162,8 @@ export async function getGmailConnectionForOAuth(
     .where(
       and(
         eq(connectedAccounts.provider, "gmail"),
-        eq(connectedAccounts.providerAccountId, providerAccountId),
+        eq(connectedAccounts.providerAccountId, input.providerAccountId),
+        eq(connectedAccounts.userId, input.userId),
       ),
     )
     .limit(1);
@@ -170,7 +173,7 @@ export async function getGmailConnectionForOAuth(
 
 export async function getGmailConnectionForUser(
   input: { userId: string; accountId: string },
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   const [connection] = await database
     .select({
@@ -298,18 +301,9 @@ export function getReturningGmailAuthenticationAction(input: {
   return "none";
 }
 
-async function lockGmailAuthentication(
-  transaction: DatabaseTransaction,
-  providerAccountId: string,
-) {
-  await transaction.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`invook:gmail-auth:${providerAccountId}`}, 0))`,
-  );
-}
-
 async function findGmailAuthenticationAccount(
   transaction: DatabaseTransaction,
-  providerAccountId: string,
+  input: { userId: string; providerAccountId: string },
 ): Promise<GmailAuthenticationAccount | null> {
   const [account] = await transaction
     .select({
@@ -327,7 +321,8 @@ async function findGmailAuthenticationAccount(
     .where(
       and(
         eq(connectedAccounts.provider, "gmail"),
-        eq(connectedAccounts.providerAccountId, providerAccountId),
+        eq(connectedAccounts.providerAccountId, input.providerAccountId),
+        eq(connectedAccounts.userId, input.userId),
       ),
     )
     .limit(1);
@@ -431,9 +426,7 @@ async function saveReturningGmailAuthentication(
   input: GmailAuthenticationInput,
   account: GmailAuthenticationAccount,
 ) {
-  if (account.userId !== input.userId) {
-    throw new Error("This Gmail account is already linked to another Invook user.");
-  }
+  if (account.status === "disconnected") throw new GmailConnectionDeletingError();
   await saveGmailAccountAndCredential(transaction, input, account.id);
   const authenticationAction = getReturningGmailAuthenticationAction({
     status: account.status,
@@ -485,28 +478,26 @@ async function saveReturningGmailAuthentication(
 
 export async function refreshGmailAuthentication(
   input: GmailAuthenticationInput,
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ): Promise<{ id: string } | null> {
-  return database.transaction(async (transaction) => {
-    await lockGmailAuthentication(transaction, input.providerAccountId);
+  return withGmailIdentityLock(input.providerAccountId, async (transaction) => {
     const account = await findGmailAuthenticationAccount(
       transaction,
-      input.providerAccountId,
+      input,
     );
     if (!account) return null;
     return saveReturningGmailAuthentication(transaction, input, account);
-  });
+  }, database);
 }
 
 export async function saveNewGmailConnection(
   input: NewGmailConnectionInput,
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ): Promise<{ id: string; created: boolean }> {
-  return database.transaction(async (transaction) => {
-    await lockGmailAuthentication(transaction, input.providerAccountId);
+  return withGmailIdentityLock(input.providerAccountId, async (transaction) => {
     const existingAccount = await findGmailAuthenticationAccount(
       transaction,
-      input.providerAccountId,
+      input,
     );
     if (existingAccount) {
       const account = await saveReturningGmailAuthentication(
@@ -569,7 +560,7 @@ export async function saveNewGmailConnection(
     });
 
     return { ...account, created: true };
-  });
+  }, database);
 }
 
 export async function hasConnectedGmailAccount(
@@ -1048,7 +1039,7 @@ export async function getAccountSyncStateForUser(
 
 export async function getWorkerAccount(
   accountId: string,
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   const [account] = await database
     .select({
@@ -1077,7 +1068,7 @@ export async function getWorkerAccount(
 export async function updateStoredCredential(
   accountId: string,
   tokenCiphertext: string,
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   await database
     .update(accountSecrets)
@@ -1460,7 +1451,7 @@ async function upsertMailboxMessageWithTransaction(
       const shouldPlanIncrementalLabel =
         input.ingestionMode === "incremental" &&
         currentThread?.isInbox &&
-        !currentThread.assignmentId &&
+        currentThread.assignmentSource !== "user" &&
         (contentChanged || !threadEligibilityBefore?.isInbox);
       const shouldRefreshSnapshotLabel =
         Boolean(activeRunId) &&
@@ -1472,7 +1463,8 @@ async function upsertMailboxMessageWithTransaction(
           .update(threads)
           .set({
             labelAnalysisVersion: sql`${threads.labelAnalysisVersion} + 1`,
-            labelAnalysisState: "pending",
+            labelAnalysisState: "not_requested",
+            labelAnalysisAfter: null,
             labelAnalysisError: null,
             labelAnalyzedAt: null,
             updatedAt: new Date(),
@@ -1541,6 +1533,20 @@ export async function upsertMailboxThreadMessages(
       transaction,
     );
     if (!completed) throw new InactiveMailSyncRunError(input.activeRunId);
+    const [run] = await transaction
+      .select({ createdAt: mailSyncRuns.createdAt })
+      .from(mailSyncRuns)
+      .where(eq(mailSyncRuns.id, input.activeRunId)).limit(1);
+    if (!run) throw new InactiveMailSyncRunError(input.activeRunId);
+    await enqueueLiveInboxThreadLabelAnalyses(
+      {
+        userId: firstMessage.userId,
+        accountId: firstMessage.accountId,
+        threadIds: [threadId],
+        referenceAt: run.createdAt,
+      },
+      transaction,
+    );
     return { threadId, changed };
   });
 }
@@ -1800,7 +1806,8 @@ export async function replaceGmailMessageLabels(
           .update(threads)
           .set({
             labelAnalysisVersion: sql`${threads.labelAnalysisVersion} + 1`,
-            labelAnalysisState: "pending",
+            labelAnalysisState: "not_requested",
+            labelAnalysisAfter: null,
             labelAnalysisError: null,
             labelAnalyzedAt: null,
             updatedAt: new Date(),
@@ -1939,10 +1946,11 @@ export async function createInvookLabel(
             transaction,
           );
         }
-        await enqueueHistoricalThreadLabelScanCoordinator(
+        await createHistoricalThreadLabelScan(
           {
             historicalScanId,
             previewReceiptId: input.previewReceiptId ?? null,
+            before: admittedAt,
             userId: input.userId,
             accountId: account.id,
             labelId: label.id,
@@ -2084,16 +2092,18 @@ export async function setInvookLabelEnabled(
         ? input.applyToPastDays ?? null
         : null;
     if (windowDays) {
-      await enqueueHistoricalThreadLabelScanCoordinator(
+      const admittedAt = new Date();
+      await createHistoricalThreadLabelScan(
         {
           historicalScanId: uuidv4(),
           previewReceiptId: null,
+          before: admittedAt,
           userId: input.userId,
           accountId: currentLabel.accountId,
           labelId: label.id,
           definitionVersion: label.definitionVersion,
           enablementVersion: label.enablementVersion,
-          after: new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000),
+          after: new Date(admittedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000),
         },
         transaction,
       );

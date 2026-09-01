@@ -51,7 +51,6 @@ const isoDateTimeSchema = z.string().refine(
 export const queryInvookMailboxInputSchema = z
   .object({
     searchText: z.string().min(1).max(1_000).optional(),
-    gmailLabelIds: z.array(z.string().uuid()).max(20).optional(),
     invookLabelIds: z.array(z.string().uuid()).max(20).optional(),
     inboxState: z.enum(["any", "inbox", "not_inbox"]).optional(),
     readState: z.enum(["any", "read", "unread"]).optional(),
@@ -125,7 +124,7 @@ export function createMailAgent(
       }),
       queryInvookMailbox: tool({
         description:
-          "Query exact messages and available label IDs already stored in the authenticated user's local Invook replica by stored search text, Gmail or Invook labels, Inbox/read state, sender, date range, and cursor.",
+          "Query exact messages and available label IDs already stored in the authenticated user's local Invook replica by stored search text, Invook labels, Inbox/read state, sender, date range, and cursor.",
         inputSchema: queryInvookMailboxInputSchema,
         execute: (input) => operations.queryInvookMailbox(input),
       }),

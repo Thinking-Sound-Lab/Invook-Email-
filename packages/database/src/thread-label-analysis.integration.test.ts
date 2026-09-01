@@ -1,1387 +1,1601 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { v4 as uuidv4 } from "uuid";
 
 import type { Database } from "./client";
 import {
-  ensureBuiltInInvookLabels,
-  beginThreadLabelAnalysis,
   claimThreadLabelBatchSubmission,
-  completeThreadLabelAnalysis,
-  enqueueInitialSyncLiveThreadLabelAnalyses,
-  enqueueInitialThreadLabelBatchIfReady,
-  enqueueLiveInboxThreadLabelAnalyses,
-  enqueueThreadLabelBatchSubmission,
+  enqueueHistoricalThreadLabelBatchRecoveries,
+  finalizeThreadLabelBatchPreparation,
   finalizeThreadLabelBatchSubmission,
-  getThreadLabelBatchSubmissionForStep,
-  listInboxThreadMessages,
-  setUserThreadLabel,
-  THREAD_LABEL_BATCH_START_THRESHOLD,
-} from "./thread-label-analysis";
+  listSubmittedThreadLabelBatchIds,
+} from "./historical-thread-label-batches";
 import {
+  createLabelPreviewReceipt,
+  LabelPreviewReceiptConflictError,
+} from "./label-preview-receipts";
+import {
+  getMailboxThreadDetail,
   listMailboxThreads,
 } from "./mailbox-resources";
+import { queryInvookMailbox } from "./mailbox-query";
 import {
-  enqueueBatchEvent,
+  createInvookLabel,
   replaceGmailMessageLabels,
-  upsertMailboxMessage,
+  setInvookLabelEnabled,
+  updateInvookLabel,
+  upsertMailboxThreadMessages,
 } from "./repositories";
+import { scanRecentThreadLabelPage } from "./recent-thread-label-recovery";
+import {
+  beginThreadLabelAnalysis,
+  completeThreadLabelAnalysis,
+  enqueueLiveInboxThreadLabelAnalyses,
+  ensureBuiltInInvookLabels,
+  failThreadLabelAnalysis,
+  setUserThreadLabel,
+} from "./thread-label-analysis";
+import { automaticThreadLabelCutoff } from "./thread-label-eligibility";
+import { failWorkflowStep, markWorkflowStepRunning } from "./workflows";
+import * as schema from "./schema";
 import {
   connectedAccounts,
   gmailReplicaStates,
   gmailSyncItems,
+  historicalThreadLabelScans,
   labels,
+  labelPreviewReceipts,
   mailSyncRuns,
   messageLabels,
   messages,
   profiles,
+  temporalCommands,
   threadLabelAssignments,
   threadLabelBatchSubmissions,
-  temporalCommands,
   threads,
   workflowSteps,
 } from "./schema";
-import * as schema from "./schema";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+const DAY_MS = 86_400_000;
+interface TestContext {
+  database: Database;
+  userId: string;
+  accountId: string;
+  referenceAt: Date;
+  inboxId: string;
+  spamId: string;
+  trashId: string;
+}
 
-test(
-  "new Inbox threads use the durable live label queue and commit one assignment",
-  { skip: !testDatabaseUrl },
-  async () => {
-    if (!testDatabaseUrl) return;
-    const client = postgres(testDatabaseUrl, { max: 1 });
-    const database = drizzle(client, { schema }) as Database;
-    const userId = uuidv4();
-    const accountId = uuidv4();
-    const threadId = uuidv4();
-    const messageId = uuidv4();
-    const sentAt = new Date("2026-08-20T09:00:00.000Z");
-
-    try {
-      await database.insert(profiles).values({
-        id: userId,
-        email: `${userId}@example.test`,
-        displayName: "Live thread label test",
-      });
-      await database.insert(connectedAccounts).values({
-        id: accountId,
-        userId,
-        providerAccountId: `provider-${accountId}`,
-        email: "owner@example.test",
-        memoryAcknowledgedAt: sentAt,
-      });
-      await ensureBuiltInInvookLabels({ userId, accountId }, database);
-      const [inboxLabel] = await database
-        .insert(labels)
-        .values({
+async function withContext(
+  run: (context: TestContext) => Promise<void>,
+): Promise<void> {
+  assert.ok(testDatabaseUrl);
+  const client = postgres(testDatabaseUrl, { max: 4 });
+  const database = drizzle(client, { schema });
+  const userId = uuidv4();
+  const accountId = uuidv4();
+  const referenceAt = new Date();
+  try {
+    await database.insert(profiles).values({
+      id: userId,
+      email: `${userId}@example.test`,
+      displayName: "Label policy test",
+    });
+    await database.insert(connectedAccounts).values({
+      id: accountId,
+      userId,
+      providerAccountId: accountId,
+      email: `${accountId}@example.test`,
+      memoryAcknowledgedAt: referenceAt,
+    });
+    await database.insert(gmailReplicaStates).values({
+      accountId,
+      state: "ready",
+      initialHistoryId: "1",
+      historyCursor: "1",
+    });
+    await ensureBuiltInInvookLabels({ userId, accountId }, database);
+    const systemRows = await database
+      .insert(labels)
+      .values(
+        ["INBOX", "SPAM", "TRASH"].map((providerLabelId) => ({
           userId,
           accountId,
-          kind: "gmail",
-          providerLabelId: "INBOX",
-          name: "Inbox",
-          normalizedName: "inbox",
-          providerType: "system",
-        })
-        .returning({ id: labels.id });
-      assert.ok(inboxLabel);
-      await database.insert(threads).values({
-        id: threadId,
-        userId,
-        accountId,
-        providerThreadId: `provider-thread-${threadId}`,
-        subject: "Please review",
-        snippet: "Action requested",
-        participants: ["sender@example.test"],
-        latestMessageAt: sentAt,
-      });
-      await database.insert(messages).values({
-        id: messageId,
-        userId,
-        accountId,
-        threadId,
-        providerMessageId: `provider-${messageId}`,
-        direction: "incoming",
-        sender: { raw: "Sender <sender@example.test>", email: "sender@example.test" },
-        recipients: ["owner@example.test"],
-        internalDate: sentAt,
-        headerLines: [],
-        subject: "Please review",
-        snippet: "Action requested",
-        bodyText: "Please review and reply today.",
-        sentAt,
-      });
-      await database.insert(messageLabels).values({
-        userId,
-        accountId,
-        messageId,
-        labelId: inboxLabel.id,
-        source: "gmail",
-      });
+          kind: "gmail" as const,
+          providerLabelId,
+          name: providerLabelId,
+          normalizedName: providerLabelId.toLowerCase(),
+          providerType: "system" as const,
+        })),
+      )
+      .returning({ id: labels.id, providerLabelId: labels.providerLabelId });
+    const inboxId = systemRows.find(
+      (row) => row.providerLabelId === "INBOX",
+    )?.id;
+    const spamId = systemRows.find((row) => row.providerLabelId === "SPAM")?.id;
+    const trashId = systemRows.find(
+      (row) => row.providerLabelId === "TRASH",
+    )?.id;
+    assert.ok(inboxId && spamId && trashId);
+    await run({
+      database,
+      userId,
+      accountId,
+      referenceAt,
+      inboxId,
+      spamId,
+      trashId,
+    });
+  } finally {
+    await database.delete(profiles).where(eq(profiles.id, userId));
+    await client.end();
+  }
+}
 
-      assert.equal(
-        await enqueueLiveInboxThreadLabelAnalyses(
-          { userId, accountId, threadIds: [threadId, threadId] },
-          database,
-        ),
-        1,
+async function insertThreads(
+  context: TestContext,
+  inputs: Array<{ sentAt: Date; membershipIds?: string[] }>,
+): Promise<Array<{ threadId: string; messageId: string }>> {
+  const { database, userId, accountId, referenceAt } = context;
+  const rows = inputs.map((input) => ({
+    ...input,
+    threadId: uuidv4(),
+    messageId: uuidv4(),
+  }));
+  const createdAt = new Date(referenceAt.getTime() - DAY_MS);
+  await database.insert(threads).values(
+    rows.map((row) => ({
+      id: row.threadId,
+      userId,
+      accountId,
+      providerThreadId: row.threadId,
+      subject: "Stored thread",
+      snippet: "Stored message",
+      latestMessageAt: row.sentAt,
+      messageCount: 1,
+      createdAt,
+    })),
+  );
+  await database.insert(messages).values(
+    rows.map((row) => ({
+      id: row.messageId,
+      userId,
+      accountId,
+      threadId: row.threadId,
+      providerMessageId: row.messageId,
+      direction: "incoming" as const,
+      sender: { raw: "sender@example.test", email: "sender@example.test" },
+      recipients: ["owner@example.test"],
+      internalDate: row.sentAt,
+      subject: "Stored thread",
+      bodyText: "Stored content for label classification.",
+      sentAt: row.sentAt,
+      createdAt,
+    })),
+  );
+  const memberships = rows.flatMap((row) =>
+    (row.membershipIds ?? [context.inboxId]).map((labelId) => ({
+      userId,
+      accountId,
+      messageId: row.messageId,
+      labelId,
+      source: "gmail" as const,
+    })),
+  );
+  if (memberships.length)
+    await database.insert(messageLabels).values(memberships);
+  return rows.map(({ threadId, messageId }) => ({ threadId, messageId }));
+}
+
+async function createHistoricalRequest(
+  context: TestContext,
+  days: 7 | 30 | 90 = 30,
+) {
+  const label = await createInvookLabel(
+    {
+      userId: context.userId,
+      accountId: context.accountId,
+      name: `Requested ${uuidv4()}`,
+      description: "Match billing records",
+      applyToPastDays: days,
+    },
+    context.database,
+  );
+  assert.ok(label);
+  const [scan] = await context.database
+    .select()
+    .from(historicalThreadLabelScans)
+    .where(eq(historicalThreadLabelScans.labelId, label.id));
+  assert.ok(scan);
+  const [step] = await context.database
+    .select()
+    .from(workflowSteps)
+    .where(
+      and(
+        eq(workflowSteps.accountId, context.accountId),
+        sql`${workflowSteps.input}->>'historicalScanId' = ${scan.id}`,
+      ),
+    );
+  assert.ok(step);
+  return { label, scan, stepId: step.id };
+}
+
+async function claim(context: TestContext, stepId: string) {
+  const [step] = await context.database
+    .select()
+    .from(workflowSteps)
+    .where(eq(workflowSteps.id, stepId));
+  assert.ok(step);
+  const historicalScanId = step.input.historicalScanId;
+  const retryAttempt = step.input.retryAttempt;
+  assert.equal(typeof historicalScanId, "string");
+  assert.equal(typeof retryAttempt, "number");
+  if (typeof historicalScanId !== "string" || typeof retryAttempt !== "number")
+    throw new Error("Invalid test request");
+  const candidateIds = step.input.threadIds;
+  const threadIds =
+    candidateIds === undefined
+      ? undefined
+      : Array.isArray(candidateIds)
+        ? candidateIds.filter((id): id is string => typeof id === "string")
+        : [];
+  const rawContinuations = step.input.continuations ?? [];
+  assert.ok(Array.isArray(rawContinuations));
+  const continuations = rawContinuations.map((value: unknown) => {
+    assert.ok(
+      value &&
+        typeof value === "object" &&
+        "retryAttempt" in value &&
+        "threadIds" in value,
+    );
+    assert.equal(typeof value.retryAttempt, "number");
+    assert.ok(Array.isArray(value.threadIds));
+    if (typeof value.retryAttempt !== "number")
+      throw new Error("Invalid test retry attempt");
+    return {
+      retryAttempt: value.retryAttempt,
+      threadIds: value.threadIds.map((threadId: unknown) => {
+        assert.equal(typeof threadId, "string");
+        if (typeof threadId !== "string")
+          throw new Error("Invalid test retry thread");
+        return threadId;
+      }),
+    };
+  });
+  return claimThreadLabelBatchSubmission(
+    {
+      workflowStepId: stepId,
+      historicalScanId,
+      retryAttempt,
+      threadIds,
+      continuations,
+      userId: context.userId,
+      accountId: context.accountId,
+      modelId: "test-model",
+    },
+    context.database,
+  );
+}
+
+async function finish(
+  context: TestContext,
+  submissionId: string,
+  results: Array<{ threadId: string; labelId: string; confidence: number }>,
+  options: { providerState?: string; retryableFailure?: boolean } = {},
+) {
+  return finalizeThreadLabelBatchSubmission(
+    {
+      submissionId,
+      providerState: options.providerState ?? "completed",
+      providerErrorCode: options.providerState ? "test_provider_failure" : null,
+      retryableFailure: options.retryableFailure ?? false,
+      outputFileId: null,
+      errorFileId: null,
+      modelId: "test-model",
+      results,
+      failedThreadIds: [],
+    },
+    context.database,
+  );
+}
+
+const integrationOptions = { skip: !testDatabaseUrl };
+
+test(
+  "automatic admission covers every recent Inbox thread beyond 1,000 with an exact 14-day boundary",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, userId, accountId, referenceAt } = context;
+      const cutoff = automaticThreadLabelCutoff(referenceAt);
+      const recent = await insertThreads(
+        context,
+        Array.from({ length: 1_002 }, () => ({
+          sentAt: new Date(referenceAt.getTime() - DAY_MS),
+        })),
       );
-      const [step] = await database
+      const [boundary, old, spam, trash, archived] = await insertThreads(
+        context,
+        [
+          { sentAt: cutoff },
+          { sentAt: new Date(cutoff.getTime() - 1) },
+          {
+            sentAt: referenceAt,
+            membershipIds: [context.inboxId, context.spamId],
+          },
+          {
+            sentAt: referenceAt,
+            membershipIds: [context.inboxId, context.trashId],
+          },
+          { sentAt: referenceAt, membershipIds: [] },
+        ],
+      );
+      assert.ok(boundary && old && spam && trash && archived);
+      // A recent non-Inbox message must not make an old Inbox message eligible.
+      await database
+        .update(threads)
+        .set({ latestMessageAt: referenceAt })
+        .where(eq(threads.id, old.threadId));
+      const threadIds = [...recent, boundary, old, spam, trash, archived].map(
+        (thread) => thread.threadId,
+      );
+      assert.equal(
+        await database.transaction((transaction) =>
+          enqueueLiveInboxThreadLabelAnalyses(
+            { userId, accountId, referenceAt, threadIds },
+            transaction,
+          ),
+        ),
+        1_003,
+      );
+      assert.equal(
+        await database.transaction((transaction) =>
+          enqueueLiveInboxThreadLabelAnalyses(
+            { userId, accountId, referenceAt, threadIds },
+            transaction,
+          ),
+        ),
+        0,
+      );
+      const steps = await database
         .select({
-          id: workflowSteps.id,
-          input: workflowSteps.input,
-          activityTaskLane: temporalCommands.activityTaskLane,
+          type: workflowSteps.stepType,
+          lane: temporalCommands.activityTaskLane,
         })
         .from(workflowSteps)
         .innerJoin(
           temporalCommands,
           eq(temporalCommands.workflowStepId, workflowSteps.id),
         )
+        .where(eq(workflowSteps.accountId, accountId));
+      assert.equal(steps.length, 1_003);
+      assert.ok(
+        steps.every(
+          (step) => step.type === "label.thread.assign" && step.lane === "live",
+        ),
+      );
+      const [oldThread] = await database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, old.threadId));
+      assert.equal(oldThread?.labelAnalysisState, "not_requested");
+      assert.equal(
+        (
+          await database
+            .select()
+            .from(threadLabelBatchSubmissions)
+            .where(eq(threadLabelBatchSubmissions.accountId, accountId))
+        ).length,
+        0,
+      );
+    });
+  },
+);
+
+test(
+  "initial sync admits live labeling atomically and labels can finish after the sync run",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, userId, accountId, referenceAt } = context;
+      const runId = uuidv4();
+      const providerThreadId = uuidv4();
+      await database.insert(mailSyncRuns).values({
+        id: runId,
+        userId,
+        accountId,
+        status: "running",
+        startingHistoryCursor: "1",
+        idempotencyKey: runId,
+        createdAt: referenceAt,
+      });
+      await database
+        .insert(gmailSyncItems)
+        .values({ runId, providerThreadId, status: "running" });
+      const stored = await upsertMailboxThreadMessages(
+        {
+          activeRunId: runId,
+          messages: [
+            {
+              userId,
+              accountId,
+              providerThreadId,
+              providerMessageId: uuidv4(),
+              subject: "Initial thread",
+              snippet: "Initial content",
+              participants: [],
+              gmailLabels: [{ providerLabelId: "INBOX", name: "Inbox" }],
+              providerHistoryId: "1",
+              internalDate: referenceAt,
+              sizeEstimate: null,
+              headerLines: [],
+              sentAt: referenceAt,
+              direction: "incoming",
+              sender: {
+                raw: "sender@example.test",
+                email: "sender@example.test",
+              },
+              recipients: [],
+              bodyText: "Please review",
+              bodyHtml: null,
+              isMemoryEligible: false,
+              ingestionMode: "initial",
+              memoryContactEmails: [],
+            },
+          ],
+        },
+        database,
+      );
+      const [step] = await database
+        .select()
+        .from(workflowSteps)
         .where(
           and(
             eq(workflowSteps.accountId, accountId),
             eq(workflowSteps.stepType, "label.thread.assign"),
           ),
-        )
-        .limit(1);
-      assert.equal(step?.activityTaskLane, "live");
-      assert.equal(step?.input.threadId, threadId);
-      assert.equal(step?.input.analysisVersion, 1);
-      assert.equal(step?.input.lane, "live");
-      assert.match(String(step?.input.definitionHash), /^[a-f0-9]{64}$/);
+        );
+      assert.ok(step);
+      assert.equal(step.runId, null);
+      await database
+        .update(mailSyncRuns)
+        .set({ status: "complete" })
+        .where(eq(mailSyncRuns.id, runId));
+      assert.equal(
+        (await markWorkflowStepRunning(step.id, 1, database)).shouldExecute,
+        true,
+      );
+      const [thread] = await database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, stored.threadId));
+      assert.equal(
+        thread?.labelAnalysisAfter?.toISOString(),
+        automaticThreadLabelCutoff(referenceAt).toISOString(),
+      );
       const checkpoint = {
-        threadId,
-        analysisVersion: 1,
-        definitionHash: String(step?.input.definitionHash),
+        threadId: stored.threadId,
+        analysisVersion: Number(step.input.analysisVersion),
+        definitionHash: String(step.input.definitionHash),
       };
       const ready = await beginThreadLabelAnalysis(
         { userId, accountId, checkpoint },
         database,
       );
       assert.equal(ready.status, "ready");
-      if (ready.status !== "ready") return;
-      const important = ready.definitions.find(
-        (definition) => definition.name === "Important",
-      );
-      assert.ok(important);
-      assert.equal(ready.thread.messages.length, 1);
+      if (ready.status !== "ready") throw new Error("Expected live analysis");
       const completed = await completeThreadLabelAnalysis(
         {
           userId,
           accountId,
           checkpoint,
-          modelId: "test-live-model",
-          labelId: important.id,
-          confidence: 98,
+          labelId: ready.fallback.id,
+          confidence: 90,
+          modelId: "test-live",
         },
         database,
       );
       assert.equal(completed.status, "complete");
       assert.equal(
-        await enqueueLiveInboxThreadLabelAnalyses(
-          { userId, accountId, threadIds: [threadId] },
-          database,
-        ),
-        0,
+        (await listMailboxThreads(userId, { view: "all", accountId }, database))
+          ?.threads[0]?.invookLabel?.labelId,
+        ready.fallback.id,
       );
-      assert.deepEqual(
-        await database
-          .select({
-            labelId: threadLabelAssignments.labelId,
-            source: threadLabelAssignments.source,
-          })
-          .from(threadLabelAssignments)
-          .where(eq(threadLabelAssignments.threadId, threadId)),
-        [{ labelId: important.id, source: "ai" }],
-      );
-    } finally {
-      await database.delete(profiles).where(eq(profiles.id, userId));
-      await client.end();
-    }
+    });
   },
 );
 
 test(
-  "initial synchronization durably admits one label Batch at 100 stored threads",
-  { skip: !testDatabaseUrl },
+  "live failures never create Batches and newer manual assignments supersede live results",
+  integrationOptions,
   async () => {
-    if (!testDatabaseUrl) return;
-    const client = postgres(testDatabaseUrl, { max: 1 });
-    const database = drizzle(client, { schema }) as Database;
-    const userId = uuidv4();
-    const accountId = uuidv4();
-    const runId = uuidv4();
-    const sentAt = new Date("2026-08-25T08:00:00.000Z");
-
-    try {
-      await database.insert(profiles).values({
-        id: userId,
-        email: `${userId}@example.test`,
-        displayName: "Initial label admission test",
-      });
-      await database.insert(connectedAccounts).values({
-        id: accountId,
-        userId,
-        providerAccountId: `provider-${accountId}`,
-        email: "owner@example.test",
-        memoryAcknowledgedAt: sentAt,
-      });
-      const [inboxLabel] = await database
-        .insert(labels)
-        .values({
-          userId,
-          accountId,
-          kind: "gmail",
-          providerLabelId: "INBOX",
-          name: "Inbox",
-          normalizedName: "inbox",
-          providerType: "system",
-        })
-        .returning({ id: labels.id });
-      assert.ok(inboxLabel);
-      await database.insert(mailSyncRuns).values({
-        id: runId,
-        userId,
-        accountId,
-        status: "running",
-        discoveryComplete: false,
-        startingHistoryCursor: "100",
-        idempotencyKey: `initial-label-admission:${runId}`,
-      });
-
-      const insertCandidates = async (count: number): Promise<void> => {
-        const candidates = Array.from({ length: count }, () => ({
-          threadId: uuidv4(),
-          messageId: uuidv4(),
-        }));
-        await database.insert(threads).values(
-          candidates.map(({ threadId }) => ({
-            id: threadId,
-            userId,
-            accountId,
-            providerThreadId: `provider-thread-${threadId}`,
-            subject: `Candidate ${threadId}`,
-            snippet: "Stored Inbox candidate",
-            participants: ["sender@example.test"],
-            latestMessageAt: sentAt,
-            messageCount: 1,
-          })),
-        );
-        await database.insert(messages).values(
-          candidates.map(({ threadId, messageId }) => ({
-            id: messageId,
-            userId,
-            accountId,
-            threadId,
-            providerMessageId: `provider-message-${messageId}`,
-            direction: "incoming" as const,
-            sender: {
-              raw: "Sender <sender@example.test>",
-              email: "sender@example.test",
-            },
-            recipients: ["owner@example.test"],
-            internalDate: sentAt,
-            headerLines: [],
-            subject: `Candidate ${threadId}`,
-            snippet: "Stored Inbox candidate",
-            bodyText: "Please classify this stored Inbox thread.",
-            sentAt,
-          })),
-        );
-        await database.insert(messageLabels).values(
-          candidates.map(({ messageId }) => ({
-            userId,
-            accountId,
-            messageId,
-            labelId: inboxLabel.id,
-            source: "gmail" as const,
-          })),
-        );
-        await database.insert(gmailSyncItems).values(
-          candidates.map(({ threadId }) => ({
-            runId,
-            providerThreadId: `provider-thread-${threadId}`,
-            status: "complete" as const,
-            completedAt: sentAt,
-          })),
-        );
-      };
-
-      await insertCandidates(THREAD_LABEL_BATCH_START_THRESHOLD - 1);
-      assert.deepEqual(
-        await enqueueInitialThreadLabelBatchIfReady(
+    await withContext(async (context) => {
+      const { database, userId, accountId, referenceAt } = context;
+      const [first, second] = await insertThreads(context, [
+        { sentAt: referenceAt },
+        { sentAt: referenceAt },
+      ]);
+      assert.ok(first && second);
+      await database.transaction((transaction) =>
+        enqueueLiveInboxThreadLabelAnalyses(
           {
-            runId,
             userId,
             accountId,
-            sourceKey: `below-threshold:${runId}`,
+            referenceAt,
+            threadIds: [first.threadId, second.threadId],
           },
-          database,
+          transaction,
         ),
-        {
-          status: "below_threshold",
-          candidateCount: THREAD_LABEL_BATCH_START_THRESHOLD - 1,
-        },
       );
-      assert.equal(
-        await database
-          .select({ id: workflowSteps.id })
-          .from(workflowSteps)
-          .where(
-            and(
-              eq(workflowSteps.accountId, accountId),
-              eq(workflowSteps.stepType, "label.batch.submit"),
+      for (const target of [first, second]) {
+        const [thread] = await database
+          .select()
+          .from(threads)
+          .where(eq(threads.id, target.threadId));
+        assert.ok(thread?.labelAnalysisDefinitionHash);
+        const checkpoint = {
+          threadId: target.threadId,
+          analysisVersion: thread.labelAnalysisVersion,
+          definitionHash: thread.labelAnalysisDefinitionHash,
+        };
+        if (target === first) {
+          assert.equal(
+            await failThreadLabelAnalysis(
+              {
+                userId,
+                accountId,
+                checkpoint,
+                errorCode: "label_analysis_failed",
+              },
+              database,
             ),
-          )
-          .then((rows) => rows.length),
-        0,
-      );
-
-      await insertCandidates(1);
-      const admitted = await enqueueInitialThreadLabelBatchIfReady(
-        {
-          runId,
-          userId,
-          accountId,
-          sourceKey: `threshold:${runId}`,
-        },
-        database,
-      );
-      assert.equal(admitted.status, "enqueued");
-      if (admitted.status !== "enqueued") return;
-      assert.equal(
-        admitted.candidateCount,
-        THREAD_LABEL_BATCH_START_THRESHOLD,
-      );
-      assert.deepEqual(
-        await enqueueInitialThreadLabelBatchIfReady(
-          {
-            runId,
-            userId,
-            accountId,
-            sourceKey: `duplicate-threshold:${runId}`,
-          },
-          database,
-        ),
-        { status: "busy" },
-      );
-      const [admissionStep] = await database
-        .select({
-          id: workflowSteps.id,
-          input: workflowSteps.input,
-          activityTaskLane: temporalCommands.activityTaskLane,
-        })
-        .from(workflowSteps)
-        .innerJoin(
-          temporalCommands,
-          eq(temporalCommands.workflowStepId, workflowSteps.id),
-        )
-        .where(eq(workflowSteps.id, admitted.stepId));
-      assert.deepEqual(admissionStep, {
-        id: admitted.stepId,
-        input: { flushRemainder: false },
-        activityTaskLane: "live",
-      });
-
-      const claimed = await claimThreadLabelBatchSubmission(
-        {
-          workflowStepId: admitted.stepId,
-          userId,
-          accountId,
-          flushRemainder: false,
-          modelId: "test-label-batch-model",
-        },
-        database,
-      );
-      assert.equal(
-        claimed?.candidates.length,
-        THREAD_LABEL_BATCH_START_THRESHOLD,
-      );
-
-      await insertCandidates(1);
-      assert.deepEqual(
-        await enqueueInitialThreadLabelBatchIfReady(
-          {
-            runId,
-            userId,
-            accountId,
-            sourceKey: `active-submission:${runId}`,
-          },
-          database,
-        ),
-        { status: "busy" },
-      );
-      assert.equal(
-        await database
-          .select({ id: workflowSteps.id })
-          .from(workflowSteps)
-          .where(
-            and(
-              eq(workflowSteps.accountId, accountId),
-              eq(workflowSteps.stepType, "label.batch.submit"),
-            ),
-          )
-          .then((rows) => rows.length),
-        1,
-      );
-
-      const submission = await getThreadLabelBatchSubmissionForStep(
-        admitted.stepId,
-        database,
-      );
-      assert.ok(submission);
-      await database
-        .update(threadLabelBatchSubmissions)
-        .set({
-          status: "submitted",
-          providerBatchId: `batch-${submission.id}`,
-          inputFileId: `input-${submission.id}`,
-        })
-        .where(eq(threadLabelBatchSubmissions.id, submission.id));
-      await database
-        .update(mailSyncRuns)
-        .set({ status: "complete", completedAt: sentAt })
-        .where(eq(mailSyncRuns.id, runId));
-      const completed = await finalizeThreadLabelBatchSubmission(
-        {
-          submissionId: submission.id,
-          providerState: "completed",
-          providerErrorCode: null,
-          retryableFailure: false,
-          outputFileId: `output-${submission.id}`,
-          errorFileId: null,
-          modelId: "test-label-batch-model",
-          results: claimed.candidates.map((candidate) => ({
-            threadId: candidate.threadId,
-            labelId: candidate.fallbackLabelId,
-            confidence: 90,
-          })),
-          failedThreadIds: [],
-        },
-        database,
-      );
-      assert.ok(completed.continuationStepId);
-      const [continuationStep] = await database
-        .select({ input: workflowSteps.input })
-        .from(workflowSteps)
-        .where(eq(workflowSteps.id, completed.continuationStepId));
-      assert.deepEqual(continuationStep?.input, { flushRemainder: true });
-      const remainder = await claimThreadLabelBatchSubmission(
-        {
-          workflowStepId: completed.continuationStepId,
-          userId,
-          accountId,
-          flushRemainder: true,
-          modelId: "test-label-batch-model",
-        },
-        database,
-      );
-      assert.equal(remainder?.candidates.length, 1);
-    } finally {
-      await database.delete(profiles).where(eq(profiles.id, userId));
-      await client.end();
-    }
-  },
-);
-
-test(
-  "initial sync hot window live-labels recent threads exactly once within budget",
-  { skip: !testDatabaseUrl },
-  async () => {
-    if (!testDatabaseUrl) return;
-    const client = postgres(testDatabaseUrl, { max: 1 });
-    const database = drizzle(client, { schema }) as Database;
-    const userId = uuidv4();
-    const accountId = uuidv4();
-    const runId = uuidv4();
-    const runCreatedAt = new Date("2026-08-25T08:00:00.000Z");
-
-    try {
-      await database.insert(profiles).values({
-        id: userId,
-        email: `${userId}@example.test`,
-        displayName: "Hot window label test",
-      });
-      await database.insert(connectedAccounts).values({
-        id: accountId,
-        userId,
-        providerAccountId: `provider-${accountId}`,
-        email: "owner@example.test",
-        memoryAcknowledgedAt: runCreatedAt,
-      });
-      const [inboxLabel] = await database
-        .insert(labels)
-        .values({
-          userId,
-          accountId,
-          kind: "gmail",
-          providerLabelId: "INBOX",
-          name: "Inbox",
-          normalizedName: "inbox",
-          providerType: "system",
-        })
-        .returning({ id: labels.id });
-      assert.ok(inboxLabel);
-      await database.insert(mailSyncRuns).values({
-        id: runId,
-        userId,
-        accountId,
-        status: "running",
-        discoveryComplete: false,
-        startingHistoryCursor: "100",
-        idempotencyKey: `hot-window:${runId}`,
-        createdAt: runCreatedAt,
-      });
-
-      const seedInboxThread = async (latestMessageAt: Date): Promise<string> => {
-        const threadId = uuidv4();
-        const messageId = uuidv4();
-        await database.insert(threads).values({
-          id: threadId,
-          userId,
-          accountId,
-          providerThreadId: `provider-thread-${threadId}`,
-          subject: `Hot window ${threadId}`,
-          snippet: "Stored Inbox candidate",
-          participants: ["sender@example.test"],
-          latestMessageAt,
-          messageCount: 1,
-        });
-        await database.insert(messages).values({
-          id: messageId,
-          userId,
-          accountId,
-          threadId,
-          providerMessageId: `provider-message-${messageId}`,
-          direction: "incoming",
-          sender: {
-            raw: "Sender <sender@example.test>",
-            email: "sender@example.test",
-          },
-          recipients: ["owner@example.test"],
-          internalDate: latestMessageAt,
-          headerLines: [],
-          subject: `Hot window ${threadId}`,
-          snippet: "Stored Inbox candidate",
-          bodyText: "Please classify this stored Inbox thread.",
-          sentAt: latestMessageAt,
-        });
-        await database.insert(messageLabels).values({
-          userId,
-          accountId,
-          messageId,
-          labelId: inboxLabel.id,
-          source: "gmail",
-        });
-        await database.insert(gmailSyncItems).values({
-          runId,
-          providerThreadId: `provider-thread-${threadId}`,
-          status: "complete",
-          completedAt: latestMessageAt,
-        });
-        return threadId;
-      };
-
-      const inWindowThreadIds: string[] = [];
-      for (let dayOffset = 1; dayOffset <= 5; dayOffset += 1) {
-        inWindowThreadIds.push(
-          await seedInboxThread(
-            new Date(runCreatedAt.getTime() - dayOffset * 24 * 60 * 60 * 1000),
-          ),
-        );
+            true,
+          );
+        } else {
+          const ready = await beginThreadLabelAnalysis(
+            { userId, accountId, checkpoint },
+            database,
+          );
+          assert.equal(ready.status, "ready");
+          if (ready.status !== "ready")
+            throw new Error("Expected live analysis");
+          await setUserThreadLabel(
+            { userId, threadId: target.threadId, labelId: ready.fallback.id },
+            database,
+          );
+          assert.equal(
+            (
+              await completeThreadLabelAnalysis(
+                {
+                  userId,
+                  accountId,
+                  checkpoint,
+                  labelId: ready.definitions[0]?.id ?? ready.fallback.id,
+                  modelId: "test-live",
+                  confidence: 99,
+                },
+                database,
+              )
+            ).status,
+            "current",
+          );
+        }
       }
-      const outOfWindowThreadIds = [
-        await seedInboxThread(
-          new Date(runCreatedAt.getTime() - 20 * 24 * 60 * 60 * 1000),
-        ),
-        await seedInboxThread(
-          new Date(runCreatedAt.getTime() - 40 * 24 * 60 * 60 * 1000),
-        ),
-      ];
-      const allThreadIds = [...inWindowThreadIds, ...outOfWindowThreadIds];
-
-      assert.deepEqual(
-        await enqueueInitialSyncLiveThreadLabelAnalyses(
-          {
-            runId,
-            userId,
-            accountId,
-            threadIds: [...allThreadIds, ...allThreadIds],
-            hotWindowDays: 14,
-            maxThreads: 3,
-          },
-          database,
-        ),
-        { status: "enqueued", enqueuedCount: 3, remainingBudget: 0 },
-      );
-      const reservedSteps = await database
-        .select({ runId: workflowSteps.runId, input: workflowSteps.input })
+      const batchSteps = await database
+        .select()
         .from(workflowSteps)
         .where(
           and(
             eq(workflowSteps.accountId, accountId),
-            eq(workflowSteps.stepType, "label.thread.assign"),
+            eq(workflowSteps.stepType, "label.batch.submit"),
           ),
         );
-      assert.equal(reservedSteps.length, 3);
-      assert.ok(reservedSteps.every((step) => step.runId === runId));
-      assert.deepEqual(
-        new Set(reservedSteps.map((step) => String(step.input.threadId))),
-        new Set(inWindowThreadIds.slice(0, 3)),
-      );
-
-      assert.deepEqual(
-        await enqueueInitialSyncLiveThreadLabelAnalyses(
-          {
-            runId,
-            userId,
-            accountId,
-            threadIds: allThreadIds,
-            hotWindowDays: 14,
-            maxThreads: 3,
-          },
-          database,
-        ),
-        { status: "enqueued", enqueuedCount: 0, remainingBudget: 0 },
-      );
-
-      assert.deepEqual(
-        await enqueueInitialThreadLabelBatchIfReady(
-          {
-            runId,
-            userId,
-            accountId,
-            sourceKey: `hot-window-admission:${runId}`,
-          },
-          database,
-        ),
-        { status: "below_threshold", candidateCount: 4 },
-      );
-
-      const batchClaimedThreadId = inWindowThreadIds[3];
-      assert.ok(batchClaimedThreadId);
-      const batchStepId = await enqueueThreadLabelBatchSubmission(
-        {
-          userId,
-          accountId,
-          sourceKey: `hot-window-batch:${runId}`,
-          flushRemainder: false,
-          threadIds: [batchClaimedThreadId],
-        },
-        database,
-      );
-      const batchClaim = await claimThreadLabelBatchSubmission(
-        {
-          workflowStepId: batchStepId,
-          userId,
-          accountId,
-          flushRemainder: false,
-          modelId: "test-label-batch-model",
-          threadIds: [batchClaimedThreadId],
-        },
-        database,
-      );
-      assert.deepEqual(
-        batchClaim?.candidates.map((candidate) => candidate.threadId),
-        [batchClaimedThreadId],
-      );
-
-      assert.deepEqual(
-        await enqueueInitialSyncLiveThreadLabelAnalyses(
-          {
-            runId,
-            userId,
-            accountId,
-            threadIds: allThreadIds,
-            hotWindowDays: 14,
-            maxThreads: 10,
-          },
-          database,
-        ),
-        { status: "enqueued", enqueuedCount: 1, remainingBudget: 6 },
-      );
-
-      await database
-        .update(mailSyncRuns)
-        .set({ status: "complete", completedAt: runCreatedAt })
-        .where(eq(mailSyncRuns.id, runId));
-      assert.deepEqual(
-        await enqueueInitialSyncLiveThreadLabelAnalyses(
-          {
-            runId,
-            userId,
-            accountId,
-            threadIds: allThreadIds,
-            hotWindowDays: 14,
-            maxThreads: 10,
-          },
-          database,
-        ),
-        { status: "inactive" },
-      );
-    } finally {
-      await database.delete(profiles).where(eq(profiles.id, userId));
-      await client.end();
-    }
+      assert.equal(batchSteps.length, 0);
+      const [failed] = await database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, first.threadId));
+      assert.equal(failed?.labelAnalysisState, "failed");
+    });
   },
 );
 
 test(
-  "thread-label Batch claims candidates newest-first across keyset pages",
-  { skip: !testDatabaseUrl },
+  "old mail restored to Inbox stays outside automatic labeling and recovery",
+  integrationOptions,
   async () => {
-    if (!testDatabaseUrl) return;
-    const client = postgres(testDatabaseUrl, { max: 1 });
-    const database = drizzle(client, { schema }) as Database;
-    const userId = uuidv4();
-    const accountId = uuidv4();
-    const baseSentAt = new Date("2026-08-25T10:00:00.000Z");
-    // Spans more than one 500-row candidate keyset page.
-    const seededThreadCount = 510;
-
-    try {
-      await database.insert(profiles).values({
-        id: userId,
-        email: `${userId}@example.test`,
-        displayName: "Batch ordering test",
-      });
-      await database.insert(connectedAccounts).values({
-        id: accountId,
-        userId,
-        providerAccountId: `provider-${accountId}`,
-        email: "owner@example.test",
-        memoryAcknowledgedAt: baseSentAt,
-      });
-      const [inboxLabel] = await database
-        .insert(labels)
-        .values({
-          userId,
-          accountId,
-          kind: "gmail",
-          providerLabelId: "INBOX",
-          name: "Inbox",
-          normalizedName: "inbox",
-          providerType: "system",
-        })
-        .returning({ id: labels.id });
-      assert.ok(inboxLabel);
-
-      const seeded = Array.from({ length: seededThreadCount }, (_, index) => ({
-        threadId: uuidv4(),
-        messageId: uuidv4(),
-        sentAt: new Date(baseSentAt.getTime() - index * 1_000),
-      }));
-      await database.insert(threads).values(
-        seeded.map(({ threadId, sentAt }) => ({
-          id: threadId,
-          userId,
-          accountId,
-          providerThreadId: `provider-thread-${threadId}`,
-          subject: `Ordered ${threadId}`,
-          snippet: "Stored Inbox candidate",
-          participants: ["sender@example.test"],
-          latestMessageAt: sentAt,
-          messageCount: 1,
-        })),
-      );
-      await database.insert(messages).values(
-        seeded.map(({ threadId, messageId, sentAt }) => ({
-          id: messageId,
-          userId,
-          accountId,
-          threadId,
-          providerMessageId: `provider-message-${messageId}`,
-          direction: "incoming" as const,
-          sender: {
-            raw: "Sender <sender@example.test>",
-            email: "sender@example.test",
-          },
-          recipients: ["owner@example.test"],
-          internalDate: sentAt,
-          headerLines: [],
-          subject: `Ordered ${threadId}`,
-          snippet: "Stored Inbox candidate",
-          bodyText: "Please classify this stored Inbox thread.",
-          sentAt,
-        })),
-      );
-      await database.insert(messageLabels).values(
-        seeded.map(({ messageId }) => ({
-          userId,
-          accountId,
-          messageId,
-          labelId: inboxLabel.id,
-          source: "gmail" as const,
-        })),
-      );
-
-      const stepId = await enqueueThreadLabelBatchSubmission(
+    await withContext(async (context) => {
+      const { database, userId, accountId, referenceAt } = context;
+      const [old] = await insertThreads(context, [
+        {
+          sentAt: new Date(referenceAt.getTime() - 40 * DAY_MS),
+          membershipIds: [],
+        },
+      ]);
+      assert.ok(old);
+      await replaceGmailMessageLabels(
         {
           userId,
           accountId,
-          sourceKey: `newest-first:${accountId}`,
-          flushRemainder: true,
+          providerMessageId: old.messageId,
+          providerHistoryId: "2",
+          gmailLabels: [{ providerLabelId: "INBOX", name: "Inbox" }],
         },
         database,
       );
-      const claimed = await claimThreadLabelBatchSubmission(
+      const recovery = await scanRecentThreadLabelPage(
+        { userId, accountId, referenceAt, cursorThreadId: null },
+        database,
+      );
+      assert.deepEqual(recovery, {
+        enqueuedCount: 0,
+        continuationStepId: null,
+      });
+      const query = await queryInvookMailbox(
+        { userId, accountId, inboxState: "inbox" },
+        database,
+      );
+      assert.equal(query.status, "available");
+      assert.equal("availableGmailLabels" in query, false);
+      if (query.status === "available") {
+        const [message] = query.messages;
+        assert.ok(message);
+        assert.equal("gmailLabels" in message, false);
+      }
+      const detail = await getMailboxThreadDetail(
+        userId,
+        old.threadId,
+        accountId,
+        database,
+      );
+      assert.equal(detail?.thread.invookLabel, null);
+      assert.equal("gmailLabels" in (detail?.thread ?? {}), false);
+    });
+  },
+);
+
+for (const windowDays of [7, 30, 90] as const) {
+  test(
+    `settings admission scopes Batch to its selected label and ${windowDays}-day window`,
+    integrationOptions,
+    async () => {
+      await withContext(async (context) => {
+        const { database, userId, accountId, referenceAt } = context;
+        const rows = await insertThreads(
+          context,
+          [6, 20, 80, 100].map((days) => ({
+            sentAt: new Date(referenceAt.getTime() - days * DAY_MS),
+          })),
+        );
+        const [others] = await database
+          .select()
+          .from(labels)
+          .where(
+            and(
+              eq(labels.accountId, accountId),
+              eq(labels.systemKey, "others"),
+            ),
+          );
+        assert.ok(others && rows[0]);
+        await database.insert(threadLabelAssignments).values({
+          userId,
+          accountId,
+          threadId: rows[0].threadId,
+          labelId: others.id,
+          source: "ai",
+          modelId: "previous-model",
+          confidence: "90",
+          definitionVersion: 1,
+        });
+        await database
+          .update(threads)
+          .set({ labelAnalysisState: "complete" })
+          .where(eq(threads.id, rows[0].threadId));
+        const request = await createHistoricalRequest(context, windowDays);
+        assert.equal(
+          request.scan.before.getTime() - request.scan.after.getTime(),
+          windowDays * DAY_MS,
+        );
+        const batch = await claim(context, request.stepId);
+        assert.ok(batch);
+        const expectedCount = windowDays === 7 ? 1 : windowDays === 30 ? 2 : 3;
+        assert.equal(batch.candidates.length, expectedCount);
+        assert.ok(
+          batch.candidates.every(
+            (entry) =>
+              entry.definitions.length === 1 &&
+              entry.definitions[0]?.id === request.label.id,
+          ),
+        );
+        const [command] = await database
+          .select()
+          .from(temporalCommands)
+          .where(eq(temporalCommands.workflowStepId, request.stepId));
+        assert.equal(command?.activityTaskLane, "bulk");
+        const result = await finish(
+          context,
+          batch.submissionId,
+          batch.candidates.map((candidate) => ({
+            threadId: candidate.threadId,
+            labelId:
+              candidate.threadId === rows[0]?.threadId
+                ? candidate.fallbackLabelId
+                : request.label.id,
+            confidence: 95,
+          })),
+        );
+        assert.equal(result.appliedCount, expectedCount - 1);
+        assert.ok(result.continuationStepId);
+        assert.equal(await claim(context, result.continuationStepId), null);
+        const [unchanged] = await database
+          .select()
+          .from(threadLabelAssignments)
+          .where(eq(threadLabelAssignments.threadId, rows[0].threadId));
+        assert.equal(unchanged?.labelId, others.id);
+        const [complete] = await database
+          .select()
+          .from(historicalThreadLabelScans)
+          .where(eq(historicalThreadLabelScans.id, request.scan.id));
+        assert.equal(complete?.status, "complete");
+      });
+    },
+  );
+}
+
+test(
+  "saving and enabling labels only admits Batch when historical application is explicitly selected",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, userId, accountId } = context;
+      const label = await createInvookLabel(
         {
+          userId,
+          accountId,
+          name: "Future label",
+          description: "Match future mail",
+        },
+        database,
+      );
+      assert.ok(label);
+      assert.equal(label.historicalAnalysis, null);
+      assert.equal(
+        (
+          await database
+            .select()
+            .from(historicalThreadLabelScans)
+            .where(eq(historicalThreadLabelScans.accountId, accountId))
+        ).length,
+        0,
+      );
+      await setInvookLabelEnabled(
+        { userId, labelId: label.id, isEnabled: false },
+        database,
+      );
+      await setInvookLabelEnabled(
+        { userId, labelId: label.id, isEnabled: true, applyToPastDays: 7 },
+        database,
+      );
+      const scans = await database
+        .select()
+        .from(historicalThreadLabelScans)
+        .where(eq(historicalThreadLabelScans.accountId, accountId));
+      assert.equal(scans.length, 1);
+      await enqueueHistoricalThreadLabelBatchRecoveries(database);
+      const steps = await database
+        .select()
+        .from(workflowSteps)
+        .where(
+          and(
+            eq(workflowSteps.accountId, accountId),
+            eq(workflowSteps.stepType, "label.batch.submit"),
+          ),
+        );
+      assert.equal(steps.length, 1);
+      const [step] = steps;
+      assert.ok(step);
+      assert.equal(await claim(context, step.id), null);
+    });
+  },
+);
+
+test(
+  "historical pagination, truncated preparation, duplicate delivery and recovery do not widen the request",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, accountId, referenceAt } = context;
+      const rows = await insertThreads(
+        context,
+        Array.from({ length: 2_003 }, () => ({
+          sentAt: new Date(referenceAt.getTime() - 20 * DAY_MS),
+        })),
+      );
+      const request = await createHistoricalRequest(context, 30);
+      const batch = await claim(context, request.stepId);
+      assert.ok(batch);
+      assert.equal(batch.candidates.length, 2_000);
+      const resumed = await claim(context, request.stepId);
+      assert.equal(resumed?.submissionId, batch.submissionId);
+      const retained = batch.candidates
+        .slice(0, 10)
+        .map(
+          ({ thread: _thread, definitions: _definitions, ...checkpoint }) =>
+            checkpoint,
+        );
+      await finalizeThreadLabelBatchPreparation(
+        {
+          submissionId: batch.submissionId,
+          manifest: retained,
+          excludedThreadIds: batch.candidates
+            .slice(10)
+            .map((entry) => entry.threadId),
+        },
+        database,
+      );
+      const completion = await finish(
+        context,
+        batch.submissionId,
+        retained.map((entry) => ({
+          threadId: entry.threadId,
+          labelId: entry.fallbackLabelId,
+          confidence: 85,
+        })),
+      );
+      assert.ok(completion.continuationStepId);
+      assert.equal(
+        (await finish(context, batch.submissionId, [])).alreadyFinalized,
+        true,
+      );
+      const next = await claim(context, completion.continuationStepId);
+      assert.ok(next);
+      assert.equal(next.candidates.length, 1_993);
+      assert.equal(
+        new Set(
+          [...retained, ...next.candidates].map((entry) => entry.threadId),
+        ).size,
+        rows.length,
+      );
+      const finalization = await finish(
+        context,
+        next.submissionId,
+        next.candidates.map((entry) => ({
+          threadId: entry.threadId,
+          labelId: entry.fallbackLabelId,
+          confidence: 80,
+        })),
+      );
+      assert.ok(finalization.continuationStepId);
+      assert.equal(await claim(context, finalization.continuationStepId), null);
+      const submissions = await database
+        .select()
+        .from(threadLabelBatchSubmissions)
+        .where(eq(threadLabelBatchSubmissions.accountId, accountId));
+      assert.equal(submissions.length, 2);
+      assert.ok(
+        submissions.every(
+          (submission) => submission.historicalScanId === request.scan.id,
+        ),
+      );
+    });
+  },
+);
+
+test(
+  "historical candidates exclude Spam, Trash, other accounts, and mail outside the captured range",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { referenceAt } = context;
+      await insertThreads(context, [
+        {
+          sentAt: new Date(referenceAt.getTime() - DAY_MS),
+          membershipIds: [context.inboxId, context.spamId],
+        },
+        {
+          sentAt: new Date(referenceAt.getTime() - DAY_MS),
+          membershipIds: [context.inboxId, context.trashId],
+        },
+        { sentAt: new Date(referenceAt.getTime() + DAY_MS) },
+        { sentAt: new Date(referenceAt.getTime() - 100 * DAY_MS) },
+      ]);
+      const request = await createHistoricalRequest(context);
+      await withContext(async (other) => {
+        assert.equal(
+          await claimThreadLabelBatchSubmission(
+            {
+              workflowStepId: request.stepId,
+              historicalScanId: request.scan.id,
+              userId: other.userId,
+              accountId: other.accountId,
+              modelId: "test",
+              retryAttempt: 0,
+            },
+            other.database,
+          ),
+          null,
+        );
+      });
+      assert.equal(await claim(context, request.stepId), null);
+    });
+  },
+);
+
+test(
+  "historical results preserve newer content and manual assignments, and reject invented label IDs",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, userId, referenceAt } = context;
+      const rows = await insertThreads(
+        context,
+        Array.from({ length: 3 }, () => ({
+          sentAt: new Date(referenceAt.getTime() - 20 * DAY_MS),
+        })),
+      );
+      const [changed, manual, invalid] = rows;
+      assert.ok(changed && manual && invalid);
+      const request = await createHistoricalRequest(context);
+      const batch = await claim(context, request.stepId);
+      assert.ok(batch);
+      await database
+        .update(threads)
+        .set({ contentVersion: sql`${threads.contentVersion} + 1` })
+        .where(eq(threads.id, changed.threadId));
+      const manualLabel = await createInvookLabel(
+        {
+          userId,
+          accountId: context.accountId,
+          name: "Manual choice",
+          description: "Keep this manual choice",
+        },
+        database,
+      );
+      assert.ok(manualLabel);
+      await setUserThreadLabel(
+        { userId, threadId: manual.threadId, labelId: manualLabel.id },
+        database,
+      );
+      const completed = await finish(
+        context,
+        batch.submissionId,
+        rows.map((row) => ({
+          threadId: row.threadId,
+          labelId: row === invalid ? uuidv4() : request.label.id,
+          confidence: 90,
+        })),
+      );
+      assert.equal(completed.appliedCount, 0);
+      assert.ok(completed.continuationStepId);
+      const retry = await claim(context, completed.continuationStepId);
+      assert.deepEqual(
+        retry?.candidates.map((entry) => entry.threadId),
+        [invalid.threadId],
+      );
+      const [choice] = await database
+        .select()
+        .from(threadLabelAssignments)
+        .where(eq(threadLabelAssignments.threadId, manual.threadId));
+      assert.equal(choice?.labelId, manualLabel.id);
+      assert.equal(choice?.source, "user");
+    });
+  },
+);
+
+for (const action of ["edit", "disable"] as const) {
+  test(
+    `a label ${action} supersedes outstanding historical Batch results`,
+    integrationOptions,
+    async () => {
+      await withContext(async (context) => {
+        await insertThreads(context, [
+          { sentAt: new Date(context.referenceAt.getTime() - DAY_MS) },
+        ]);
+        const request = await createHistoricalRequest(context);
+        const batch = await claim(context, request.stepId);
+        assert.ok(batch);
+        if (action === "edit")
+          await updateInvookLabel(
+            {
+              userId: context.userId,
+              labelId: request.label.id,
+              name: "Changed",
+              description: "Changed meaning",
+            },
+            context.database,
+          );
+        else
+          await setInvookLabelEnabled(
+            {
+              userId: context.userId,
+              labelId: request.label.id,
+              isEnabled: false,
+            },
+            context.database,
+          );
+        assert.deepEqual(
+          await finish(
+            context,
+            batch.submissionId,
+            batch.candidates.map((entry) => ({
+              threadId: entry.threadId,
+              labelId: request.label.id,
+              confidence: 95,
+            })),
+          ),
+          {
+            alreadyFinalized: false,
+            appliedCount: 0,
+            continuationStepId: null,
+          },
+        );
+        const [scan] = await context.database
+          .select()
+          .from(historicalThreadLabelScans)
+          .where(eq(historicalThreadLabelScans.id, request.scan.id));
+        assert.equal(scan?.status, "superseded");
+      });
+    },
+  );
+}
+
+test(
+  "provider failures retry only the historical request and stop honestly after the retry limit",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      await insertThreads(context, [
+        { sentAt: new Date(context.referenceAt.getTime() - DAY_MS) },
+      ]);
+      const request = await createHistoricalRequest(context);
+      let stepId = request.stepId;
+      for (let attempt = 0; attempt <= 6; attempt += 1) {
+        const batch = await claim(context, stepId);
+        assert.ok(batch);
+        assert.equal(batch.candidates.length, 1);
+        const failureRecordedAt = Date.now();
+        const completion = await finish(context, batch.submissionId, [], {
+          providerState: "expired",
+          retryableFailure: true,
+        });
+        if (attempt < 6) {
+          assert.ok(completion.continuationStepId);
+          const [retryStep] = await context.database
+            .select({ input: workflowSteps.input })
+            .from(workflowSteps)
+            .where(eq(workflowSteps.id, completion.continuationStepId));
+          const runAt = retryStep?.input.runAt;
+          assert.equal(typeof runAt, "string");
+          if (typeof runAt !== "string") throw new Error("Retry time is missing.");
+          const expectedDelay = 5 * 60 * 1_000 * 2 ** attempt;
+          const actualDelay = new Date(runAt).getTime() - failureRecordedAt;
+          assert.ok(actualDelay >= expectedDelay);
+          assert.ok(actualDelay < expectedDelay + 10_000);
+          stepId = completion.continuationStepId;
+        } else assert.equal(completion.continuationStepId, null);
+      }
+      const [scan] = await context.database
+        .select()
+        .from(historicalThreadLabelScans)
+        .where(eq(historicalThreadLabelScans.id, request.scan.id));
+      assert.equal(scan?.status, "failed");
+    });
+  },
+);
+
+test(
+  "preview validation and request admission commit or roll back together",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, userId, accountId } = context;
+      const preview = await createLabelPreviewReceipt(
+        {
+          userId,
+          accountId,
+          name: "Previewed label",
+          description: "Previewed meaning",
+          results: [],
+        },
+        database,
+      );
+      await assert.rejects(
+        createInvookLabel(
+          {
+            userId,
+            accountId,
+            name: "Changed label",
+            description: "Previewed meaning",
+            applyToPastDays: 7,
+            previewReceiptId: preview.id,
+          },
+          database,
+        ),
+        LabelPreviewReceiptConflictError,
+      );
+      assert.equal(
+        (
+          await database
+            .select()
+            .from(historicalThreadLabelScans)
+            .where(eq(historicalThreadLabelScans.accountId, accountId))
+        ).length,
+        0,
+      );
+      assert.equal(
+        (
+          await database
+            .select()
+            .from(labels)
+            .where(
+              and(
+                eq(labels.accountId, accountId),
+                eq(labels.name, "Changed label"),
+              ),
+            )
+        ).length,
+        0,
+      );
+      const label = await createInvookLabel(
+        {
+          userId,
+          accountId,
+          name: "Previewed label",
+          description: "Previewed meaning",
+          applyToPastDays: 7,
+          previewReceiptId: preview.id,
+        },
+        database,
+      );
+      assert.ok(label);
+      const [scan] = await database
+        .select()
+        .from(historicalThreadLabelScans)
+        .where(eq(historicalThreadLabelScans.labelId, label.id));
+      const [receipt] = await database
+        .select()
+        .from(labelPreviewReceipts)
+        .where(eq(labelPreviewReceipts.id, preview.id));
+      assert.equal(receipt?.consumedScanId, scan?.id);
+      assert.equal(scan?.previewReceiptId, preview.id);
+    });
+  },
+);
+
+test(
+  "a truncated retry retains every deferred thread without resetting retry attempts",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const rows = await insertThreads(
+        context,
+        Array.from({ length: 5 }, () => ({
+          sentAt: new Date(context.referenceAt.getTime() - 20 * DAY_MS),
+        })),
+      );
+      const request = await createHistoricalRequest(context);
+      const initial = await claim(context, request.stepId);
+      assert.ok(initial);
+      const initialFailure = await finish(context, initial.submissionId, []);
+      assert.ok(initialFailure.continuationStepId);
+      const retry = await claim(context, initialFailure.continuationStepId);
+      assert.ok(retry);
+      const retained = retry.candidates
+        .slice(0, 2)
+        .map(
+          ({ thread: _thread, definitions: _definitions, ...entry }) => entry,
+        );
+      const excludedThreadIds = retry.candidates
+        .slice(2)
+        .map((entry) => entry.threadId);
+      await assert.rejects(() =>
+        finalizeThreadLabelBatchPreparation(
+          {
+            submissionId: retry.submissionId,
+            manifest: retained,
+            excludedThreadIds: [],
+          },
+          context.database,
+        ),
+      );
+      await finalizeThreadLabelBatchPreparation(
+        {
+          submissionId: retry.submissionId,
+          manifest: retained,
+          excludedThreadIds,
+        },
+        context.database,
+      );
+      // A second failure retries only the retained portion before its deferred tail.
+      const retryFailure = await finish(context, retry.submissionId, []);
+      assert.ok(retryFailure.continuationStepId);
+      const secondRetry = await claim(context, retryFailure.continuationStepId);
+      assert.ok(secondRetry);
+      assert.deepEqual(
+        secondRetry.candidates.map((entry) => entry.threadId),
+        retained.map((entry) => entry.threadId),
+      );
+      const success = await finish(
+        context,
+        secondRetry.submissionId,
+        secondRetry.candidates.map((entry) => ({
+          threadId: entry.threadId,
+          labelId: request.label.id,
+          confidence: 90,
+        })),
+      );
+      assert.ok(success.continuationStepId);
+      const tail = await claim(context, success.continuationStepId);
+      assert.ok(tail);
+      assert.deepEqual(
+        tail.candidates.map((entry) => entry.threadId),
+        excludedThreadIds,
+      );
+      const [tailSubmission] = await context.database
+        .select()
+        .from(threadLabelBatchSubmissions)
+        .where(eq(threadLabelBatchSubmissions.id, tail.submissionId));
+      assert.equal(tailSubmission?.retryAttempt, 1);
+      const completion = await finish(
+        context,
+        tail.submissionId,
+        tail.candidates.map((entry) => ({
+          threadId: entry.threadId,
+          labelId: request.label.id,
+          confidence: 90,
+        })),
+      );
+      assert.ok(completion.continuationStepId);
+      assert.equal(await claim(context, completion.continuationStepId), null);
+      const assignments = await context.database
+        .select()
+        .from(threadLabelAssignments)
+        .where(eq(threadLabelAssignments.accountId, context.accountId));
+      assert.equal(assignments.length, rows.length);
+    });
+  },
+);
+
+test(
+  "disconnected accounts cannot admit or complete automatic label work",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const [row] = await insertThreads(context, [
+        { sentAt: context.referenceAt },
+      ]);
+      assert.ok(row);
+      await context.database.transaction((transaction) =>
+        enqueueLiveInboxThreadLabelAnalyses(
+          { ...context, threadIds: [row.threadId] },
+          transaction,
+        ),
+      );
+      const [thread] = await context.database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, row.threadId));
+      assert.ok(thread?.labelAnalysisDefinitionHash);
+      const checkpoint = {
+        threadId: row.threadId,
+        analysisVersion: thread.labelAnalysisVersion,
+        definitionHash: thread.labelAnalysisDefinitionHash,
+      };
+      await context.database
+        .update(connectedAccounts)
+        .set({ status: "disconnected" })
+        .where(eq(connectedAccounts.id, context.accountId));
+      assert.equal(
+        (
+          await beginThreadLabelAnalysis(
+            { ...context, checkpoint },
+            context.database,
+          )
+        ).status,
+        "missing",
+      );
+      assert.equal(
+        await context.database.transaction((transaction) =>
+          enqueueLiveInboxThreadLabelAnalyses(
+            { ...context, threadIds: [row.threadId] },
+            transaction,
+          ),
+        ),
+        0,
+      );
+      const [label] = await context.database
+        .select()
+        .from(labels)
+        .where(
+          and(
+            eq(labels.accountId, context.accountId),
+            eq(labels.kind, "invook"),
+          ),
+        );
+      assert.ok(label);
+      assert.equal(
+        (
+          await completeThreadLabelAnalysis(
+            {
+              ...context,
+              checkpoint,
+              labelId: label.id,
+              modelId: "test-model",
+              confidence: 90,
+            },
+            context.database,
+          )
+        ).status,
+        "missing",
+      );
+    });
+  },
+);
+
+test(
+  "restoring a previous definition set creates fresh direct work instead of reusing a completed job",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, accountId, userId } = context;
+      const [row] = await insertThreads(context, [
+        { sentAt: context.referenceAt },
+      ]);
+      assert.ok(row);
+      await database.transaction((transaction) =>
+        enqueueLiveInboxThreadLabelAnalyses(
+          { ...context, threadIds: [row.threadId] },
+          transaction,
+        ),
+      );
+      const [thread] = await database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, row.threadId));
+      assert.ok(thread?.labelAnalysisDefinitionHash);
+      const firstCheckpoint = {
+        threadId: row.threadId,
+        analysisVersion: thread.labelAnalysisVersion,
+        definitionHash: thread.labelAnalysisDefinitionHash,
+      };
+      const [label] = await database
+        .select()
+        .from(labels)
+        .where(
+          and(eq(labels.accountId, accountId), eq(labels.systemKey, "billing")),
+        );
+      assert.ok(label);
+      await setInvookLabelEnabled(
+        { userId, labelId: label.id, isEnabled: false },
+        database,
+      );
+      assert.equal(
+        (
+          await beginThreadLabelAnalysis(
+            { ...context, checkpoint: firstCheckpoint },
+            database,
+          )
+        ).status,
+        "superseded",
+      );
+      const [disabled] = await database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, row.threadId));
+      assert.ok(disabled?.labelAnalysisDefinitionHash);
+      await setInvookLabelEnabled(
+        { userId, labelId: label.id, isEnabled: true },
+        database,
+      );
+      assert.equal(
+        (
+          await beginThreadLabelAnalysis(
+            {
+              ...context,
+              checkpoint: {
+                threadId: row.threadId,
+                analysisVersion: disabled.labelAnalysisVersion,
+                definitionHash: disabled.labelAnalysisDefinitionHash,
+              },
+            },
+            database,
+          )
+        ).status,
+        "superseded",
+      );
+      const [restored] = await database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, row.threadId));
+      assert.ok(restored?.labelAnalysisDefinitionHash);
+      assert.equal(
+        restored.labelAnalysisDefinitionHash,
+        firstCheckpoint.definitionHash,
+      );
+      assert.equal(
+        restored.labelAnalysisVersion,
+        firstCheckpoint.analysisVersion + 2,
+      );
+      assert.equal(
+        (
+          await beginThreadLabelAnalysis(
+            {
+              ...context,
+              checkpoint: {
+                threadId: row.threadId,
+                analysisVersion: restored.labelAnalysisVersion,
+                definitionHash: restored.labelAnalysisDefinitionHash,
+              },
+            },
+            database,
+          )
+        ).status,
+        "ready",
+      );
+      const jobs = await database
+        .select()
+        .from(workflowSteps)
+        .where(eq(workflowSteps.accountId, accountId));
+      assert.equal(jobs.length, 3);
+      assert.ok(jobs.every((job) => job.stepType === "label.thread.assign"));
+      assert.ok(jobs.every((job) => job.runId === null));
+    });
+  },
+);
+
+test(
+  "retired automatic provider Batches only record cleanup metadata and never apply labels",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, userId, accountId } = context;
+      const [row] = await insertThreads(context, [
+        { sentAt: context.referenceAt },
+      ]);
+      assert.ok(row);
+      const [label] = await database
+        .select()
+        .from(labels)
+        .where(and(eq(labels.accountId, accountId), eq(labels.kind, "invook")));
+      assert.ok(label);
+      const stepId = uuidv4();
+      const providerBatchId = `test-batch-${uuidv4()}`;
+      await database.insert(workflowSteps).values({
+        id: stepId,
+        userId,
+        accountId,
+        stepType: "label.batch.submit",
+        status: "complete",
+        idempotencyKey: stepId,
+      });
+      const [submission] = await database
+        .insert(threadLabelBatchSubmissions)
+        .values({
           workflowStepId: stepId,
           userId,
           accountId,
-          flushRemainder: true,
-          modelId: "test-label-batch-model",
-        },
-        database,
-      );
-      assert.deepEqual(
-        claimed?.candidates.map((candidate) => candidate.threadId),
-        seeded.map(({ threadId }) => threadId),
-      );
-    } finally {
-      await database.delete(profiles).where(eq(profiles.id, userId));
-      await client.end();
-    }
-  },
-);
-
-test(
-  "Inbox threads keep exactly one Invook label across manual replacement and Gmail moves",
-  { skip: !testDatabaseUrl },
-  async () => {
-    if (!testDatabaseUrl) return;
-    const client = postgres(testDatabaseUrl, { max: 1 });
-    const database = drizzle(client, { schema }) as Database;
-    const userId = uuidv4();
-    const accountId = uuidv4();
-    const threadId = uuidv4();
-    const inboxMessageId = uuidv4();
-    const spamMessageId = uuidv4();
-    const retryThreadId = uuidv4();
-    const retryMessageId = uuidv4();
-    const sentAt = new Date("2026-08-18T09:00:00.000Z");
-
-    try {
-      await database.insert(profiles).values({
-        id: userId,
-        email: `${userId}@example.test`,
-        displayName: "Thread label test",
-      });
-      await database.insert(connectedAccounts).values({
-        id: accountId,
-        userId,
-        providerAccountId: `provider-${accountId}`,
-        email: "owner@example.test",
-        memoryAcknowledgedAt: sentAt,
-      });
-      await database.insert(gmailReplicaStates).values({
-        accountId,
-        initialHistoryId: "100",
-        historyCursor: "100",
-        state: "ready",
-        readyAt: sentAt,
-      });
-      await ensureBuiltInInvookLabels({ userId, accountId }, database);
-      await database.insert(threads).values({
-        id: threadId,
-        userId,
-        accountId,
-        providerThreadId: `provider-thread-${threadId}`,
-        subject: "Invoice and spam",
-        snippet: "Stored Inbox content",
-        participants: ["billing@example.test"],
-        latestMessageAt: sentAt,
-        messageCount: 2,
-      });
-      await database.insert(messages).values([
-        {
-          id: inboxMessageId,
-          userId,
-          accountId,
-          threadId,
-          providerMessageId: `provider-${inboxMessageId}`,
-          direction: "incoming",
-          sender: { raw: "Billing <billing@example.test>", email: "billing@example.test" },
-          recipients: ["owner@example.test"],
-          internalDate: sentAt,
-          headerLines: [],
-          subject: "Invoice",
-          snippet: "Invoice is ready",
-          bodyText: "Your invoice is ready.",
-          sentAt,
-        },
-        {
-          id: spamMessageId,
-          userId,
-          accountId,
-          threadId,
-          providerMessageId: `provider-${spamMessageId}`,
-          direction: "incoming",
-          sender: { raw: "Spam <spam@example.test>", email: "spam@example.test" },
-          recipients: ["owner@example.test"],
-          internalDate: new Date(sentAt.getTime() - 1_000),
-          headerLines: [],
-          subject: "Spam",
-          snippet: "Spam content",
-          bodyText: "This must not reach classification.",
-          sentAt: new Date(sentAt.getTime() - 1_000),
-        },
-      ]);
-      const gmailLabels = await database
-        .insert(labels)
-        .values([
-          {
-            userId,
-            accountId,
-            kind: "gmail" as const,
-            providerLabelId: "INBOX",
-            name: "Inbox",
-            normalizedName: "inbox",
-            providerType: "system" as const,
-          },
-          {
-            userId,
-            accountId,
-            kind: "gmail" as const,
-            providerLabelId: "SPAM",
-            name: "Spam",
-            normalizedName: "spam",
-            providerType: "system" as const,
-          },
-        ])
-        .returning({ id: labels.id, providerLabelId: labels.providerLabelId });
-      const inboxLabelId = gmailLabels.find(
-        (label) => label.providerLabelId === "INBOX",
-      )?.id;
-      const spamLabelId = gmailLabels.find(
-        (label) => label.providerLabelId === "SPAM",
-      )?.id;
-      assert.ok(inboxLabelId);
-      assert.ok(spamLabelId);
-      await database.insert(messageLabels).values([
-        { userId, accountId, messageId: inboxMessageId, labelId: inboxLabelId, source: "gmail" },
-        { userId, accountId, messageId: spamMessageId, labelId: spamLabelId, source: "gmail" },
-      ]);
-
-      assert.deepEqual(
-        (await listInboxThreadMessages(threadId, database)).map(({ id }) => id),
-        [inboxMessageId],
-      );
-      assert.deepEqual(
-        (await listMailboxThreads(userId, { view: "all" }, database))?.threads.map(
-          (thread) => [thread.id, thread.invookLabel],
-        ),
-        [[threadId, null]],
-      );
-
-      const invookLabels = await database
-        .select({ id: labels.id, systemKey: labels.systemKey })
-        .from(labels)
-        .where(and(eq(labels.accountId, accountId), eq(labels.kind, "invook")));
-      const importantLabelId = invookLabels.find(
-        (label) => label.systemKey === "important",
-      )?.id;
-      const billingLabelId = invookLabels.find(
-        (label) => label.systemKey === "billing",
-      )?.id;
-      assert.ok(importantLabelId);
-      assert.ok(billingLabelId);
-
-      const activeRunId = uuidv4();
-      await database.insert(mailSyncRuns).values({
-        id: activeRunId,
-        userId,
-        accountId,
-        status: "running",
-        discoveryComplete: true,
-        startingHistoryCursor: "100",
-        idempotencyKey: `thread-label-active-sync:${activeRunId}`,
-      });
-      await database.insert(gmailSyncItems).values({
-        runId: activeRunId,
-        providerThreadId: `provider-thread-${threadId}`,
-        status: "complete",
-        completedAt: sentAt,
-      });
-      const prematureFlushStepId = await enqueueThreadLabelBatchSubmission({
-        userId,
-        accountId,
-        sourceKey: `thread-label-premature-flush:${activeRunId}`,
-        flushRemainder: true,
-      }, database);
-      assert.equal(
-        await claimThreadLabelBatchSubmission(
-          {
-            workflowStepId: prematureFlushStepId,
-            userId,
-            accountId,
-            flushRemainder: true,
-            modelId: "test-label-batch-model",
-          },
-          database,
-        ),
-        null,
-      );
-      await database
-        .update(mailSyncRuns)
-        .set({ status: "complete", completedAt: sentAt })
-        .where(eq(mailSyncRuns.id, activeRunId));
-
-      const submissionStepId = await enqueueThreadLabelBatchSubmission({
-        userId,
-        accountId,
-        sourceKey: `thread-label-batch-test:${threadId}`,
-        flushRemainder: true,
-      }, database);
-      assert.deepEqual(
-        await database
-          .select({ runId: workflowSteps.runId, input: workflowSteps.input })
-          .from(workflowSteps)
-          .where(eq(workflowSteps.id, submissionStepId))
-          .then((rows) => rows[0]),
-        { runId: null, input: { flushRemainder: true } },
-      );
-      const claimed = await claimThreadLabelBatchSubmission(
-        {
-          workflowStepId: submissionStepId,
-          userId,
-          accountId,
-          flushRemainder: true,
-          modelId: "test-label-batch-model",
-        },
-        database,
-      );
-      assert.equal(claimed?.candidates.length, 1);
-      const submission = await getThreadLabelBatchSubmissionForStep(
-        submissionStepId,
-        database,
-      );
-      assert.ok(submission);
-      await database
-        .update(threadLabelBatchSubmissions)
-        .set({
-          status: "submitted",
-          providerBatchId: `batch-${submission.id}`,
-          inputFileId: `file-${submission.id}`,
+          providerBatchId,
+          inputFileId: "test-input",
+          modelId: "test-model",
+          definitionHash: "a".repeat(64),
+          requestCount: 1,
+          manifest: [
+            {
+              threadId: row.threadId,
+              contentVersion: 1,
+              assignmentVersion: null,
+              fallbackLabelId: label.id,
+            },
+          ],
+          status: "failed",
+          lastError: "automatic_labeling_superseded",
         })
-        .where(eq(threadLabelBatchSubmissions.id, submission.id));
-      const serializedStepId = await enqueueThreadLabelBatchSubmission(
-        {
-          userId,
-          accountId,
-          sourceKey: `thread-label-serialized-test:${threadId}`,
-          flushRemainder: true,
-        },
-        database,
-      );
-      assert.equal(
-        await claimThreadLabelBatchSubmission(
-          {
-            workflowStepId: serializedStepId,
-            userId,
-            accountId,
-            flushRemainder: true,
-            modelId: "test-label-batch-model",
-          },
-          database,
+        .returning();
+      assert.ok(submission);
+      assert.ok(
+        (await listSubmittedThreadLabelBatchIds(database)).includes(
+          providerBatchId,
         ),
-        null,
       );
-      const matchedEvent = await enqueueBatchEvent(
-        {
-          provider: "openai",
-          webhookId: `webhook-${submission.id}`,
-          eventType: "batch.completed",
-          providerBatchId: `batch-${submission.id}`,
-        },
-        database,
-      );
-      assert.equal(matchedEvent?.submissionJobId, submissionStepId);
-      assert.equal(
-        await database
-          .select({ id: workflowSteps.id })
-          .from(workflowSteps)
-          .where(
-            and(
-              eq(workflowSteps.accountId, accountId),
-              eq(workflowSteps.stepType, "label.batch.event"),
-            ),
-          )
-          .then((rows) => rows.length),
-        1,
-      );
-
-      await setUserThreadLabel({ userId, threadId, labelId: importantLabelId }, database);
-      const lateCompletion = await finalizeThreadLabelBatchSubmission(
+      const result = await finalizeThreadLabelBatchSubmission(
         {
           submissionId: submission.id,
           providerState: "completed",
           providerErrorCode: null,
           retryableFailure: false,
-          outputFileId: `output-${submission.id}`,
+          outputFileId: "test-output",
           errorFileId: null,
-          modelId: "test-label-batch-model",
-          results: [{ threadId, labelId: billingLabelId, confidence: 99 }],
+          modelId: "test-model",
+          results: [
+            { threadId: row.threadId, labelId: label.id, confidence: 95 },
+          ],
           failedThreadIds: [],
         },
         database,
       );
-      assert.equal(lateCompletion.appliedCount, 0);
+      assert.equal(result.alreadyFinalized, true);
+      assert.equal(result.appliedCount, 0);
+      assert.equal(result.continuationStepId, null);
       assert.equal(
         (
-          await finalizeThreadLabelBatchSubmission(
-            {
-              submissionId: submission.id,
-              providerState: "completed",
-              providerErrorCode: null,
-              retryableFailure: false,
-              outputFileId: `output-${submission.id}`,
-              errorFileId: null,
-              modelId: "test-label-batch-model",
-              results: [{ threadId, labelId: billingLabelId, confidence: 99 }],
-              failedThreadIds: [],
-            },
-            database,
-          )
-        ).alreadyFinalized,
-        true,
-      );
-
-      await database.insert(threads).values({
-        id: retryThreadId,
-        userId,
-        accountId,
-        providerThreadId: `provider-thread-${retryThreadId}`,
-        subject: "Capacity retry",
-        snippet: "Retry this historical label",
-        participants: ["sender@example.test"],
-        latestMessageAt: sentAt,
-      });
-      await database.insert(messages).values({
-        id: retryMessageId,
-        userId,
-        accountId,
-        threadId: retryThreadId,
-        providerMessageId: `provider-${retryMessageId}`,
-        direction: "incoming",
-        sender: { raw: "Sender <sender@example.test>", email: "sender@example.test" },
-        recipients: ["owner@example.test"],
-        internalDate: sentAt,
-        headerLines: [],
-        subject: "Capacity retry",
-        snippet: "Retry this historical label",
-        bodyText: "This request should return to pending after provider capacity exhaustion.",
-        sentAt,
-      });
-      await database.insert(messageLabels).values({
-        userId,
-        accountId,
-        messageId: retryMessageId,
-        labelId: inboxLabelId,
-        source: "gmail",
-      });
-      const retrySubmissionStepId = await enqueueThreadLabelBatchSubmission(
-        {
-          userId,
-          accountId,
-          sourceKey: `thread-label-capacity-test:${retryThreadId}`,
-          flushRemainder: true,
-        },
-        database,
-      );
-      const retryClaim = await claimThreadLabelBatchSubmission(
-        {
-          workflowStepId: retrySubmissionStepId,
-          userId,
-          accountId,
-          flushRemainder: true,
-          modelId: "test-label-batch-model",
-        },
-        database,
-      );
-      assert.deepEqual(
-        retryClaim?.candidates.map((candidate) => candidate.threadId),
-        [retryThreadId],
-      );
-      const retrySubmission = await getThreadLabelBatchSubmissionForStep(
-        retrySubmissionStepId,
-        database,
-      );
-      assert.ok(retrySubmission);
-      await database
-        .update(threadLabelBatchSubmissions)
-        .set({
-          status: "submitted",
-          providerBatchId: `batch-${retrySubmission.id}`,
-          inputFileId: `file-${retrySubmission.id}`,
-        })
-        .where(eq(threadLabelBatchSubmissions.id, retrySubmission.id));
-      const retryFinalization = await finalizeThreadLabelBatchSubmission(
-        {
-          submissionId: retrySubmission.id,
-          providerState: "failed",
-          providerErrorCode: "openai_batch_capacity_exhausted",
-          retryableFailure: true,
-          outputFileId: null,
-          errorFileId: `error-${retrySubmission.id}`,
-          modelId: "test-label-batch-model",
-          results: [],
-          failedThreadIds: [retryThreadId],
-        },
-        database,
-      );
-      const retryContinuationStepId = retryFinalization.continuationStepId;
-      assert.ok(retryContinuationStepId);
-      assert.deepEqual(
-        await database
-          .select({
-            state: threads.labelAnalysisState,
-            error: threads.labelAnalysisError,
-          })
-          .from(threads)
-          .where(eq(threads.id, retryThreadId)),
-        [{ state: "pending", error: "openai_batch_capacity_exhausted" }],
-      );
-      const [retryStep] = await database
-        .select({ input: workflowSteps.input })
-        .from(workflowSteps)
-        .where(eq(workflowSteps.id, retryContinuationStepId));
-      assert.equal(retryStep?.input.retryAttempt, 1);
-      assert.deepEqual(retryStep?.input.threadIds, [retryThreadId]);
-      assert.ok(
-        typeof retryStep?.input.runAt === "string" &&
-          Date.parse(retryStep.input.runAt) > Date.now(),
-      );
-      const invalidResultClaim = await claimThreadLabelBatchSubmission(
-        {
-          workflowStepId: retryContinuationStepId,
-          userId,
-          accountId,
-          flushRemainder: true,
-          modelId: "test-label-batch-model",
-          threadIds: [retryThreadId],
-        },
-        database,
-      );
-      assert.deepEqual(
-        invalidResultClaim?.candidates.map((candidate) => candidate.threadId),
-        [retryThreadId],
-      );
-      const invalidResultSubmission = await getThreadLabelBatchSubmissionForStep(
-        retryContinuationStepId,
-        database,
-      );
-      assert.ok(invalidResultSubmission);
-      await database
-        .update(threadLabelBatchSubmissions)
-        .set({
-          status: "submitted",
-          providerBatchId: `batch-${invalidResultSubmission.id}`,
-          inputFileId: `file-${invalidResultSubmission.id}`,
-        })
-        .where(
-          eq(threadLabelBatchSubmissions.id, invalidResultSubmission.id),
-        );
-      const invalidResultFinalization =
-        await finalizeThreadLabelBatchSubmission(
-          {
-            submissionId: invalidResultSubmission.id,
-            providerState: "completed",
-            providerErrorCode: null,
-            retryableFailure: false,
-            outputFileId: `output-${invalidResultSubmission.id}`,
-            errorFileId: null,
-            modelId: "test-label-batch-model",
-            results: [],
-            failedThreadIds: [retryThreadId],
-          },
-          database,
-        );
-      const invalidResultRetryStepId =
-        invalidResultFinalization.continuationStepId;
-      assert.ok(invalidResultRetryStepId);
-      const [invalidResultRetryStep] = await database
-        .select({ input: workflowSteps.input })
-        .from(workflowSteps)
-        .where(eq(workflowSteps.id, invalidResultRetryStepId));
-      assert.equal(invalidResultRetryStep?.input.retryAttempt, 2);
-      assert.deepEqual(invalidResultRetryStep?.input.threadIds, [retryThreadId]);
-      assert.equal(invalidResultRetryStep?.input.runAt, undefined);
-      await database.delete(threads).where(eq(threads.id, retryThreadId));
-
-      await setUserThreadLabel({ userId, threadId, labelId: billingLabelId }, database);
-      const assignments = await database
-        .select()
-        .from(threadLabelAssignments)
-        .where(eq(threadLabelAssignments.threadId, threadId));
-      assert.equal(assignments.length, 1);
-      assert.equal(assignments[0]?.labelId, billingLabelId);
-      assert.equal(assignments[0]?.assignmentVersion, 2);
-      assert.deepEqual(
-        (await listMailboxThreads(userId, { view: "all" }, database))?.threads.map(
-          (thread) => [thread.id, thread.invookLabel?.labelId],
-        ),
-        [[threadId, billingLabelId]],
-      );
-
-      await replaceGmailMessageLabels(
-        {
-          userId,
-          accountId,
-          providerMessageId: `provider-${inboxMessageId}`,
-          providerHistoryId: "101",
-          gmailLabels: [],
-        },
-        database,
-      );
-      assert.deepEqual(
-        (await listMailboxThreads(userId, { view: "all" }, database))?.threads,
-        [],
-      );
-      assert.equal(
-        (await database
-          .select({ labelId: threadLabelAssignments.labelId })
-          .from(threadLabelAssignments)
-          .where(eq(threadLabelAssignments.threadId, threadId)))[0]?.labelId,
-        billingLabelId,
-      );
-
-      await replaceGmailMessageLabels(
-        {
-          userId,
-          accountId,
-          providerMessageId: `provider-${inboxMessageId}`,
-          providerHistoryId: "102",
-          gmailLabels: [{ providerLabelId: "INBOX", name: "Inbox" }],
-        },
-        database,
-      );
-      assert.deepEqual(
-        (await listMailboxThreads(userId, { view: "all" }, database))?.threads.map(
-          (thread) => thread.id,
-        ),
-        [threadId],
-      );
-      assert.equal(
-        await database
-          .select({ id: workflowSteps.id })
-          .from(workflowSteps)
-          .where(
-            and(
-              eq(workflowSteps.stepType, "label.thread.assign"),
-              eq(workflowSteps.accountId, accountId),
-            ),
-          )
-          .then((rows) => rows.length),
+          await database
+            .select()
+            .from(threadLabelAssignments)
+            .where(eq(threadLabelAssignments.threadId, row.threadId))
+        ).length,
         0,
       );
-    } finally {
-      await database.delete(profiles).where(eq(profiles.id, userId));
-      await client.end();
-    }
+      const [completed] = await database
+        .select()
+        .from(threadLabelBatchSubmissions)
+        .where(eq(threadLabelBatchSubmissions.id, submission.id));
+      assert.equal(completed?.outputFileId, "test-output");
+      assert.equal(completed?.status, "failed");
+      assert.ok(
+        !(await listSubmittedThreadLabelBatchIds(database)).includes(
+          providerBatchId,
+        ),
+      );
+    });
+  },
+);
+
+test(
+  "terminal submission failure closes only its saved settings request without creating automatic work",
+  integrationOptions,
+  async () => {
+    await withContext(async (context) => {
+      const { database, accountId } = context;
+      const [row] = await insertThreads(context, [
+        { sentAt: context.referenceAt },
+      ]);
+      assert.ok(row);
+      const request = await createHistoricalRequest(context);
+      const batch = await claim(context, request.stepId);
+      assert.ok(batch);
+      const [step] = await database
+        .select()
+        .from(workflowSteps)
+        .where(eq(workflowSteps.id, request.stepId));
+      assert.ok(step);
+      assert.equal(
+        await failWorkflowStep(
+          {
+            step: { ...step, payload: step.input },
+            message: "label_analysis_model_unavailable",
+            terminal: true,
+          },
+          database,
+        ),
+        true,
+      );
+      const [scan] = await database
+        .select()
+        .from(historicalThreadLabelScans)
+        .where(eq(historicalThreadLabelScans.id, request.scan.id));
+      const [submission] = await database
+        .select()
+        .from(threadLabelBatchSubmissions)
+        .where(eq(threadLabelBatchSubmissions.id, batch.submissionId));
+      const [thread] = await database
+        .select()
+        .from(threads)
+        .where(eq(threads.id, row.threadId));
+      assert.equal(scan?.status, "failed");
+      assert.equal(submission?.status, "failed");
+      assert.equal(thread?.labelAnalysisState, "not_requested");
+      const steps = await database
+        .select()
+        .from(workflowSteps)
+        .where(eq(workflowSteps.accountId, accountId));
+      assert.equal(steps.length, 1);
+      assert.equal(steps[0]?.status, "failed");
+    });
   },
 );

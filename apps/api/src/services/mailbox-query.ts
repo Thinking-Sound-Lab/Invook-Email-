@@ -7,7 +7,6 @@ export async function queryMailboxForUser(input: {
   userId: string;
   accountId?: string | null;
   searchText?: string;
-  gmailLabelIds?: string[];
   invookLabelIds?: string[];
   inboxState?: "any" | "inbox" | "not_inbox";
   readState?: "any" | "read" | "unread";
@@ -29,7 +28,6 @@ export async function queryMailboxForUser(input: {
     userId: input.userId,
     accountId: input.accountId,
     candidateMessageIds: searchResults?.map((result) => result.messageId),
-    gmailLabelIds: input.gmailLabelIds,
     invookLabelIds: input.invookLabelIds,
     inboxState: input.inboxState,
     readState: input.readState,
@@ -48,7 +46,6 @@ export async function queryMailboxForUser(input: {
       ...message,
       sentAt: message.sentAt.toISOString(),
     })),
-    availableGmailLabels: result.availableGmailLabels,
     availableInvookLabels: result.availableInvookLabels,
     nextCursor: result.nextCursor,
   };

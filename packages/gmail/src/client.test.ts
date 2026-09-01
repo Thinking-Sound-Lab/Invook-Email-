@@ -74,7 +74,7 @@ test("incremental Gmail messages are fetched as parsed full payloads", async () 
   assert.equal(request.baseURL, "https://gmail.googleapis.com/gmail/v1");
   assert.equal(url.pathname, "/users/me/messages/message%2Fwith%20spaces");
   assert.equal(url.searchParams.get("format"), "full");
-  assert.deepEqual(message.labelIds, ["IMPORTANT", "INBOX"]);
+  assert.deepEqual(message.labelIds, ["INBOX"]);
 });
 
 test("initial sync lists threads at Gmail's maximum and fetches each as full", async () => {
@@ -142,7 +142,7 @@ test("label-only history reads minimal state without downloading raw MIME", asyn
   const url = new URL(request.url ?? "", request.baseURL);
   assert.equal(url.pathname, "/users/me/messages/label-only-message");
   assert.equal(url.searchParams.get("format"), "minimal");
-  assert.deepEqual(message.labelIds, ["UNREAD", "IMPORTANT"]);
+  assert.deepEqual(message.labelIds, ["UNREAD"]);
 });
 
 test("draft and provider-write responses discard opaque Gmail label IDs", async () => {
@@ -156,7 +156,7 @@ test("draft and provider-write responses discard opaque Gmail label IDs", async 
     },
   };
   const draft = await getGmailDraft("access-token", "draft-id");
-  assert.deepEqual(draft.message.labelIds, ["DRAFT", "IMPORTANT"]);
+  assert.deepEqual(draft.message.labelIds, ["DRAFT"]);
 
   responseData = {
     id: "message-id",
@@ -210,7 +210,7 @@ test("history mapping retains only recognized Gmail system labels", () => {
       {
         messageId: "message-id",
         action: "labels",
-        providerLabelIds: ["IMPORTANT", "INBOX"],
+        providerLabelIds: ["INBOX"],
         isDraftRelated: false,
       },
     ],

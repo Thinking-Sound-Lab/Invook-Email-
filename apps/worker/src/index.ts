@@ -36,6 +36,8 @@ import {
   enqueueDailyGmailWatchRenewal,
   ensureDailyGmailWatchRenewals,
   enqueuePendingAnalysisWorkflowSteps,
+  enqueueHistoricalThreadLabelBatchRecoveries,
+  enqueueRecentThreadLabelRecoveries,
   enqueueBatchEvent,
   enqueueMemoryBatchRetry,
   enqueueMissingMailSyncRuns,
@@ -44,10 +46,6 @@ import {
   enqueuePendingGmailHistoryCatchups,
   enqueuePostSyncWorkflowSteps,
   enqueueReadyMailSyncFinalizers,
-  enqueueStartupThreadLabelBatchSubmissions,
-  enqueueInitialSyncLiveThreadLabelAnalyses,
-  enqueueInitialThreadLabelBatchIfReady,
-  enqueueThreadLabelBatchSubmission,
   failMailSyncThread,
   failWorkflowStep,
   getIndexedMessageIds,
@@ -68,8 +66,6 @@ import {
   hasCompletedMailSyncPage,
   listenForTemporalCommandNotifications,
   listActiveTemporalTenantIds,
-  listGmailObjectKeysForAccount,
-  markGmailAccountCleanupRunning,
   listSubmittedThreadLabelBatchIds,
   markGmailReplicaReady,
   markMailSyncThreadRunning,
@@ -77,7 +73,6 @@ import {
   MEMORY_SCHEMA_VERSION,
   markDraftFeedbackAnalyzed,
   saveExtractedMemories,
-  saveGmailWatchState,
   saveGmailDraftResource,
   deleteGmailDraftResourceByMessageId,
   setGmailReplicaState,
@@ -89,13 +84,13 @@ import {
   recordMailboxMessageBatchRefresh,
   recordMailboxMessageRefresh,
   recordMailSyncPage,
-  requeueRetryableThreadLabelBatchFailures,
   startMailSyncRun,
   updateStoredCredential,
   upsertMailboxMessage,
   upsertMailboxThreadMessages,
   withGmailAccountControlLock,
   type GoogleCredential,
+  type DatabaseExecutor,
   type IndexedMessage,
   type MemoryType,
   type WorkflowStepJob,
@@ -119,8 +114,6 @@ import {
   normalizeGmailFullMessage,
   parseGmailMessage,
   refreshGoogleAccessToken,
-  startGmailWatch,
-  stopGmailWatch,
   type ParsedGmailMessage,
 } from "@invook/gmail";
 import { createObjectStorage } from "@invook/object-storage";
@@ -131,10 +124,14 @@ import type {
 
 import {
   gmailContentConcurrency,
-  parseNonNegativeInteger,
   TemporalRuntime,
 } from "./temporal-runtime";
 import { classifyGmailWorkflowFailure } from "./gmail-workflow-failure";
+import {
+  GmailConnectionInactiveError,
+  renewGmailConnectionWatch,
+  runGmailConnectionCleanup,
+} from "./gmail-watch-lifecycle";
 import {
   parseGmailThreadBatchPayload,
   processGmailThreadBatch,
@@ -163,16 +160,6 @@ import {
 const encryptionKey = process.env.TOKEN_ENCRYPTION_KEY ?? "";
 const googleClientId = process.env.GMAIL_GOOGLE_CLIENT_ID ?? "";
 const googleClientSecret = process.env.GMAIL_GOOGLE_CLIENT_SECRET ?? "";
-const mailLabelHotWindowDays = parseNonNegativeInteger(
-  process.env.MAIL_LABEL_HOT_WINDOW_DAYS,
-  14,
-  "MAIL_LABEL_HOT_WINDOW_DAYS",
-);
-const mailLabelHotWindowMaxThreads = parseNonNegativeInteger(
-  process.env.MAIL_LABEL_HOT_WINDOW_MAX_THREADS,
-  1_000,
-  "MAIL_LABEL_HOT_WINDOW_MAX_THREADS",
-);
 const feedbackBatchSize = 24;
 const credentialRenewalWindowMs = 5 * 60 * 1_000;
 const objectStorage = createObjectStorage();
@@ -224,6 +211,7 @@ function normalizedEmails(values: string[], ownerEmail: string): string[] {
 async function refreshCredentialIfRequired(
   accountId: string,
   credential: GoogleCredential,
+  database?: DatabaseExecutor,
 ): Promise<GoogleCredential> {
   const expiresSoon =
     Date.parse(credential.expiresAt) <= Date.now() + credentialRenewalWindowMs;
@@ -250,6 +238,7 @@ async function refreshCredentialIfRequired(
   await updateStoredCredential(
     accountId,
     encryptGoogleCredential(nextCredential, encryptionKey),
+    database,
   );
 
   return nextCredential;
@@ -674,13 +663,17 @@ async function applyHistoryRange(options: {
   return { ...applied, historyId };
 }
 
-async function getMailSyncContext(accountId: string) {
-  const account = await getWorkerAccount(accountId);
+async function getMailSyncContext(accountId: string, database?: DatabaseExecutor) {
+  const account = await getWorkerAccount(accountId, database);
   if (!account) {
     throw new Error("The connected Gmail account or credential was not found.");
   }
   const storedCredential = decryptGoogleCredential(account.tokenCiphertext, encryptionKey);
-  const credential = await refreshCredentialIfRequired(accountId, storedCredential);
+  const credential = await refreshCredentialIfRequired(
+    accountId,
+    storedCredential,
+    database,
+  );
   return { account, credential };
 }
 
@@ -861,27 +854,6 @@ async function runGmailThreadBatch(job: WorkflowStepJob) {
     accountId: account.id,
     threadIds: changedThreadIds,
   });
-  // Hot-window threads reserve the live lane before Batch admission runs, so
-  // recent inbox threads get labels without waiting on an OpenAI Batch. This
-  // runs before failure classification so partial batches still label.
-  let hotWindowEnqueuedCount = 0;
-  if (
-    mailLabelHotWindowDays > 0 &&
-    isAiConfigured() &&
-    changedThreadIds.length > 0
-  ) {
-    const hotWindow = await enqueueInitialSyncLiveThreadLabelAnalyses({
-      runId,
-      userId: account.userId,
-      accountId: account.id,
-      threadIds: changedThreadIds,
-      hotWindowDays: mailLabelHotWindowDays,
-      maxThreads: mailLabelHotWindowMaxThreads,
-    });
-    if (hotWindow.status === "enqueued") {
-      hotWindowEnqueuedCount = hotWindow.enqueuedCount;
-    }
-  }
   if (outcome.failures.length > 0) {
     const classifiedFailures = outcome.failures.map((failure) => ({
       ...failure,
@@ -908,18 +880,10 @@ async function runGmailThreadBatch(job: WorkflowStepJob) {
     }
     throw classifiedFailures[0]?.error ?? new Error("Gmail thread batch failed.");
   }
-  const labelBatchAdmission = await enqueueInitialThreadLabelBatchIfReady({
-    runId,
-    userId: account.userId,
-    accountId: account.id,
-    sourceKey: `gmail-thread-storage:${job.id}`,
-  });
   return {
     status: "complete",
     runId,
     threadCount: providerThreadIds.length,
-    hotWindowLiveLabelCount: hotWindowEnqueuedCount,
-    labelBatchAdmission: labelBatchAdmission.status,
   };
 }
 
@@ -981,24 +945,9 @@ function gmailPubSubTopic(): string {
 }
 
 async function renewGmailWatch(accountId: string, accessToken: string) {
-  const topicName = gmailPubSubTopic();
-  const watch = await startGmailWatch(accessToken, { topicName });
-  const expiration = Number(watch.expiration);
-  if (!Number.isFinite(expiration)) {
-    throw new Error("Gmail returned an invalid watch expiration.");
-  }
-  const renewedAt = new Date();
-  const expirationAt = new Date(expiration);
-  await saveGmailWatchState({
-    accountId,
-    watch: {
-      topicName,
-      historyId: watch.historyId,
-      expirationAt,
-    },
-    renewedAt,
+  return renewGmailConnectionWatch({
+    accountId, accessToken, topicName: gmailPubSubTopic(),
   });
-  return { historyId: watch.historyId, expirationAt, renewedAt };
 }
 
 async function ensureGmailWatch(accountId: string, accessToken: string) {
@@ -1103,14 +1052,6 @@ async function catchUpGmailHistory(options: {
       changedThreadCount: 0,
     };
   }
-  if (replay.changedThreadIds.length > 0) {
-    await enqueueThreadLabelBatchSubmission({
-      userId: account.userId,
-      accountId: account.id,
-      sourceKey: `gmail-history:${options.sourceStepId}:${replay.historyId}`,
-      flushRemainder: true,
-    });
-  }
   if (disposition === "continue_durably") {
     const pendingHistoryCursor = replay.pendingHistoryCursor;
     if (!pendingHistoryCursor) {
@@ -1208,12 +1149,6 @@ async function runGmailFinalize(job: WorkflowStepJob) {
     finalHistoryCursor: historyCursor,
   });
   if (!completed) return { status: "inactive", runId };
-  await enqueueThreadLabelBatchSubmission({
-    userId: account.userId,
-    accountId: account.id,
-    sourceKey: `gmail-finalize:${runId}`,
-    flushRemainder: true,
-  });
   return {
     status: "complete",
     runId,
@@ -1276,26 +1211,16 @@ async function runGmailWatchRenewal(job: WorkflowStepJob) {
 }
 
 async function runGmailAccountCleanup(job: WorkflowStepJob) {
-  if (!job.accountId) throw new Error("The Gmail cleanup has no account.");
+  if (!job.accountId || !job.userId) throw new Error("The Gmail cleanup has no account owner.");
   const cleanupId = requiredString(job.payload.cleanupId, "Gmail cleanup ID");
-  await markGmailAccountCleanupRunning(cleanupId);
-  const account = await getWorkerAccount(job.accountId);
-  if (account) {
-    const credential = decryptGoogleCredential(account.tokenCiphertext, encryptionKey);
-    try {
-      await stopGmailWatch(credential.accessToken);
-    } catch (error) {
-      if (
-        !(error instanceof GmailApiError) ||
-        ![400, 401, 403, 404].includes(error.status)
-      ) {
-        throw error;
-      }
-    }
-  }
-  const objectKeys = await listGmailObjectKeysForAccount(job.accountId);
-  await objectStorage.deleteObjects(objectKeys);
-  return { objectCount: objectKeys.length };
+  return runGmailConnectionCleanup({
+    accountId: job.accountId, userId: job.userId, cleanupId, stepId: job.id,
+  }, {
+    encryptionKey,
+    deleteObjects: (keys) => objectStorage.deleteObjects(keys),
+    getStopAccessToken: async (accountId, database) =>
+      (await getMailSyncContext(accountId, database)).credential.accessToken,
+  });
 }
 
 async function runGmailObjectDelete(job: WorkflowStepJob) {
@@ -2070,9 +1995,8 @@ async function runWorkflowStepHandler(
         return runMemoryBatchEvent(job);
       case "memory.feedback":
         return runMemoryFeedback(job);
-      case "label.historical.scan":
+      case "label.recent.scan":
       case "label.thread.assign":
-      case "label.thread.scan":
         return runLabelSubmission(job);
       case "label.batch.submit":
         return runThreadLabelBatchSubmission(job);
@@ -2122,6 +2046,11 @@ export async function runWorkflowStepActivity(
     await completeWorkflowStep(job.id, result);
     return { result };
   } catch (error) {
+    if (error instanceof GmailConnectionInactiveError) {
+      const result = { status: "inactive" };
+      await completeWorkflowStep(job.id, result);
+      return { result };
+    }
     const failure = classifyGmailWorkflowFailure(error, {
       attempt: job.attempts,
       maxAttempts: job.maxAttempts,
@@ -2288,8 +2217,8 @@ async function run() {
     await enqueueReadyMailSyncFinalizers();
     await ensureDailyGmailWatchRenewals();
     await enqueuePostSyncWorkflowSteps();
-    await requeueRetryableThreadLabelBatchFailures();
-    await enqueueStartupThreadLabelBatchSubmissions();
+    await enqueueHistoricalThreadLabelBatchRecoveries();
+    await enqueueRecentThreadLabelRecoveries();
     await enqueuePendingAnalysisWorkflowSteps();
     await reconcileSubmittedThreadLabelBatches();
     outboxSignal.notify();

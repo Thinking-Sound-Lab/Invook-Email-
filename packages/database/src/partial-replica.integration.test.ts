@@ -325,7 +325,7 @@ test(
       );
 
       const structured = await queryInvookMailbox(
-        { userId, gmailLabelIds: [gmailLabelId] },
+        { userId, inboxState: "inbox" },
         database,
       );
       assert.equal(structured.status, "available");
@@ -386,6 +386,80 @@ test(
         await getAiReplyDraftForGmailSave({ userId: otherUserId, draftId }, database),
         null,
       );
+    });
+  },
+);
+
+test(
+  "All and Invook label views count every stored thread in the selected account",
+  { skip: !testDatabaseUrl },
+  async () => {
+    await withPartialReplicaFixture(async (fixture) => {
+      const { database, userId, accountId, threadId, invookLabelId } = fixture;
+      const archivedThreadId = uuidv4();
+      const archivedMessageId = uuidv4();
+      const sentAt = new Date("2026-08-14T08:00:00.000Z");
+
+      await database.insert(threads).values({
+        id: archivedThreadId,
+        userId,
+        accountId,
+        providerThreadId: `provider-thread-${archivedThreadId}`,
+        subject: "Stored outside Gmail Inbox",
+        snippet: "This thread remains available in the Invook replica.",
+        participants: ["Archived Sender <archived@example.com>"],
+        latestMessageAt: sentAt,
+        messageCount: 1,
+      });
+      await database.insert(messages).values({
+        id: archivedMessageId,
+        userId,
+        accountId,
+        threadId: archivedThreadId,
+        providerMessageId: `provider-message-${archivedMessageId}`,
+        direction: "incoming",
+        sender: {
+          raw: "Archived Sender <archived@example.com>",
+          email: "archived@example.com",
+        },
+        recipients: ["owner@example.com"],
+        providerHistoryId: "104",
+        internalDate: sentAt,
+        headerLines: [],
+        subject: "Stored outside Gmail Inbox",
+        snippet: "This thread remains available in the Invook replica.",
+        bodyText: "Stored locally without a Gmail Inbox membership.",
+        sentAt,
+      });
+      await database.insert(threadLabelAssignments).values({
+        userId,
+        accountId,
+        threadId: archivedThreadId,
+        labelId: invookLabelId,
+        source: "user",
+        definitionVersion: 1,
+      });
+
+      const [allThreads, labelThreads, sidebarCounts] = await Promise.all([
+        listMailboxThreads(userId, { accountId, view: "all" }, database),
+        listMailboxThreads(
+          userId,
+          { accountId, view: `label:${invookLabelId}` },
+          database,
+        ),
+        getMailboxSidebarCounts(userId, database),
+      ]);
+
+      assert.deepEqual(
+        allThreads?.threads.map((thread) => thread.id).sort(),
+        [threadId, archivedThreadId].sort(),
+      );
+      assert.deepEqual(
+        labelThreads?.threads.map((thread) => thread.id).sort(),
+        [threadId, archivedThreadId].sort(),
+      );
+      assert.equal(sidebarCounts?.accounts[accountId]?.views.all, 2);
+      assert.equal(sidebarCounts?.accounts[accountId]?.labels[invookLabelId], 2);
     });
   },
 );
@@ -772,9 +846,7 @@ test(
         "120",
       );
       assert.equal(
-        threadDetail?.thread.gmailLabels.some(
-          (label) => label.providerLabelId === "UNREAD",
-        ),
+        threadDetail?.thread.isUnread,
         true,
       );
     });

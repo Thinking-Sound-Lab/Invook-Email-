@@ -12,6 +12,8 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { validate as validateUuid } from "uuid";
+
 import type { TenantTaskQueueLane } from "@invook/workflows";
 
 import {
@@ -22,6 +24,7 @@ import {
 import {
   connectedAccounts,
   threadLabelBatchSubmissions,
+  historicalThreadLabelScans,
   gmailAccountCleanups,
   gmailReplicaStates,
   gmailWatchStates,
@@ -287,8 +290,9 @@ export function tenantTaskQueueLaneForStepType(
     case "gmail.objects.delete":
     case "memory.extract":
     case "memory.batch.retry":
-    case "label.historical.scan":
-    case "label.thread.scan":
+    case "label.recent.scan":
+    case "label.batch.submit":
+    case "label.batch.event":
       return "bulk";
     case "gmail.history.catchup":
     case "gmail.message.refresh":
@@ -298,8 +302,6 @@ export function tenantTaskQueueLaneForStepType(
     case "memory.batch.event":
     case "memory.feedback":
     case "label.thread.assign":
-    case "label.batch.submit":
-    case "label.batch.event":
       return "live";
     default:
       throw new Error(`Unsupported workflow step type: ${stepType}`);
@@ -1031,7 +1033,7 @@ export async function markWorkflowStepRunning(
 export async function completeWorkflowStep(
   stepId: string,
   result: Record<string, unknown> = {},
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   return database.transaction(async (transaction) => {
     const [step] = await transaction
@@ -1073,7 +1075,7 @@ export async function completeWorkflowStep(
       })
       .where(eq(workflowSteps.id, stepId));
 
-    if (step.stepType !== "gmail.account.cleanup" || !step.accountId) return true;
+    if (step.stepType !== "gmail.account.cleanup" || !step.accountId || result.status === "inactive") return true;
     const cleanupId =
       typeof step.input.cleanupId === "string" ? step.input.cleanupId : null;
     if (!cleanupId) {
@@ -1089,10 +1091,16 @@ export async function completeWorkflowStep(
         completedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(gmailAccountCleanups.id, cleanupId));
+      .where(and(
+        eq(gmailAccountCleanups.id, cleanupId),
+        eq(gmailAccountCleanups.accountId, step.accountId),
+      ));
     await transaction
       .delete(connectedAccounts)
-      .where(eq(connectedAccounts.id, step.accountId));
+      .where(and(
+        eq(connectedAccounts.id, step.accountId),
+        eq(connectedAccounts.status, "disconnected"),
+      ));
     return true;
   });
 }
@@ -1241,42 +1249,28 @@ export async function failWorkflowStep(
       }
     }
     if (input.terminal && input.step.stepType === "label.batch.submit") {
-      const [submission] = await transaction
-        .update(threadLabelBatchSubmissions)
-        .set({
-          status: "failed",
-          lastError: message,
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(threadLabelBatchSubmissions.workflowStepId, input.step.id),
-            eq(threadLabelBatchSubmissions.status, "preparing"),
-          ),
-        )
-        .returning({ manifest: threadLabelBatchSubmissions.manifest });
-      if (submission) {
-        const checkpoints = submission.manifest;
-        for (const checkpoint of checkpoints) {
-          await transaction
-            .update(threads)
-            .set({
-              labelAnalysisState: "pending",
-              labelAnalysisError: message,
-              labelAnalyzedAt: null,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(threads.id, checkpoint.threadId),
-                eq(threads.labelAnalysisVersion, checkpoint.analysisVersion),
-                eq(threads.labelAnalysisDefinitionHash, checkpoint.definitionHash),
-                eq(threads.labelAnalysisState, "running"),
-              ),
-            );
-        }
+      const historicalScanId = input.step.payload.historicalScanId;
+      if (
+        typeof historicalScanId === "string" && validateUuid(historicalScanId) &&
+        input.step.accountId && input.step.userId
+      ) {
+        await transaction
+          .update(historicalThreadLabelScans)
+          .set({ status: "failed", lastError: message, completedAt: new Date(), updatedAt: new Date() })
+          .where(and(
+            eq(historicalThreadLabelScans.id, historicalScanId),
+            eq(historicalThreadLabelScans.accountId, input.step.accountId),
+            eq(historicalThreadLabelScans.userId, input.step.userId),
+            inArray(historicalThreadLabelScans.status, ["queued", "running"]),
+          ));
       }
+      await transaction
+        .update(threadLabelBatchSubmissions)
+        .set({ status: "failed", lastError: message, completedAt: new Date(), updatedAt: new Date() })
+        .where(and(
+          eq(threadLabelBatchSubmissions.workflowStepId, input.step.id),
+          eq(threadLabelBatchSubmissions.status, "preparing"),
+        ));
     }
     if (!input.terminal || !input.step.accountId) return true;
     if (

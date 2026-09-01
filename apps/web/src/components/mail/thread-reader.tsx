@@ -44,21 +44,12 @@ export async function ThreadReader({
     view: currentView,
   });
   if (mailboxCursor) mailboxQuery.set("cursor", mailboxCursor);
-  const isUnread = thread.gmailLabels.some(
-    (label) => label.providerLabelId === "UNREAD",
-  );
+  const isUnread = thread.isUnread;
   const latestMessage = thread.messages.at(-1);
   const composeMessage = [...thread.messages]
     .reverse()
-    .find(
-      (message) =>
-        !message.gmailLabels.some((label) => label.providerLabelId === "DRAFT"),
-    );
-  const isLatestMessageStarred = Boolean(
-    latestMessage?.gmailLabels.some(
-      (label) => label.providerLabelId === "STARRED",
-    ),
-  );
+    .find((message) => !message.isDraft);
+  const isLatestMessageStarred = Boolean(latestMessage?.isStarred);
 
   return (
     <section

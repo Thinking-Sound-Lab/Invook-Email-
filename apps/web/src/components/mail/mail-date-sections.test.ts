@@ -15,7 +15,9 @@ function thread(
     subject: id,
     snippet: "",
     participants: [],
-    gmailLabels: [],
+    isUnread: false,
+    isStarred: false,
+    isDraft: false,
     invookLabel: null,
     latestMessageAt:
       latestMessageAt instanceof Date

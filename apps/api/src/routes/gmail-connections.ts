@@ -10,8 +10,10 @@ import {
   encryptGoogleCredential,
   getGmailConnectionForOAuth,
   getGmailConnectionForUser,
+  GmailConnectionDeletingError,
   refreshGmailAuthentication,
   saveNewGmailConnection,
+  withGmailIdentityLock,
 } from "@invook/database";
 import {
   createGoogleAuthorizationRequest,
@@ -31,7 +33,7 @@ import { sendProblem, sendRedirect } from "../responses";
 const CONNECTION_REQUEST_DURATION_MILLISECONDS = 10 * 60 * 1_000;
 
 type ConnectionErrorReason =
-  | "already_connected"
+  | "disconnect_pending"
   | "authorization"
   | "configuration"
   | "gmail_access"
@@ -58,7 +60,7 @@ export function getGmailConnectionIdentityError(input: {
   providerAccountId: string;
   reconnectAccount: GmailConnectionIdentity | null;
   existingAccount: { id: string; userId: string } | null;
-}): "already_connected" | "mailbox_mismatch" | null {
+}): "mailbox_mismatch" | null {
   if (
     input.reconnectAccount &&
     (input.reconnectAccount.userId !== input.userId ||
@@ -68,9 +70,30 @@ export function getGmailConnectionIdentityError(input: {
     return "mailbox_mismatch";
   }
   if (input.existingAccount && input.existingAccount.userId !== input.userId) {
-    return "already_connected";
+    return "mailbox_mismatch";
   }
   return null;
+}
+
+export function resolveGmailRefreshToken(input: {
+  userId: string;
+  refreshToken: string | null;
+  existingAccount: { userId: string; tokenCiphertext: string | null } | null;
+  encryptionKey: string;
+}): string | null {
+  if (input.refreshToken) return input.refreshToken;
+  // Defense in depth: a missing Google refresh token never permits borrowing
+  // another user's grant, even if a future caller supplies the wrong account.
+  if (
+    input.existingAccount?.userId !== input.userId ||
+    !input.existingAccount.tokenCiphertext
+  ) {
+    return null;
+  }
+  return decryptGoogleCredential(
+    input.existingAccount.tokenCiphertext,
+    input.encryptionKey,
+  ).refreshToken;
 }
 
 function connectionErrorUrl(reason: ConnectionErrorReason): string {
@@ -98,7 +121,8 @@ async function handleGmailStart(
   const requestedAccountId = request.query.accountId;
   if (
     requestedAccountId !== undefined &&
-    (typeof requestedAccountId !== "string" || !validateUuid(requestedAccountId))
+    (typeof requestedAccountId !== "string" ||
+      !validateUuid(requestedAccountId))
   ) {
     await sendProblem(request, reply, 400, "Invalid Gmail account ID");
     return;
@@ -129,9 +153,7 @@ async function handleGmailStart(
     codeVerifier: authorization.codeVerifier,
     userId: session.userId,
     accountId,
-    expiresAt: new Date(
-      Date.now() + CONNECTION_REQUEST_DURATION_MILLISECONDS,
-    ),
+    expiresAt: new Date(Date.now() + CONNECTION_REQUEST_DURATION_MILLISECONDS),
   });
   await sendRedirect(reply, authorization.url, 302);
 }
@@ -145,7 +167,8 @@ async function handleGmailCallback(
 
   const providerError =
     typeof request.query.error === "string" ? request.query.error : null;
-  const code = typeof request.query.code === "string" ? request.query.code : null;
+  const code =
+    typeof request.query.code === "string" ? request.query.code : null;
   const returnedState =
     typeof request.query.state === "string" ? request.query.state : null;
   const connectionRequest = returnedState
@@ -175,88 +198,110 @@ async function handleGmailCallback(
     });
     const gmailProfile = await getGmailProfile(authorization.accessToken);
     const providerAccountId = authorization.identity.subject;
-    const existingAccount = await getGmailConnectionForOAuth(providerAccountId);
-
-    const reconnectAccount = connectionRequest.accountId
-      ? await getGmailConnectionForUser({
-        userId: session.userId,
-        accountId: connectionRequest.accountId,
-      })
-      : null;
-    if (connectionRequest.accountId && !reconnectAccount) {
-      await sendRedirect(reply, connectionErrorUrl("mailbox_mismatch"), 302);
-      return;
-    }
-    const identityError = getGmailConnectionIdentityError({
-      userId: session.userId,
+    const account = await withGmailIdentityLock(
       providerAccountId,
-      reconnectAccount,
-      existingAccount,
-    });
-    if (identityError) {
-      await sendRedirect(reply, connectionErrorUrl(identityError), 302);
-      return;
-    }
+      async (transaction) => {
+        const existingAccount = await getGmailConnectionForOAuth(
+          {
+            userId: session.userId,
+            providerAccountId,
+          },
+          transaction,
+        );
 
-    let refreshToken = authorization.refreshToken;
-    if (!refreshToken && existingAccount?.tokenCiphertext) {
-      refreshToken = decryptGoogleCredential(
-        existingAccount.tokenCiphertext,
-        process.env.TOKEN_ENCRYPTION_KEY ?? "",
-      ).refreshToken;
-    }
-    if (!refreshToken) {
-      await sendRedirect(reply, connectionErrorUrl("offline_access"), 302);
-      return;
-    }
+        const reconnectAccount = connectionRequest.accountId
+          ? await getGmailConnectionForUser(
+              {
+                userId: session.userId,
+                accountId: connectionRequest.accountId,
+              },
+              transaction,
+            )
+          : null;
+        if (connectionRequest.accountId && !reconnectAccount) {
+          await sendRedirect(
+            reply,
+            connectionErrorUrl("mailbox_mismatch"),
+            302,
+          );
+          return;
+        }
+        const identityError = getGmailConnectionIdentityError({
+          userId: session.userId,
+          providerAccountId,
+          reconnectAccount,
+          existingAccount,
+        });
+        if (identityError) {
+          await sendRedirect(reply, connectionErrorUrl(identityError), 302);
+          return;
+        }
 
-    const authenticatedAt = new Date();
-    const tokenCiphertext = encryptGoogleCredential(
-      {
-        accessToken: authorization.accessToken,
-        refreshToken,
-        expiresAt: authorization.expiresAt,
-        scopes: authorization.scopes,
+        const refreshToken = resolveGmailRefreshToken({
+          userId: session.userId,
+          refreshToken: authorization.refreshToken,
+          existingAccount,
+          encryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? "",
+        });
+        if (!refreshToken) {
+          await sendRedirect(reply, connectionErrorUrl("offline_access"), 302);
+          return;
+        }
+
+        const authenticatedAt = new Date();
+        const tokenCiphertext = encryptGoogleCredential(
+          {
+            accessToken: authorization.accessToken,
+            refreshToken,
+            expiresAt: authorization.expiresAt,
+            scopes: authorization.scopes,
+          },
+          process.env.TOKEN_ENCRYPTION_KEY ?? "",
+        );
+        const authentication = {
+          userId: session.userId,
+          providerAccountId,
+          email: gmailProfile.emailAddress,
+          image: authorization.identity.image,
+          scopes: authorization.scopes,
+          currentHistoryId: gmailProfile.historyId,
+          tokenCiphertext,
+          authenticatedAt,
+        };
+        let account = existingAccount
+          ? await refreshGmailAuthentication(authentication, transaction)
+          : null;
+        if (!account) {
+          const topicName = process.env.GMAIL_PUBSUB_TOPIC;
+          if (!topicName) {
+            throw new Error("GMAIL_PUBSUB_TOPIC is required to connect Gmail.");
+          }
+          const watch = await startGmailWatch(authorization.accessToken, {
+            topicName,
+          });
+          const watchExpiration = Number(watch.expiration);
+          if (!Number.isFinite(watchExpiration)) {
+            throw new Error("Gmail returned an invalid watch expiration.");
+          }
+          const watchRenewedAt = new Date();
+          account = await saveNewGmailConnection(
+            {
+              ...authentication,
+              initialHistoryId: gmailProfile.historyId,
+              watch: {
+                topicName,
+                historyId: watch.historyId,
+                expirationAt: new Date(watchExpiration),
+                renewedAt: watchRenewedAt,
+              },
+            },
+            transaction,
+          );
+        }
+        return account;
       },
-      process.env.TOKEN_ENCRYPTION_KEY ?? "",
     );
-    const authentication = {
-      userId: session.userId,
-      providerAccountId,
-      email: gmailProfile.emailAddress,
-      image: authorization.identity.image,
-      scopes: authorization.scopes,
-      currentHistoryId: gmailProfile.historyId,
-      tokenCiphertext,
-      authenticatedAt,
-    };
-    let account = existingAccount
-      ? await refreshGmailAuthentication(authentication)
-      : null;
-    if (!account) {
-      const topicName = process.env.GMAIL_PUBSUB_TOPIC;
-      if (!topicName) {
-        throw new Error("GMAIL_PUBSUB_TOPIC is required to connect Gmail.");
-      }
-      const watch = await startGmailWatch(authorization.accessToken, {
-        topicName,
-      });
-      const watchExpiration = Number(watch.expiration);
-      if (!Number.isFinite(watchExpiration)) {
-        throw new Error("Gmail returned an invalid watch expiration.");
-      }
-      const watchRenewedAt = new Date();
-      account = await saveNewGmailConnection({
-        ...authentication,
-        initialHistoryId: gmailProfile.historyId,
-        watch: {
-          topicName,
-          historyId: watch.historyId,
-          expirationAt: new Date(watchExpiration),
-          renewedAt: watchRenewedAt,
-        },
-      });
-    }
+    if (!account) return;
 
     const mailboxUrl = new URL("/mail", getPublicAppOrigin());
     mailboxUrl.searchParams.set("account", account.id);
@@ -265,22 +310,25 @@ async function handleGmailCallback(
     console.error("api: gmail connection callback failed", {
       requestId: request.id,
       name: error instanceof Error ? error.name : "UnknownError",
-      message: error instanceof Error ? error.message : "Unknown callback failure",
       status: error instanceof GmailApiError ? error.status : undefined,
     });
     await sendRedirect(
       reply,
       connectionErrorUrl(
-        error instanceof GmailApiError && error.status === 403
-          ? "gmail_access"
-          : "unknown",
+        error instanceof GmailConnectionDeletingError
+          ? "disconnect_pending"
+          : error instanceof GmailApiError && error.status === 403
+            ? "gmail_access"
+            : "unknown",
       ),
       302,
     );
   }
 }
 
-export const registerGmailConnectionRoutes: FastifyPluginAsync = async (api) => {
+export const registerGmailConnectionRoutes: FastifyPluginAsync = async (
+  api,
+) => {
   api.get<{ Querystring: StartQuery }>(
     "/v1/connections/gmail/start",
     { onRequest: requireSession },

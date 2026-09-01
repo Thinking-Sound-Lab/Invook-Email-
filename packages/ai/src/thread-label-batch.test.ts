@@ -35,8 +35,8 @@ test("thread-label Batch defaults to GPT-5.6 Luna", () => {
 function entry(index: number): ThreadLabelBatchEntry {
   return {
     threadId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
-    analysisVersion: 1,
-    definitionHash: "a".repeat(64),
+    contentVersion: 1,
+    assignmentVersion: null,
     fallbackLabelId: "others-label",
     thread: {
       subject: `Thread ${index}`,
@@ -145,11 +145,17 @@ test("thread-label Batch preparation stops before its configured input-token lim
   }
 });
 
-test("thread-label Batch provider failures distinguish retryable capacity", () => {
+test("thread-label Batch provider failures distinguish retryable failures", () => {
   assert.deepEqual(
     classifyThreadLabelBatchFailure({
       providerState: "failed",
-      providerError: "Enqueued token limit reached for this model.",
+      providerErrors: [
+        {
+          code: "invalid_request",
+          param: null,
+          message: "Enqueued token limit reached for this model.",
+        },
+      ],
     }),
     {
       errorCode: "openai_batch_capacity_exhausted",
@@ -158,15 +164,37 @@ test("thread-label Batch provider failures distinguish retryable capacity", () =
   );
   assert.deepEqual(
     classifyThreadLabelBatchFailure({
+      providerState: "failed",
+      providerErrors: [
+        {
+          code: "invalid_request",
+          param: "file_id",
+          message: "The Batch service cannot access the input file.",
+        },
+      ],
+    }),
+    {
+      errorCode: "openai_batch_input_file_unavailable",
+      isRetryable: true,
+    },
+  );
+  assert.deepEqual(
+    classifyThreadLabelBatchFailure({
       providerState: "expired",
-      providerError: null,
+      providerErrors: [],
     }),
     { errorCode: "openai_batch_expired", isRetryable: true },
   );
   assert.deepEqual(
     classifyThreadLabelBatchFailure({
       providerState: "failed",
-      providerError: "Invalid request schema.",
+      providerErrors: [
+        {
+          code: "invalid_request",
+          param: "body",
+          message: "Invalid request schema.",
+        },
+      ],
     }),
     { errorCode: "openai_batch_failed", isRetryable: false },
   );
