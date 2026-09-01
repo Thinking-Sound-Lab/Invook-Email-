@@ -1,11 +1,9 @@
 "use client";
 
 import {
-  AiMagicIcon,
   Delete02Icon,
   FileEditIcon,
   InboxIcon,
-  LabelImportantIcon,
   Mail01Icon,
   PencilEdit01Icon,
   PlusSignIcon,
@@ -17,9 +15,7 @@ import {
   WorkflowSquare01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type {
-  MailboxSidebarCounts,
-} from "@invook/contracts";
+import type { MailboxSidebarCounts } from "@invook/contracts";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
@@ -68,7 +64,7 @@ const mailItems = [
 
 interface NavLinkProps {
   label: string;
-  icon: typeof Mail01Icon;
+  icon?: typeof Mail01Icon;
   active: boolean;
   href: string;
   count?: number;
@@ -93,9 +89,16 @@ function NavLink({
     <Link
       href={href}
       aria-current={active ? "page" : undefined}
-      className={navItemClassName(active)}
+      className={cn(navItemClassName(active), !icon && "hidden lg:flex")}
     >
-      <HugeiconsIcon icon={icon} size={15} strokeWidth={1.65} className="shrink-0" />
+      {icon ? (
+        <HugeiconsIcon
+          icon={icon}
+          size={15}
+          strokeWidth={1.65}
+          className="shrink-0"
+        />
+      ) : null}
       <span className="hidden min-w-0 flex-1 truncate lg:block">{label}</span>
       {count === undefined ? null : (
         <span className="hidden shrink-0 text-[11px] font-normal tabular-nums text-sidebar-foreground/38 lg:block">
@@ -218,7 +221,6 @@ export function MailSidebar({
         <nav className="space-y-0.5" aria-label="Labels">
           <NavLink
             label="Important"
-            icon={LabelImportantIcon}
             active={currentSurface === "mail" && currentView === "important"}
             href={hrefFor({ surface: null, thread: null, view: "important" })}
             count={currentCounts?.views.important}
@@ -227,7 +229,6 @@ export function MailSidebar({
             <NavLink
               key={label.id}
               label={label.name}
-              icon={AiMagicIcon}
               active={
                 currentSurface === "mail" &&
                 currentLabelId !== null &&
