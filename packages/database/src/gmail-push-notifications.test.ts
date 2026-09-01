@@ -49,7 +49,7 @@ test(
         database,
       );
 
-      assert.deepEqual(result, { status: "ignored", accountId: null });
+      assert.deepEqual(result, { status: "accepted", connections: [] });
     } finally {
       await client.end();
     }
@@ -120,7 +120,7 @@ test(
           ]);
           assert.deepEqual(
             results,
-            Array.from({ length: 12 }, () => ({ status: "retry" })),
+            Array.from({ length: 12 }, () => ({ status: "retry", connections: [{ status: "retry" }] })),
           );
           assert.equal(readableReplica[0]?.pendingHistoryCursor, null);
           const admittedSteps = await database.select().from(workflowSteps)
@@ -133,12 +133,14 @@ test(
         { emailAddress, notificationHistoryId: "150" },
         database,
       );
-      assert.equal(redelivered.status, "queued");
+      assert.equal(redelivered.status, "accepted");
+      assert.equal(redelivered.connections[0]?.status, "queued");
       const duplicate = await recordGmailPushNotification(
         { emailAddress, notificationHistoryId: "150" },
         database,
       );
-      assert.equal(duplicate.status, "coalesced");
+      assert.equal(duplicate.status, "accepted");
+      assert.equal(duplicate.connections[0]?.status, "coalesced");
       const [replica] = await database.select().from(gmailReplicaStates)
         .where(eq(gmailReplicaStates.accountId, accountId));
       assert.equal(replica?.pendingHistoryCursor, "150");
@@ -223,8 +225,8 @@ test(
         { emailAddress, notificationHistoryId: "140" },
         database,
       );
-      assert.equal(first.status, "queued");
-      assert.equal(reordered.status, "coalesced");
+      assert.equal(first.connections[0]?.status, "queued");
+      assert.equal(reordered.connections[0]?.status, "coalesced");
 
       assert.equal(
         await markGmailReplicaReady(

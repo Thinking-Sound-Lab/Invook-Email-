@@ -66,8 +66,6 @@ import {
   hasCompletedMailSyncPage,
   listenForTemporalCommandNotifications,
   listActiveTemporalTenantIds,
-  listGmailObjectKeysForAccount,
-  markGmailAccountCleanupRunning,
   listSubmittedThreadLabelBatchIds,
   markGmailReplicaReady,
   markMailSyncThreadRunning,
@@ -75,7 +73,6 @@ import {
   MEMORY_SCHEMA_VERSION,
   markDraftFeedbackAnalyzed,
   saveExtractedMemories,
-  saveGmailWatchState,
   saveGmailDraftResource,
   deleteGmailDraftResourceByMessageId,
   setGmailReplicaState,
@@ -93,6 +90,7 @@ import {
   upsertMailboxThreadMessages,
   withGmailAccountControlLock,
   type GoogleCredential,
+  type DatabaseExecutor,
   type IndexedMessage,
   type MemoryType,
   type WorkflowStepJob,
@@ -116,8 +114,6 @@ import {
   normalizeGmailFullMessage,
   parseGmailMessage,
   refreshGoogleAccessToken,
-  startGmailWatch,
-  stopGmailWatch,
   type ParsedGmailMessage,
 } from "@invook/gmail";
 import { createObjectStorage } from "@invook/object-storage";
@@ -131,6 +127,11 @@ import {
   TemporalRuntime,
 } from "./temporal-runtime";
 import { classifyGmailWorkflowFailure } from "./gmail-workflow-failure";
+import {
+  GmailConnectionInactiveError,
+  renewGmailConnectionWatch,
+  runGmailConnectionCleanup,
+} from "./gmail-watch-lifecycle";
 import {
   parseGmailThreadBatchPayload,
   processGmailThreadBatch,
@@ -210,6 +211,7 @@ function normalizedEmails(values: string[], ownerEmail: string): string[] {
 async function refreshCredentialIfRequired(
   accountId: string,
   credential: GoogleCredential,
+  database?: DatabaseExecutor,
 ): Promise<GoogleCredential> {
   const expiresSoon =
     Date.parse(credential.expiresAt) <= Date.now() + credentialRenewalWindowMs;
@@ -236,6 +238,7 @@ async function refreshCredentialIfRequired(
   await updateStoredCredential(
     accountId,
     encryptGoogleCredential(nextCredential, encryptionKey),
+    database,
   );
 
   return nextCredential;
@@ -660,13 +663,17 @@ async function applyHistoryRange(options: {
   return { ...applied, historyId };
 }
 
-async function getMailSyncContext(accountId: string) {
-  const account = await getWorkerAccount(accountId);
+async function getMailSyncContext(accountId: string, database?: DatabaseExecutor) {
+  const account = await getWorkerAccount(accountId, database);
   if (!account) {
     throw new Error("The connected Gmail account or credential was not found.");
   }
   const storedCredential = decryptGoogleCredential(account.tokenCiphertext, encryptionKey);
-  const credential = await refreshCredentialIfRequired(accountId, storedCredential);
+  const credential = await refreshCredentialIfRequired(
+    accountId,
+    storedCredential,
+    database,
+  );
   return { account, credential };
 }
 
@@ -938,24 +945,9 @@ function gmailPubSubTopic(): string {
 }
 
 async function renewGmailWatch(accountId: string, accessToken: string) {
-  const topicName = gmailPubSubTopic();
-  const watch = await startGmailWatch(accessToken, { topicName });
-  const expiration = Number(watch.expiration);
-  if (!Number.isFinite(expiration)) {
-    throw new Error("Gmail returned an invalid watch expiration.");
-  }
-  const renewedAt = new Date();
-  const expirationAt = new Date(expiration);
-  await saveGmailWatchState({
-    accountId,
-    watch: {
-      topicName,
-      historyId: watch.historyId,
-      expirationAt,
-    },
-    renewedAt,
+  return renewGmailConnectionWatch({
+    accountId, accessToken, topicName: gmailPubSubTopic(),
   });
-  return { historyId: watch.historyId, expirationAt, renewedAt };
 }
 
 async function ensureGmailWatch(accountId: string, accessToken: string) {
@@ -1219,26 +1211,16 @@ async function runGmailWatchRenewal(job: WorkflowStepJob) {
 }
 
 async function runGmailAccountCleanup(job: WorkflowStepJob) {
-  if (!job.accountId) throw new Error("The Gmail cleanup has no account.");
+  if (!job.accountId || !job.userId) throw new Error("The Gmail cleanup has no account owner.");
   const cleanupId = requiredString(job.payload.cleanupId, "Gmail cleanup ID");
-  await markGmailAccountCleanupRunning(cleanupId);
-  const account = await getWorkerAccount(job.accountId);
-  if (account) {
-    const credential = decryptGoogleCredential(account.tokenCiphertext, encryptionKey);
-    try {
-      await stopGmailWatch(credential.accessToken);
-    } catch (error) {
-      if (
-        !(error instanceof GmailApiError) ||
-        ![400, 401, 403, 404].includes(error.status)
-      ) {
-        throw error;
-      }
-    }
-  }
-  const objectKeys = await listGmailObjectKeysForAccount(job.accountId);
-  await objectStorage.deleteObjects(objectKeys);
-  return { objectCount: objectKeys.length };
+  return runGmailConnectionCleanup({
+    accountId: job.accountId, userId: job.userId, cleanupId, stepId: job.id,
+  }, {
+    encryptionKey,
+    deleteObjects: (keys) => objectStorage.deleteObjects(keys),
+    getStopAccessToken: async (accountId, database) =>
+      (await getMailSyncContext(accountId, database)).credential.accessToken,
+  });
 }
 
 async function runGmailObjectDelete(job: WorkflowStepJob) {
@@ -2064,6 +2046,11 @@ export async function runWorkflowStepActivity(
     await completeWorkflowStep(job.id, result);
     return { result };
   } catch (error) {
+    if (error instanceof GmailConnectionInactiveError) {
+      const result = { status: "inactive" };
+      await completeWorkflowStep(job.id, result);
+      return { result };
+    }
     const failure = classifyGmailWorkflowFailure(error, {
       attempt: job.attempts,
       maxAttempts: job.maxAttempts,

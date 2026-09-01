@@ -9,7 +9,7 @@ type AuthenticationErrorPageProps = {
 };
 
 const messages: Record<string, string> = {
-  already_connected: "That Gmail mailbox is already connected to another Invook user.",
+  disconnect_pending: "This Gmail connection is still being removed. Try connecting again after it finishes.",
   authorization: "The Gmail connection request could not be verified.",
   configuration:
     "Google OAuth and Gmail synchronization are not fully configured for this installation.",
