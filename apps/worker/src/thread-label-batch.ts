@@ -302,7 +302,7 @@ export async function runThreadLabelBatchEvent(
   }
   const failure = classifyThreadLabelBatchFailure({
     providerState: batch.state,
-    providerError: batch.providerError,
+    providerErrors: batch.providerErrors,
   });
   const completion = await finalizeThreadLabelBatchSubmission({
     submissionId: submission.id,

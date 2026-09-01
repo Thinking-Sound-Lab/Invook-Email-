@@ -70,6 +70,12 @@ export type ThreadLabelBatchResult = {
   confidence: number;
 };
 
+export type ThreadLabelBatchProviderError = {
+  code: string | null;
+  param: string | null;
+  message: string | null;
+};
+
 export class ThreadLabelBatchConfigurationError extends Error {
   constructor(message = "OpenAI Batch is not configured for thread labels.") {
     super(message);
@@ -249,12 +255,24 @@ export function prepareThreadLabelBatch(input: {
 
 export function classifyThreadLabelBatchFailure(input: {
   providerState: string;
-  providerError: string | null;
+  providerErrors: ThreadLabelBatchProviderError[];
 }): { errorCode: string | null; isRetryable: boolean } {
-  if (input.providerState === "completed" && !input.providerError) {
+  if (input.providerState === "completed" && input.providerErrors.length === 0) {
     return { errorCode: null, isRetryable: false };
   }
-  const normalizedError = input.providerError?.toLowerCase() ?? "";
+  if (
+    input.providerErrors.some(
+      (error) => error.code === "invalid_request" && error.param === "file_id",
+    )
+  ) {
+    return {
+      errorCode: "openai_batch_input_file_unavailable",
+      isRetryable: true,
+    };
+  }
+  const normalizedError = input.providerErrors
+    .flatMap((error) => (error.message ? [error.message.toLowerCase()] : []))
+    .join("; ");
   if (normalizedError.includes("enqueued token limit reached")) {
     return {
       errorCode: "openai_batch_capacity_exhausted",
@@ -425,7 +443,7 @@ export async function readThreadLabelBatch(input: {
   errorFileId: string | null;
   results: ThreadLabelBatchResult[];
   failedThreadIds: string[];
-  providerError: string | null;
+  providerErrors: ThreadLabelBatchProviderError[];
 }> {
   const { modelId } = configuration();
   const openai = client();
@@ -467,11 +485,12 @@ export async function readThreadLabelBatch(input: {
     errorFileId: batch.error_file_id ?? null,
     results,
     failedThreadIds: [...failedThreadIds],
-    providerError:
-      batch.errors?.data
-        ?.map((error) => error.message?.trim())
-        .filter((message): message is string => Boolean(message))
-        .join("; ") || null,
+    providerErrors:
+      batch.errors?.data?.map((error) => ({
+        code: error.code?.trim() || null,
+        param: error.param?.trim() || null,
+        message: error.message?.trim() || null,
+      })) ?? [],
   };
 }
 
