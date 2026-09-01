@@ -56,7 +56,7 @@ export function MailAccountAvatar({
       title={account.email}
       aria-label={account.email}
       className={cn(
-        "size-5 border-0 ring-2 ring-offset-1 after:border-0",
+        "size-5 border-0 ring-1 ring-offset-1 after:border-0",
         accountRingClassName(account.id, accounts),
         ringOffsetClassName,
         className,

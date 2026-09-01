@@ -6,6 +6,7 @@ export {
   listenForMailboxChangeNotifications,
   withGmailAccountControlLock,
   type Database,
+  type DatabaseExecutor,
 } from "./client";
 export {
   decryptGoogleCredential,
@@ -22,6 +23,7 @@ export * from "./mailbox-change-events";
 export * from "./mailbox-resources";
 export * from "./mailbox-query";
 export * from "./gmail-watch";
+export * from "./gmail-identity";
 export * from "./repositories";
 export * from "./replica";
 export * from "./schema";

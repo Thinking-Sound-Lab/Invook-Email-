@@ -58,8 +58,7 @@ export function mailboxViewCondition(view: MailboxView) {
     const labelId = view.slice(6);
     // One Invook label exists per connected account, so the view matches every
     // account label the signed-in user owns under the selected label's name.
-    return sql<boolean>`
-      (${inboxThreadCondition()}) and exists (
+    return sql<boolean>`exists (
         select 1 from ${threadLabelAssignments} assignment
         inner join ${labels} assignment_label
           on assignment_label.id = assignment.label_id
@@ -74,15 +73,13 @@ export function mailboxViewCondition(view: MailboxView) {
               and selected_label.user_id = ${outerThreadUserId}
               and selected_label.kind = 'invook'
           )
-      )
-    `;
+      )`;
   }
   switch (view) {
     case "all":
-      return inboxThreadCondition();
+      return visibleThreadCondition();
     case "important":
-      return sql<boolean>`
-        (${inboxThreadCondition()}) and exists (
+      return sql<boolean>`exists (
           select 1 from ${threadLabelAssignments} important_assignment
           inner join ${labels} important_label
             on important_label.id = important_assignment.label_id
@@ -91,8 +88,7 @@ export function mailboxViewCondition(view: MailboxView) {
             and important_label.account_id = ${outerThreadAccountId}
             and important_label.kind = 'invook'
             and important_label.system_key = 'important'
-        )
-      `;
+        )`;
     case "starred":
     case "drafts":
     case "sent":

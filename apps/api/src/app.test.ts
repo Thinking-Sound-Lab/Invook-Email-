@@ -529,7 +529,7 @@ test("Gmail connection identities preserve user and reconnect ownership", () => 
       reconnectAccount: null,
       existingAccount: otherUserAccount,
     }),
-    "already_connected",
+    "mailbox_mismatch",
   );
   assert.equal(
     getGmailConnectionIdentityError({
@@ -737,8 +737,8 @@ test("Google Pub/Sub retries busy admission and acknowledges only stored deliver
           notificationHistoryId: "150",
         });
         return isBusy
-          ? { status: "retry" }
-          : { status: "queued", accountId: attachmentOwnerId, stepId: attachmentId };
+          ? { status: "retry", connections: [{ status: "retry" }] }
+          : { status: "accepted", connections: [{ status: "queued", accountId: attachmentOwnerId, stepId: attachmentId }] };
       },
     });
     const payload = {

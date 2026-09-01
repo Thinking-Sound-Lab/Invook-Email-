@@ -1033,7 +1033,7 @@ export async function markWorkflowStepRunning(
 export async function completeWorkflowStep(
   stepId: string,
   result: Record<string, unknown> = {},
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   return database.transaction(async (transaction) => {
     const [step] = await transaction
@@ -1075,7 +1075,7 @@ export async function completeWorkflowStep(
       })
       .where(eq(workflowSteps.id, stepId));
 
-    if (step.stepType !== "gmail.account.cleanup" || !step.accountId) return true;
+    if (step.stepType !== "gmail.account.cleanup" || !step.accountId || result.status === "inactive") return true;
     const cleanupId =
       typeof step.input.cleanupId === "string" ? step.input.cleanupId : null;
     if (!cleanupId) {
@@ -1091,10 +1091,16 @@ export async function completeWorkflowStep(
         completedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(gmailAccountCleanups.id, cleanupId));
+      .where(and(
+        eq(gmailAccountCleanups.id, cleanupId),
+        eq(gmailAccountCleanups.accountId, step.accountId),
+      ));
     await transaction
       .delete(connectedAccounts)
-      .where(eq(connectedAccounts.id, step.accountId));
+      .where(and(
+        eq(connectedAccounts.id, step.accountId),
+        eq(connectedAccounts.status, "disconnected"),
+      ));
     return true;
   });
 }

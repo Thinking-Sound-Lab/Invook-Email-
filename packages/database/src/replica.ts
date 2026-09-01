@@ -1,10 +1,11 @@
-import { and, desc, DrizzleQueryError, eq, inArray, isNotNull, not } from "drizzle-orm";
+import { and, desc, DrizzleQueryError, eq, inArray, isNotNull, not, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { v4 as uuidv4 } from "uuid";
 
 import type { GmailForwardMessage } from "@invook/contracts/gmail-forward";
 
-import { getDatabase, type Database } from "./client";
+import { getDatabase, type Database, type DatabaseExecutor } from "./client";
+import { withGmailIdentityLock } from "./gmail-identity";
 import { insertMailboxChange } from "./mailbox-change-events";
 import { visibleThreadCondition } from "./mailbox-visibility";
 import { enqueueLiveInboxThreadLabelAnalyses } from "./thread-label-analysis";
@@ -668,7 +669,7 @@ export async function setGmailReplicaState(
 
 export async function saveGmailWatchState(
   input: { accountId: string; watch: GmailWatchInput; renewedAt: Date },
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   await database.transaction(async (transaction) => {
     const [account] = await transaction
@@ -703,10 +704,15 @@ export async function saveGmailWatchState(
   });
 }
 
-type GmailPushNotificationResult =
+type GmailConnectionPushResult =
   | { status: "retry" }
   | { status: "ignored"; accountId: null }
   | { status: "coalesced" | "queued"; accountId: string; stepId: string };
+
+type GmailPushNotificationResult = {
+  status: "retry" | "accepted";
+  connections: GmailConnectionPushResult[];
+};
 
 export async function recordGmailPushNotification(
   input: {
@@ -719,14 +725,39 @@ export async function recordGmailPushNotification(
     throw new Error("The Gmail notification history cursor is invalid.");
   }
   const executor = database ?? getDatabase();
-  return executor.transaction<GmailPushNotificationResult>(async (transaction) => {
+  const accounts = await executor.select({ id: connectedAccounts.id })
+    .from(connectedAccounts).where(and(
+      eq(connectedAccounts.provider, "gmail"),
+      sql`lower(${connectedAccounts.email}) = ${input.emailAddress.trim().toLowerCase()}`,
+      eq(connectedAccounts.status, "connected"),
+    ));
+  const connections: GmailConnectionPushResult[] = [];
+  // Independent commits preserve successful admissions when a sibling is busy.
+  // Sequential, non-waiting admission also bounds query-pool use for fan-out.
+  for (const account of accounts) {
+    connections.push(await recordGmailConnectionPush({
+      accountId: account.id,
+      notificationHistoryId: input.notificationHistoryId,
+    }, executor));
+  }
+  return {
+    status: connections.some((connection) => connection.status === "retry") ? "retry" : "accepted",
+    connections,
+  };
+}
+
+async function recordGmailConnectionPush(
+  input: { accountId: string; notificationHistoryId: string },
+  executor: Database,
+): Promise<GmailConnectionPushResult> {
+  return executor.transaction<GmailConnectionPushResult>(async (transaction) => {
     const [account] = await transaction
       .select({ id: connectedAccounts.id, userId: connectedAccounts.userId })
       .from(connectedAccounts)
       .where(
         and(
           eq(connectedAccounts.provider, "gmail"),
-          eq(connectedAccounts.email, input.emailAddress),
+          eq(connectedAccounts.id, input.accountId),
           eq(connectedAccounts.status, "connected"),
         ),
       )
@@ -758,7 +789,7 @@ export async function recordGmailPushNotification(
         .where(eq(gmailReplicaStates.accountId, account.id));
     }
 
-    const stepId = await enqueueWorkflowStep(
+    const stepId = await enqueueWorkflowStepWithExecutor(
       {
         userId: account.userId,
         accountId: account.id,
@@ -766,14 +797,14 @@ export async function recordGmailPushNotification(
         payload: { reason: "notification" },
         idempotencyKey: `gmail-history-notification:${account.id}:${nextPending}`,
       },
-      transaction as unknown as Database,
+      transaction,
     );
     return {
       status: isAdvanced ? "queued" : "coalesced",
       accountId: account.id,
       stepId,
     };
-  }).catch((error: unknown): GmailPushNotificationResult => {
+  }).catch((error: unknown): GmailConnectionPushResult => {
     const cause = error instanceof DrizzleQueryError ? error.cause : error;
     if (cause instanceof postgres.PostgresError && cause.code === "55P03") {
       // The transaction has rolled back. Never acknowledge an unstored cursor.
@@ -1121,7 +1152,7 @@ export async function getMailboxChangeEvent(
 
 export async function listGmailObjectKeysForAccount(
   accountId: string,
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   const attachmentObjects = await database
     .select({ key: messageAttachments.objectKey })
@@ -1143,9 +1174,15 @@ export async function listGmailObjectKeysForAccount(
 
 export async function markGmailReplicaDeleting(
   input: { userId: string; accountId: string },
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
-  return database.transaction(async (transaction) => {
+  const [identity] = await database.select({ providerAccountId: connectedAccounts.providerAccountId })
+    .from(connectedAccounts).where(and(
+      eq(connectedAccounts.id, input.accountId),
+      eq(connectedAccounts.userId, input.userId),
+    )).limit(1);
+  if (!identity) return null;
+  return withGmailIdentityLock(identity.providerAccountId, async (transaction) => {
     const [account] = await transaction
       .select({ id: connectedAccounts.id })
       .from(connectedAccounts)
@@ -1199,7 +1236,7 @@ export async function markGmailReplicaDeleting(
       transaction as unknown as Database,
     );
     return cleanup.id;
-  });
+  }, database);
 }
 
 export async function markGmailReplicaDeletingForUser(
@@ -1230,7 +1267,7 @@ export async function markGmailReplicaDeletingForUser(
 
 export async function markGmailAccountCleanupRunning(
   cleanupId: string,
-  database: Database = getDatabase(),
+  database: DatabaseExecutor = getDatabase(),
 ) {
   await database
     .update(gmailAccountCleanups)

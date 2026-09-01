@@ -30,7 +30,15 @@ if (testFiles.length === 0) {
 
 const child = spawn(
   process.execPath,
-  ["--import", "tsx", "--test", ...testFiles],
+  [
+    "--import", "tsx", "--test",
+    // Integration files share one disposable database. Historical migrations
+    // create/drop database-wide extensions; global reconciliation scans also
+    // inspect other fixtures. Keep files serial while tests exercise explicit
+    // concurrency through independent transactions and connections.
+    ...(mode === "integration" ? ["--test-concurrency=1"] : []),
+    ...testFiles,
+  ],
   { env: process.env, stdio: "inherit" },
 );
 child.once("error", (error) => {

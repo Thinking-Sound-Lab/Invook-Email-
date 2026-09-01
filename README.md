@@ -100,6 +100,10 @@ Open [localhost:3000](http://localhost:3000), sign in with Google, then connect 
 
 Gmail owns your messages, read state, stars, and drafts. Invook writes provider actions to Gmail first, then brings its stored replica up to date through Gmail history. Invook owns your AI labels, editable Memory, and local reply drafts.
 
+The same Gmail mailbox can be connected by multiple Invook users. Each user must independently complete Gmail authorization; credentials, replicas, attachments, Invook labels, Memory, and preferences remain isolated by their internal connection IDs. Provider actions still change the real shared mailbox and converge through each connection's own history cursor. Verified push notifications fan out to every active connection; a busy replica requests redelivery without undoing other admissions.
+
+Disconnect removes only that user's connection and local data. Watch operations are serialized by Gmail identity, and cleanup stops the provider watch only when no other connected or reconnect-required connection needs it. Reconnecting a connection still being removed requires waiting for cleanup to finish. Invook does not revoke the shared Google application grant on disconnect.
+
 Automatic labeling considers Inbox threads with an Inbox message from the last 14 days and uses individual model calls, including during initial sync. Older mail still syncs, but does not start automatic labeling. OpenAI Batch is used for labels only when you explicitly choose to apply a label to past mail in Settings (7, 30, or 90 days); that request considers only the selected label and preserves nonmatches. Gmail categories, custom labels, and Gmail Important are not imported as Invook labels. Operational Gmail state such as read, star, Inbox, and draft status remains synchronized.
 
 Mailbox data lives in your configured PostgreSQL database; attachment bytes live in S3-compatible storage. AI features send the mail context they need to the providers you configure. Self-hosting does not mean every operation stays on your machine.
@@ -109,6 +113,8 @@ Sender-hosted images currently load directly from their original URLs. Opening a
 ## Built for contributors
 
 When upgrading across the label-policy migration, stop API and worker processes before migrating, then restart them together with the updated web build. The migration retires automatic label jobs, preserves completed assignments and pending explicit settings requests, and removes imported Gmail label metadata. The worker resumes eligible recent labeling and saved settings requests after startup.
+
+Shared-mailbox support adds migration `0038_shared_gmail_connections` after label-policy migrations 0036/0037. Apply them in order with API and workers stopped, then deploy the updated API, worker, and web together. Do not run the older single-recipient push or unconditional watch-stop implementation after enabling multi-user connections. Migration 0038 preserves existing IDs and data while changing provider-identity uniqueness to `(user_id, provider, provider_account_id)`.
 
 **TypeScript throughout.** Next.js and React on the web, Fastify at the API, PostgreSQL with Drizzle for persistence, and Temporal Cloud for durable work.
 

@@ -160,10 +160,15 @@ export const connectedAccounts = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => [
-    uniqueIndex("connected_accounts_provider_identity_idx").on(
+    uniqueIndex("connected_accounts_user_provider_identity_idx").on(
+      table.userId,
       table.provider,
       table.providerAccountId,
     ),
+    index("connected_accounts_provider_identity_idx").on(table.provider, table.providerAccountId),
+    index("connected_accounts_active_email_idx")
+      .on(sql`lower(${table.email})`)
+      .where(sql`${table.status} = 'connected'`),
     index("connected_accounts_user_created_idx").on(table.userId, table.createdAt),
     index("connected_accounts_active_user_idx")
       .on(table.userId)

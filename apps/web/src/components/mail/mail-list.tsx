@@ -176,15 +176,15 @@ function MailRow({
       </div>
 
       <div className="flex min-w-0 items-center justify-end gap-2">
+        <LocalMailDate
+          className="min-w-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground"
+          value={thread.latestMessageAt}
+        />
         <MailAccountAvatar
           account={account}
           accounts={accounts}
           user={user}
           className="size-4.5"
-        />
-        <LocalMailDate
-          className="min-w-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground"
-          value={thread.latestMessageAt}
         />
       </div>
     </Link>
