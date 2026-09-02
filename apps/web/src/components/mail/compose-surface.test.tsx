@@ -153,6 +153,17 @@ test("the sidebar compose route renders the reference workspace controls", async
   assert.equal(button("Send later").disabled, true);
   assert.equal(button("Remind me").disabled, true);
   assert.equal(button("Attachments unavailable").disabled, true);
+  const messageRegion = document.querySelector<HTMLElement>(
+    '[role="region"][aria-label="Message fields and body"]',
+  );
+  const actionRail = document.querySelector<HTMLElement>(
+    'footer[aria-label="Compose actions"]',
+  );
+  assert.ok(messageRegion);
+  assert.ok(actionRail);
+  assert.match(messageRegion.className, /\boverflow-y-auto\b/);
+  assert.match(actionRail.className, /\bshrink-0\b/);
+  assert.equal(messageRegion.contains(actionRail), false);
 
   await click("Cc/Bcc");
   assert.ok(document.querySelector("#compose-cc-recipients"));
@@ -208,4 +219,14 @@ test("saving the redesigned composer includes Cc and Bcc recipients", async () =
     body: "The work is ready for review.",
   });
   assert.ok(button("Send"));
+
+  await click("Send");
+  const confirmation = document.querySelector<HTMLElement>(
+    '[role="alertdialog"][aria-label="Confirm Gmail send"]',
+  );
+  assert.ok(confirmation);
+  assert.match(
+    confirmation.textContent?.replace(/\s+/g, " ").trim() ?? "",
+    /Send now to To: recipient@example\.com; Cc: copy@example\.com; Bcc: private@example\.com\?/,
+  );
 });

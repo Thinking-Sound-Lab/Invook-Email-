@@ -135,6 +135,14 @@ export function ComposeSurface() {
     Boolean(state.providerDraft && state.sendIdempotencyKey) &&
     ["saved", "send_error"].includes(state.status);
   const mailboxHref = `/mail?account=${encodeURIComponent(accountSelection)}`;
+  const sendRecipientSummary = [
+    { label: "To", value: state.recipients },
+    { label: "Cc", value: state.ccRecipients },
+    { label: "Bcc", value: state.bccRecipients },
+  ]
+    .filter(({ value }) => Boolean(value.trim()))
+    .map(({ label, value }) => `${label}: ${value.trim()}`)
+    .join("; ");
 
   function handleEdit(
     field: ComposeDraftEditableField,
@@ -244,175 +252,190 @@ export function ComposeSurface() {
         onSubmit={(event) => void handleSave(event)}
       >
         <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col overflow-hidden rounded-2xl bg-card shadow-[0_18px_48px_-32px_rgba(0,0,0,0.8)]">
-          <div className="bg-muted/45 py-1 dark:bg-muted/55">
-            <div className="flex min-h-11 items-center gap-3 px-4 sm:px-5">
-              <label
-                htmlFor="compose-account"
-                className="w-11 shrink-0 text-xs font-medium text-muted-foreground"
-              >
-                From
-              </label>
-              {accountSelection === "all" ? (
-                <select
-                  id="compose-account"
-                  value={gmailAccountId}
-                  onChange={(event) =>
-                    handleSenderAccountChange(event.target.value)
-                  }
-                  disabled={isLocked || Boolean(state.providerDraft)}
-                  required
-                  className="h-8 min-w-0 flex-1 rounded-md bg-transparent text-sm font-medium outline-none focus-visible:ring-1 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+          <div
+            role="region"
+            aria-label="Message fields and body"
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain"
+          >
+            <div className="shrink-0 bg-muted/45 py-1 dark:bg-muted/55">
+              <div className="flex min-h-11 items-center gap-3 px-4 sm:px-5">
+                <label
+                  htmlFor="compose-account"
+                  className="w-11 shrink-0 text-xs font-medium text-muted-foreground"
                 >
-                  <option value="">Choose an account</option>
-                  {accounts.map((candidate) => (
-                    <option
-                      key={candidate.id}
-                      value={candidate.id}
-                      disabled={candidate.status !== "connected"}
+                  From
+                </label>
+                {accountSelection === "all" ? (
+                  <select
+                    id="compose-account"
+                    value={gmailAccountId}
+                    onChange={(event) =>
+                      handleSenderAccountChange(event.target.value)
+                    }
+                    disabled={isLocked || Boolean(state.providerDraft)}
+                    required
+                    className="h-8 min-w-0 flex-1 rounded-md bg-transparent text-sm font-medium outline-none focus-visible:ring-1 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <option value="">Choose an account</option>
+                    {accounts.map((candidate) => (
+                      <option
+                        key={candidate.id}
+                        value={candidate.id}
+                        disabled={candidate.status !== "connected"}
+                      >
+                        {candidate.email}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p
+                    id="compose-account"
+                    className="min-w-0 flex-1 truncate text-sm font-medium"
+                  >
+                    {account?.email}
+                  </p>
+                )}
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="icon-sm"
+                  className="rounded-md text-muted-foreground"
+                >
+                  <Link href={mailboxHref} aria-label="Close composer">
+                    <HugeiconsIcon icon={Cancel01Icon} size={15} />
+                  </Link>
+                </Button>
+              </div>
+
+              <ComposeRecipientRow
+                id="compose-recipients"
+                label="To"
+                value={state.recipients}
+                onChange={(value) => handleEdit("recipients", value)}
+                placeholder="Add recipients"
+                isDisabled={isLocked}
+                isRequired
+                autoFocus
+                trailing={
+                  !isCcOpen ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="rounded-md font-normal text-muted-foreground"
+                      onClick={() => setIsCcOpen(true)}
+                      disabled={isLocked}
+                      aria-expanded={false}
+                      aria-controls="compose-copy-recipients"
                     >
-                      {candidate.email}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <p
-                  id="compose-account"
-                  className="min-w-0 flex-1 truncate text-sm font-medium"
+                      Cc/Bcc
+                    </Button>
+                  ) : null
+                }
+              />
+              {isCcOpen ? (
+                <div id="compose-copy-recipients">
+                  <ComposeRecipientRow
+                    id="compose-cc-recipients"
+                    label="Cc"
+                    value={state.ccRecipients}
+                    onChange={(value) => handleEdit("ccRecipients", value)}
+                    placeholder="Add recipients"
+                    isDisabled={isLocked}
+                  />
+                  <ComposeRecipientRow
+                    id="compose-bcc-recipients"
+                    label="Bcc"
+                    value={state.bccRecipients}
+                    onChange={(value) => handleEdit("bccRecipients", value)}
+                    placeholder="Add recipients"
+                    isDisabled={isLocked}
+                  />
+                </div>
+              ) : null}
+              <div className="flex min-h-11 items-center gap-3 px-4 sm:px-5">
+                <label
+                  htmlFor="compose-subject"
+                  className="w-11 shrink-0 text-xs font-medium text-muted-foreground"
                 >
-                  {account?.email}
-                </p>
-              )}
-              <Button
-                asChild
-                variant="ghost"
-                size="icon-sm"
-                className="rounded-md text-muted-foreground"
-              >
-                <Link href={mailboxHref} aria-label="Close composer">
-                  <HugeiconsIcon icon={Cancel01Icon} size={15} />
-                </Link>
-              </Button>
+                  Subject
+                </label>
+                <Input
+                  id="compose-subject"
+                  value={state.subject}
+                  onChange={(event) =>
+                    handleEdit("subject", event.target.value)
+                  }
+                  maxLength={GMAIL_COMPOSE_MAX_SUBJECT_LENGTH}
+                  disabled={isLocked}
+                  placeholder="Add a subject"
+                  className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
+                />
+              </div>
             </div>
 
-            <ComposeRecipientRow
-              id="compose-recipients"
-              label="To"
-              value={state.recipients}
-              onChange={(value) => handleEdit("recipients", value)}
-              placeholder="Add recipients"
-              isDisabled={isLocked}
-              isRequired
-              autoFocus
-              trailing={
-                !isCcOpen ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="rounded-md font-normal text-muted-foreground"
-                    onClick={() => setIsCcOpen(true)}
-                    disabled={isLocked}
-                    aria-expanded={false}
-                    aria-controls="compose-copy-recipients"
-                  >
-                    Cc/Bcc
-                  </Button>
-                ) : null
-              }
+            <label htmlFor="compose-body" className="sr-only">
+              Message body
+            </label>
+            <Textarea
+              id="compose-body"
+              value={state.body}
+              onChange={(event) => handleEdit("body", event.target.value)}
+              placeholder="Write your message…"
+              maxLength={GMAIL_COMPOSE_MAX_BODY_LENGTH}
+              disabled={isLocked}
+              required
+              className="field-sizing-fixed min-h-48 flex-1 resize-none border-0 bg-transparent px-4 py-5 text-[15px] leading-7 shadow-none focus-visible:ring-0 sm:px-5 md:text-[15px] dark:bg-transparent"
             />
-            {isCcOpen ? (
-              <div id="compose-copy-recipients">
-                <ComposeRecipientRow
-                  id="compose-cc-recipients"
-                  label="Cc"
-                  value={state.ccRecipients}
-                  onChange={(value) => handleEdit("ccRecipients", value)}
-                  placeholder="Add recipients"
-                  isDisabled={isLocked}
-                />
-                <ComposeRecipientRow
-                  id="compose-bcc-recipients"
-                  label="Bcc"
-                  value={state.bccRecipients}
-                  onChange={(value) => handleEdit("bccRecipients", value)}
-                  placeholder="Add recipients"
-                  isDisabled={isLocked}
-                />
+
+            {state.message || isReconnectRequired ? (
+              <div className="shrink-0 px-4 pb-3 sm:px-5">
+                <div className="max-w-2xl text-xs leading-5 text-muted-foreground">
+                  {state.message ? (
+                    <p
+                      className={
+                        [
+                          "error",
+                          "send_error",
+                          "reconnect_required",
+                        ].includes(state.status)
+                          ? "text-destructive"
+                          : "text-success"
+                      }
+                      role={
+                        [
+                          "error",
+                          "send_error",
+                          "reconnect_required",
+                        ].includes(state.status)
+                          ? "alert"
+                          : "status"
+                      }
+                      aria-live="polite"
+                    >
+                      {state.message}
+                    </p>
+                  ) : null}
+                  {isReconnectRequired ? (
+                    <div className="mt-2">
+                      <Button asChild variant="outline" size="sm">
+                        <a
+                          href={`/v1/connections/gmail/start?accountId=${encodeURIComponent(gmailAccountId)}`}
+                        >
+                          Reconnect Gmail
+                        </a>
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
-            <div className="flex min-h-11 items-center gap-3 px-4 sm:px-5">
-              <label
-                htmlFor="compose-subject"
-                className="w-11 shrink-0 text-xs font-medium text-muted-foreground"
-              >
-                Subject
-              </label>
-              <Input
-                id="compose-subject"
-                value={state.subject}
-                onChange={(event) => handleEdit("subject", event.target.value)}
-                maxLength={GMAIL_COMPOSE_MAX_SUBJECT_LENGTH}
-                disabled={isLocked}
-                placeholder="Add a subject"
-                className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
-              />
-            </div>
           </div>
 
-          <label htmlFor="compose-body" className="sr-only">
-            Message body
-          </label>
-          <Textarea
-            id="compose-body"
-            value={state.body}
-            onChange={(event) => handleEdit("body", event.target.value)}
-            placeholder="Write your message…"
-            maxLength={GMAIL_COMPOSE_MAX_BODY_LENGTH}
-            disabled={isLocked}
-            required
-            className="field-sizing-fixed min-h-48 flex-1 resize-none border-0 bg-transparent px-4 py-5 text-[15px] leading-7 shadow-none focus-visible:ring-0 sm:px-5 md:text-[15px] dark:bg-transparent"
-          />
-
-          {state.message || isReconnectRequired ? (
-            <div className="px-4 pb-3 sm:px-5">
-              <div className="max-w-2xl text-xs leading-5 text-muted-foreground">
-                {state.message ? (
-                  <p
-                    className={
-                      ["error", "send_error", "reconnect_required"].includes(
-                        state.status,
-                      )
-                        ? "text-destructive"
-                        : "text-success"
-                    }
-                    role={
-                      ["error", "send_error", "reconnect_required"].includes(
-                        state.status,
-                      )
-                        ? "alert"
-                        : "status"
-                    }
-                    aria-live="polite"
-                  >
-                    {state.message}
-                  </p>
-                ) : null}
-                {isReconnectRequired ? (
-                  <div className="mt-2">
-                    <Button asChild variant="outline" size="sm">
-                      <a
-                        href={`/v1/connections/gmail/start?accountId=${encodeURIComponent(gmailAccountId)}`}
-                      >
-                        Reconnect Gmail
-                      </a>
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-muted/35 px-4 py-3 sm:px-5 dark:bg-muted/45">
+          <footer
+            aria-label="Compose actions"
+            className="flex shrink-0 flex-wrap items-center justify-between gap-3 bg-muted/35 px-4 py-3 sm:px-5 dark:bg-muted/45"
+          >
             {state.status === "confirming_send" ? (
               <div
                 role="alertdialog"
@@ -420,7 +443,7 @@ export function ComposeSurface() {
                 className="flex w-full flex-wrap items-center gap-2"
               >
                 <p className="mr-auto text-xs text-muted-foreground">
-                  Send now to {state.recipients}?
+                  Send now to {sendRecipientSummary}?
                 </p>
                 <Button
                   type="button"
@@ -517,7 +540,7 @@ export function ComposeSurface() {
                 </Button>
               </>
             )}
-          </div>
+          </footer>
         </div>
       </form>
     </section>
