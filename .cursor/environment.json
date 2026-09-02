@@ -1,0 +1,19 @@
+{
+  "name": "Invook",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "command": "pnpm dev:api"
+    },
+    {
+      "name": "web",
+      "command": "pnpm dev:web"
+    }
+  ],
+  "ports": [
+    { "name": "web", "port": 3000 },
+    { "name": "api", "port": 4000 }
+  ]
+}
