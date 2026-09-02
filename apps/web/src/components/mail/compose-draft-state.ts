@@ -11,8 +11,17 @@ type ComposeDraftStatus =
   | "send_error"
   | "reconnect_required";
 
+export type ComposeDraftEditableField =
+  | "recipients"
+  | "ccRecipients"
+  | "bccRecipients"
+  | "subject"
+  | "body";
+
 export interface ComposeDraftState {
   recipients: string;
+  ccRecipients: string;
+  bccRecipients: string;
   subject: string;
   body: string;
   idempotencyKey: string;
@@ -25,7 +34,7 @@ export interface ComposeDraftState {
 export type ComposeDraftAction =
   | {
       type: "edit";
-      field: "recipients" | "subject" | "body";
+      field: ComposeDraftEditableField;
       value: string;
       idempotencyKey: string;
     }
@@ -46,6 +55,8 @@ export type ComposeDraftAction =
 export function createComposeDraftState(idempotencyKey: string): ComposeDraftState {
   return {
     recipients: "",
+    ccRecipients: "",
+    bccRecipients: "",
     subject: "",
     body: "",
     idempotencyKey,

@@ -41,6 +41,26 @@ test("editing after a save rotates the key and retains the provider draft identi
   assert.equal(edited.providerDraft?.providerDraftId, "provider-draft");
 });
 
+test("copy recipients are first-class editable draft fields", () => {
+  const initial = createComposeDraftState("save-key-1");
+  const withCc = composeDraftReducer(initial, {
+    type: "edit",
+    field: "ccRecipients",
+    value: "copy@example.com",
+    idempotencyKey: "save-key-2",
+  });
+  const withBcc = composeDraftReducer(withCc, {
+    type: "edit",
+    field: "bccRecipients",
+    value: "private@example.com",
+    idempotencyKey: "save-key-3",
+  });
+
+  assert.equal(withBcc.ccRecipients, "copy@example.com");
+  assert.equal(withBcc.bccRecipients, "private@example.com");
+  assert.equal(withBcc.idempotencyKey, "save-key-3");
+});
+
 test("changing the sender rotates the save idempotency key", () => {
   const changed = composeDraftReducer(createComposeDraftState("save-key-1"), {
     type: "change_sender",

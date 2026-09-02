@@ -33,6 +33,8 @@
   --sidebar-ring: oklch(0.708 0 0);
   --success: #66bd91;
   --warning: #d1a45c;
+  --compose-accent: #8184f5;
+  --compose-accent-foreground: #171724;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --chart-1: oklch(0.809 0.105 251.813);
@@ -72,6 +74,8 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-compose-accent: var(--compose-accent);
+  --color-compose-accent-foreground: var(--compose-accent-foreground);
   --radius-xs: calc(var(--radius) * 0.5);
   --radius-sm: calc(var(--radius) * 0.75);
   --radius-md: calc(var(--radius) * 0.875);
