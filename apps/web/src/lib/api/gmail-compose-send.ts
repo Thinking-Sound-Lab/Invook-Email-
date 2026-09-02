@@ -9,22 +9,22 @@ import {
   sendGmailComposeDraft,
 } from "./compose-drafts";
 
-export type ThreadComposeSendAttempt = {
+export type GmailComposeSendAttempt = {
   request: CreateGmailComposeDraftRequest;
   sendIdempotencyKey: string;
 } & ({ phase: "save" } | { phase: "send"; draft: GmailComposeDraft });
 
-interface ThreadComposeSendDependencies {
+interface GmailComposeSendDependencies {
   createDraft: typeof createGmailComposeDraft;
   sendDraft: typeof sendGmailComposeDraft;
 }
 
-export async function sendThreadComposeAttempt(
-  attempt: ThreadComposeSendAttempt,
+export async function sendGmailComposeAttempt(
+  attempt: GmailComposeSendAttempt,
   onSaved: (
-    attempt: Extract<ThreadComposeSendAttempt, { phase: "send" }>,
+    attempt: Extract<GmailComposeSendAttempt, { phase: "send" }>,
   ) => void,
-  dependencies: ThreadComposeSendDependencies = {
+  dependencies: GmailComposeSendDependencies = {
     createDraft: createGmailComposeDraft,
     sendDraft: sendGmailComposeDraft,
   },

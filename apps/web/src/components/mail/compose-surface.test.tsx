@@ -150,38 +150,66 @@ test("the sidebar compose route renders the reference workspace controls", async
     "/mail?account=account-1",
   );
   assert.equal(document.querySelector("#compose-cc-recipients"), null);
+  assert.equal(button("Send").disabled, false);
   assert.equal(button("Send later").disabled, true);
   assert.equal(button("Remind me").disabled, true);
   assert.equal(button("Attachments unavailable").disabled, true);
-  const messageRegion = document.querySelector<HTMLElement>(
-    '[role="region"][aria-label="Message fields and body"]',
+  assert.deepEqual(
+    [
+      ...(document
+        .querySelector('footer[aria-label="Compose actions"]')
+        ?.querySelectorAll("button") ?? []),
+    ].map((action) => action.textContent?.trim()),
+    ["Send", "Send later", "Remind me", ""],
   );
-  const actionRail = document.querySelector<HTMLElement>(
-    'footer[aria-label="Compose actions"]',
-  );
-  assert.ok(messageRegion);
-  assert.ok(actionRail);
-  assert.match(messageRegion.className, /\boverflow-y-auto\b/);
-  assert.match(actionRail.className, /\bshrink-0\b/);
-  assert.equal(messageRegion.contains(actionRail), false);
 
   await click("Cc/Bcc");
   assert.ok(document.querySelector("#compose-cc-recipients"));
   assert.ok(document.querySelector("#compose-bcc-recipients"));
 });
 
-test("saving the redesigned composer includes Cc and Bcc recipients", async () => {
+test("the composer card is bounded by its pane and keeps its actions reachable", async () => {
+  await renderComposeSurface();
+
+  const card = document.querySelector<HTMLElement>(
+    'form[aria-label="New message composer"] > div',
+  );
+  const messageRegion = document.querySelector<HTMLElement>(
+    '[role="region"][aria-label="Message fields and body"]',
+  );
+  const actionRail = document.querySelector<HTMLElement>(
+    'footer[aria-label="Compose actions"]',
+  );
+  assert.ok(card);
+  assert.ok(messageRegion);
+  assert.ok(actionRail);
+  // The card grows with its content up to the pane instead of always filling it.
+  assert.match(card.className, /\bmax-h-full\b/);
+  assert.doesNotMatch(card.className, /\bflex-1\b/);
+  assert.match(messageRegion.className, /\boverflow-y-auto\b/);
+  assert.match(actionRail.className, /\bshrink-0\b/);
+  assert.equal(messageRegion.contains(actionRail), false);
+});
+
+test("sending the redesigned composer saves and sends one Gmail draft", async () => {
   const requests: AxiosRequestConfig[] = [];
   axios.defaults.adapter = async (config) => {
     requests.push(config);
     return {
-      data: {
-        draft: {
-          providerDraftId: "provider-draft",
-          providerMessageId: "provider-message",
-          providerThreadId: "provider-thread",
-        },
-      },
+      data: config.url?.endsWith("/send")
+        ? {
+            message: {
+              providerMessageId: "provider-message",
+              providerThreadId: "provider-thread",
+            },
+          }
+        : {
+            draft: {
+              providerDraftId: "provider-draft",
+              providerMessageId: "provider-message",
+              providerThreadId: "provider-thread",
+            },
+          },
       status: 200,
       statusText: "OK",
       headers: {},
@@ -196,15 +224,15 @@ test("saving the redesigned composer includes Cc and Bcc recipients", async () =
   await enter("#compose-subject", "Project update");
   await enter("#compose-body", "The work is ready for review.");
 
-  const form = document.querySelector<HTMLFormElement>(
-    'form[aria-label="New message composer"]',
-  );
-  assert.ok(form);
-  await act(async () => {
-    form.requestSubmit();
-  });
+  await click("Send");
 
-  assert.equal(requests.length, 1);
+  assert.deepEqual(
+    requests.map((request) => `${request.method} ${request.url}`),
+    [
+      "post /v1/gmail/compose-drafts",
+      "post /v1/gmail/compose-drafts/provider-draft/send",
+    ],
+  );
   const payload: unknown = JSON.parse(String(requests[0]?.data));
   assert.ok(isRecord(payload));
   assert.equal(typeof payload.idempotencyKey, "string");
@@ -218,15 +246,63 @@ test("saving the redesigned composer includes Cc and Bcc recipients", async () =
     subject: "Project update",
     body: "The work is ready for review.",
   });
-  assert.ok(button("Send"));
+  const sendPayload: unknown = JSON.parse(String(requests[1]?.data));
+  assert.ok(isRecord(sendPayload));
+  assert.ok(validateUuid(String(sendPayload.idempotencyKey)));
+  assert.notEqual(sendPayload.idempotencyKey, payload.idempotencyKey);
+  assert.equal(sendPayload.accountId, "account-1");
+  assert.equal(button("Sent with Gmail").disabled, true);
+});
+
+test("an unresolved send retries the same draft and idempotency keys", async () => {
+  const requests: AxiosRequestConfig[] = [];
+  axios.defaults.adapter = async (config) => {
+    requests.push(config);
+    if (config.url?.endsWith("/send") && requests.length === 2) {
+      throw new Error("Gmail is unavailable.");
+    }
+    return {
+      data: config.url?.endsWith("/send")
+        ? {
+            message: {
+              providerMessageId: "provider-message",
+              providerThreadId: "provider-thread",
+            },
+          }
+        : {
+            draft: {
+              providerDraftId: "provider-draft",
+              providerMessageId: "provider-message",
+              providerThreadId: "provider-thread",
+            },
+          },
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      config,
+    };
+  };
+  await renderComposeSurface();
+  await enter("#compose-recipients", "recipient@example.com");
+  await enter("#compose-subject", "Project update");
+  await enter("#compose-body", "The work is ready for review.");
 
   await click("Send");
-  const confirmation = document.querySelector<HTMLElement>(
-    '[role="alertdialog"][aria-label="Confirm Gmail send"]',
+  assert.equal(
+    document.querySelector<HTMLInputElement>("#compose-recipients")?.disabled,
+    true,
   );
-  assert.ok(confirmation);
-  assert.match(
-    confirmation.textContent?.replace(/\s+/g, " ").trim() ?? "",
-    /Send now to To: recipient@example\.com; Cc: copy@example\.com; Bcc: private@example\.com\?/,
+
+  await click("Retry send");
+
+  assert.deepEqual(
+    requests.map((request) => `${request.method} ${request.url}`),
+    [
+      "post /v1/gmail/compose-drafts",
+      "post /v1/gmail/compose-drafts/provider-draft/send",
+      "post /v1/gmail/compose-drafts/provider-draft/send",
+    ],
   );
+  assert.equal(requests[1]?.data, requests[2]?.data);
+  assert.ok(button("Sent with Gmail"));
 });

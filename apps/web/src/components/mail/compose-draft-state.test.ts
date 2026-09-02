@@ -1,132 +1,152 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { GmailComposeSendAttempt } from "../../lib/api/gmail-compose-send";
+
 import {
   composeDraftReducer,
   createComposeDraftState,
+  isComposeDraftLocked,
+  type ComposeDraftState,
 } from "./compose-draft-state";
 
-test("a failed save preserves the idempotency key for an exact retry", () => {
-  const initial = createComposeDraftState("save-key-1");
-  const saving = composeDraftReducer(initial, { type: "saving" });
-  const failed = composeDraftReducer(saving, {
-    type: "error",
-    message: "Gmail is unavailable.",
-  });
+const request = {
+  accountId: "account-1",
+  idempotencyKey: "save-key-1",
+  recipients: ["recipient@example.com"],
+  subject: "Project update",
+  body: "The work is ready for review.",
+};
+const savePhaseAttempt: GmailComposeSendAttempt = {
+  phase: "save",
+  request,
+  sendIdempotencyKey: "send-key-1",
+};
+const sendPhaseAttempt: Extract<GmailComposeSendAttempt, { phase: "send" }> = {
+  phase: "send",
+  request,
+  sendIdempotencyKey: "send-key-1",
+  draft: {
+    providerDraftId: "provider-draft",
+    providerMessageId: "provider-message",
+    providerThreadId: "provider-thread",
+  },
+};
 
-  assert.equal(failed.idempotencyKey, "save-key-1");
-  assert.equal(failed.status, "error");
-});
-
-test("editing after a save rotates the key and retains the provider draft identity", () => {
-  const saved = composeDraftReducer(createComposeDraftState("save-key-1"), {
-    type: "saved",
-    sendIdempotencyKey: "send-key-1",
-    draft: {
-      providerDraftId: "provider-draft",
-      providerMessageId: "provider-message",
-      providerThreadId: "provider-thread",
-    },
+function sendingState(): ComposeDraftState {
+  return composeDraftReducer(createComposeDraftState(), {
+    type: "sending",
+    attempt: savePhaseAttempt,
   });
-  const edited = composeDraftReducer(saved, {
-    type: "edit",
-    field: "body",
-    value: "Revised body",
-    idempotencyKey: "save-key-2",
-  });
-
-  assert.equal(edited.idempotencyKey, "save-key-2");
-  assert.equal(edited.sendIdempotencyKey, null);
-  assert.equal(edited.status, "editing");
-  assert.equal(edited.providerDraft?.providerDraftId, "provider-draft");
-});
+}
 
 test("copy recipients are first-class editable draft fields", () => {
-  const initial = createComposeDraftState("save-key-1");
-  const withCc = composeDraftReducer(initial, {
+  const withCc = composeDraftReducer(createComposeDraftState(), {
     type: "edit",
     field: "ccRecipients",
     value: "copy@example.com",
-    idempotencyKey: "save-key-2",
   });
   const withBcc = composeDraftReducer(withCc, {
     type: "edit",
     field: "bccRecipients",
     value: "private@example.com",
-    idempotencyKey: "save-key-3",
   });
 
   assert.equal(withBcc.ccRecipients, "copy@example.com");
   assert.equal(withBcc.bccRecipients, "private@example.com");
-  assert.equal(withBcc.idempotencyKey, "save-key-3");
+  assert.equal(withBcc.status, "editing");
 });
 
-test("changing the sender rotates the save idempotency key", () => {
-  const changed = composeDraftReducer(createComposeDraftState("save-key-1"), {
-    type: "change_sender",
-    idempotencyKey: "save-key-2",
-  });
-
-  assert.equal(changed.idempotencyKey, "save-key-2");
-  assert.equal(changed.status, "editing");
-});
-
-test("a successful save exposes an explicit convergence state", () => {
-  const saved = composeDraftReducer(createComposeDraftState("save-key-1"), {
-    type: "saved",
-    sendIdempotencyKey: "send-key-1",
-    draft: {
-      providerDraftId: "provider-draft",
-      providerMessageId: "provider-message",
-      providerThreadId: "provider-thread",
-    },
-  });
-
-  assert.equal(saved.status, "saved");
-  assert.match(saved.message ?? "", /Gmail history catches up/);
-});
-
-test("send confirmation is explicit and an error preserves its idempotency key", () => {
-  const saved = composeDraftReducer(createComposeDraftState("save-key-1"), {
-    type: "saved",
-    sendIdempotencyKey: "send-key-1",
-    draft: {
-      providerDraftId: "provider-draft",
-      providerMessageId: "provider-message",
-      providerThreadId: "provider-thread",
-    },
-  });
-  const confirming = composeDraftReducer(saved, { type: "confirm_send" });
-  const sending = composeDraftReducer(confirming, { type: "sending" });
-  const failed = composeDraftReducer(sending, {
+test("a send that never created a Gmail draft stays editable and retries its keys", () => {
+  const failed = composeDraftReducer(sendingState(), {
     type: "send_error",
     message: "Gmail is unavailable.",
     isReconnectRequired: false,
   });
 
-  assert.equal(confirming.status, "confirming_send");
   assert.equal(failed.status, "send_error");
-  assert.equal(failed.sendIdempotencyKey, "send-key-1");
+  assert.equal(isComposeDraftLocked(failed), false);
+  assert.deepEqual(failed.attempt, savePhaseAttempt);
 });
 
-test("a successful send is terminal and a permanent auth failure requests reconnect", () => {
-  const saved = composeDraftReducer(createComposeDraftState("save-key-1"), {
-    type: "saved",
-    sendIdempotencyKey: "send-key-1",
-    draft: {
-      providerDraftId: "provider-draft",
-      providerMessageId: "provider-message",
-      providerThreadId: "provider-thread",
-    },
+test("editing after a failed save discards the unusable attempt", () => {
+  const failed = composeDraftReducer(sendingState(), {
+    type: "send_error",
+    message: "Gmail is unavailable.",
+    isReconnectRequired: false,
   });
-  const sent = composeDraftReducer(saved, { type: "sent" });
-  const reconnect = composeDraftReducer(saved, {
+  const edited = composeDraftReducer(failed, {
+    type: "edit",
+    field: "body",
+    value: "Revised body",
+  });
+
+  assert.equal(edited.attempt, null);
+  assert.equal(edited.status, "editing");
+  assert.equal(edited.body, "Revised body");
+});
+
+test("an unresolved send freezes the message so only an identical retry resolves it", () => {
+  const saved = composeDraftReducer(sendingState(), {
+    type: "attempt_saved",
+    attempt: sendPhaseAttempt,
+  });
+  const failed = composeDraftReducer(saved, {
+    type: "send_error",
+    message: "Gmail is unavailable.",
+    isReconnectRequired: false,
+  });
+  const edited = composeDraftReducer(failed, {
+    type: "edit",
+    field: "body",
+    value: "Revised body",
+  });
+
+  assert.equal(isComposeDraftLocked(failed), true);
+  assert.equal(edited, failed);
+  assert.deepEqual(failed.attempt, sendPhaseAttempt);
+});
+
+test("changing the sender discards an attempt bound to the previous account", () => {
+  const failed = composeDraftReducer(sendingState(), {
+    type: "send_error",
+    message: "Gmail is unavailable.",
+    isReconnectRequired: false,
+  });
+  const changed = composeDraftReducer(failed, { type: "change_sender" });
+
+  assert.equal(changed.attempt, null);
+  assert.equal(changed.status, "editing");
+});
+
+test("a successful send is terminal and states its convergence honestly", () => {
+  const sent = composeDraftReducer(sendingState(), { type: "sent" });
+
+  assert.equal(sent.status, "sent");
+  assert.equal(sent.attempt, null);
+  assert.equal(isComposeDraftLocked(sent), true);
+  assert.match(sent.message ?? "", /Sent with Gmail/);
+  assert.match(sent.message ?? "", /Gmail history catches up/);
+});
+
+test("a permanent auth failure requests reconnect and locks the message", () => {
+  const reconnect = composeDraftReducer(sendingState(), {
     type: "send_error",
     message: "Gmail account must be reconnected",
     isReconnectRequired: true,
   });
 
-  assert.equal(sent.status, "sent");
-  assert.match(sent.message ?? "", /Sent with Gmail/);
   assert.equal(reconnect.status, "reconnect_required");
+  assert.equal(isComposeDraftLocked(reconnect), true);
+});
+
+test("a validation failure reports the field error without starting an attempt", () => {
+  const invalid = composeDraftReducer(createComposeDraftState(), {
+    type: "error",
+    message: "Enter at least one recipient email address.",
+  });
+
+  assert.equal(invalid.status, "error");
+  assert.equal(invalid.attempt, null);
+  assert.equal(isComposeDraftLocked(invalid), false);
 });
