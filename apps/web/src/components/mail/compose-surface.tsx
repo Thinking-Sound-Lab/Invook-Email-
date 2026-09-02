@@ -117,6 +117,8 @@ export function ComposeSurface() {
     createComposeDraftState,
   );
   const [isCcOpen, setIsCcOpen] = useState(false);
+  const [pendingSend, setPendingSend] =
+    useState<GmailComposeSendAttempt | null>(null);
   const gmailAccountId = resolveComposeSenderAccountId({
     state: senderAccount,
     scopedAccountId: scopedAccount?.id ?? null,
@@ -126,11 +128,22 @@ export function ComposeSurface() {
   const isSending = state.status === "sending";
   const isSent = state.status === "sent";
   const isReconnectRequired = state.status === "reconnect_required";
-  const isLocked = isComposeDraftLocked(state);
+  // Confirming freezes the message so the approved recipients are the sent ones.
+  const isLocked = isComposeDraftLocked(state) || pendingSend !== null;
   const isSendFailed = ["send_error", "reconnect_required"].includes(
     state.status,
   );
   const mailboxHref = `/mail?account=${encodeURIComponent(accountSelection)}`;
+  const sendRecipientSummary = pendingSend
+    ? [
+        { label: "To", value: pendingSend.request.recipients },
+        { label: "Cc", value: pendingSend.request.ccRecipients ?? [] },
+        { label: "Bcc", value: pendingSend.request.bccRecipients ?? [] },
+      ]
+        .filter(({ value }) => value.length > 0)
+        .map(({ label, value }) => `${label}: ${value.join(", ")}`)
+        .join("; ")
+    : "";
 
   function handleEdit(field: ComposeDraftEditableField, value: string): void {
     setSenderAccount((current) =>
@@ -146,9 +159,9 @@ export function ComposeSurface() {
     dispatch({ type: "change_sender" });
   }
 
-  async function handleSend(event: FormEvent<HTMLFormElement>): Promise<void> {
+  function handleRequestSend(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    if (busyRef.current || isSending || isSent) return;
+    if (busyRef.current || isSending || isSent || pendingSend) return;
     if (!account) {
       dispatch({
         type: "error",
@@ -177,16 +190,23 @@ export function ComposeSurface() {
     }
 
     // Retries resolve the original attempt: same draft, same idempotency keys.
-    const attempt: GmailComposeSendAttempt = state.attempt ?? {
-      phase: "save",
-      request: {
-        ...validation.fields,
-        accountId: account.id,
-        idempotencyKey: uuidv4(),
+    setPendingSend(
+      state.attempt ?? {
+        phase: "save",
+        request: {
+          ...validation.fields,
+          accountId: account.id,
+          idempotencyKey: uuidv4(),
+        },
+        sendIdempotencyKey: uuidv4(),
       },
-      sendIdempotencyKey: uuidv4(),
-    };
+    );
+  }
+
+  async function handleSend(attempt: GmailComposeSendAttempt): Promise<void> {
+    if (busyRef.current) return;
     busyRef.current = true;
+    setPendingSend(null);
     let hasProviderDraft = attempt.phase === "send";
     setSenderAccount(bindComposeSenderAccount(attempt.request.accountId));
     dispatch({ type: "sending", attempt });
@@ -218,7 +238,7 @@ export function ComposeSurface() {
       <form
         aria-label="New message composer"
         className="flex min-h-0 flex-1 flex-col p-2 sm:p-4 lg:p-6"
-        onSubmit={(event) => void handleSend(event)}
+        onSubmit={handleRequestSend}
       >
         <div className="mx-auto flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-card shadow-[0_18px_48px_-32px_rgba(0,0,0,0.8)]">
           <div
@@ -401,54 +421,84 @@ export function ComposeSurface() {
             aria-label="Compose actions"
             className="flex shrink-0 flex-wrap items-center justify-between gap-3 bg-muted/35 px-4 py-3 sm:px-5 dark:bg-muted/45"
           >
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="submit"
-                disabled={isSending || isSent || isReconnectRequired}
-                className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent/90"
+            {pendingSend ? (
+              <div
+                role="alertdialog"
+                aria-label="Confirm Gmail send"
+                className="flex w-full flex-wrap items-center gap-2"
               >
-                <HugeiconsIcon
-                  icon={isSent ? CheckmarkCircle02Icon : MailSend02Icon}
-                  size={14}
-                />
-                {isSending
-                  ? "Sending with Gmail…"
-                  : isSent
-                    ? "Sent with Gmail"
-                    : isSendFailed
-                      ? "Retry send"
-                      : "Send"}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled
-                title="Send later is not available yet"
-                className="h-8 rounded-lg bg-transparent text-sm font-normal"
-              >
-                Send later
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled
-                title="Reminders are not available yet"
-                className="h-8 rounded-lg bg-transparent text-sm font-normal"
-              >
-                Remind me
-              </Button>
-            </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              disabled
-              aria-label="Attachments unavailable"
-              title="Adding attachments is not available yet"
-              className="rounded-md text-muted-foreground"
-            >
-              <HugeiconsIcon icon={Attachment01Icon} size={16} />
-            </Button>
+                <p className="mr-auto text-xs text-muted-foreground">
+                  Send now to {sendRecipientSummary}?
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-8 rounded-lg text-sm font-normal"
+                  onClick={() => setPendingSend(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent/90"
+                  onClick={() => void handleSend(pendingSend)}
+                >
+                  <HugeiconsIcon icon={MailSend02Icon} size={14} />
+                  Send now
+                </Button>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="submit"
+                    disabled={isSending || isSent || isReconnectRequired}
+                    className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent/90"
+                  >
+                    <HugeiconsIcon
+                      icon={isSent ? CheckmarkCircle02Icon : MailSend02Icon}
+                      size={14}
+                    />
+                    {isSending
+                      ? "Sending with Gmail…"
+                      : isSent
+                        ? "Sent with Gmail"
+                        : isSendFailed
+                          ? "Retry send"
+                          : "Send"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled
+                    title="Send later is not available yet"
+                    className="h-8 rounded-lg bg-transparent text-sm font-normal"
+                  >
+                    Send later
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled
+                    title="Reminders are not available yet"
+                    className="h-8 rounded-lg bg-transparent text-sm font-normal"
+                  >
+                    Remind me
+                  </Button>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled
+                  aria-label="Attachments unavailable"
+                  title="Adding attachments is not available yet"
+                  className="rounded-md text-muted-foreground"
+                >
+                  <HugeiconsIcon icon={Attachment01Icon} size={16} />
+                </Button>
+              </>
+            )}
           </footer>
         </div>
       </form>
