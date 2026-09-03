@@ -77,7 +77,9 @@ export function mailboxViewCondition(view: MailboxView) {
   }
   switch (view) {
     case "all":
-      return visibleThreadCondition();
+      // All is Gmail's inbox: sent, archived, spam and trash mail live in their
+      // own views, so a thread appears here only while Gmail labels it INBOX.
+      return inboxThreadCondition();
     case "important":
       return sql<boolean>`exists (
           select 1 from ${threadLabelAssignments} important_assignment
