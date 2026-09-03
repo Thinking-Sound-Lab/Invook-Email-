@@ -1,8 +1,10 @@
 export {
   tenantTaskQueueLanes,
   type TenantTaskQueueLane,
-  type WorkflowStepActivities,
-  type WorkflowStepExecution,
-  type WorkflowStepResult,
-} from "./contracts";
-export { workflowStepWorkflow } from "./workflow-step-workflow";
+} from "./task-queues";
+export type {
+  WorkflowStepActivities,
+  WorkflowStepExecution,
+  WorkflowStepResult,
+} from "./contracts/workflow-step";
+export { workflowStepWorkflow } from "./workflows/workflow-step";

@@ -4,13 +4,12 @@ import { test } from "node:test";
 import {
   getTemporalCloudConfiguration,
   getWorkflowStartDelay,
-  parseNonNegativeInteger,
-  parsePositiveInteger,
   taskQueueRouteForCommand,
   tenantActivityConcurrency,
   tenantShardForUserId,
   tenantTaskQueueName,
-} from "./temporal-runtime";
+} from "./configuration";
+import { parseNonNegativeInteger, parsePositiveInteger } from "./environment";
 
 test("Temporal Cloud configuration requires an environment-specific task queue", () => {
   assert.deepEqual(

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { v4 as uuidv4 } from "uuid";
 
-import { parseThreadLabelBatchPayload } from "./thread-label-batch";
+import { parseThreadLabelBatchPayload } from "./batch";
 
 test("Batch admission requires a saved historical settings request", () => {
   assert.throws(() => parseThreadLabelBatchPayload({ flushRemainder: true }));

@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   gmailHistoryCatchupDisposition,
   planGmailHistoryCatchup,
-} from "./gmail-history-catchup";
+} from "./history-catchup";
 
 test("ready replicas continue incrementally from the committed cursor", () => {
   assert.deepEqual(

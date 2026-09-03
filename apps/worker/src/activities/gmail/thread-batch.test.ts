@@ -6,7 +6,7 @@ import { GMAIL_SYNC_THREAD_BATCH_SIZE } from "@invook/database";
 import {
   parseGmailThreadBatchPayload,
   processGmailThreadBatch,
-} from "./gmail-thread-batch";
+} from "./thread-batch";
 
 test("Gmail thread batch payloads are bounded and unique", () => {
   const providerThreadIds = Array.from(

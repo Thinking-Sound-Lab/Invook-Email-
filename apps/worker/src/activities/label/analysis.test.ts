@@ -6,7 +6,7 @@ import type { WorkflowStepJob } from "@invook/database";
 import {
   parseRecentThreadLabelScanJob,
   parseThreadLabelAnalysisJob,
-} from "./thread-label-analysis";
+} from "./analysis";
 
 function workflowJob(
   stepType: string,

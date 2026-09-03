@@ -11,219 +11,29 @@ import {
   Worker,
   type WorkflowBundleWithSourceMap,
 } from "@temporalio/worker";
-import { parse as parseUuid, validate as validateUuid } from "uuid";
 
 import type { TemporalCommandJob } from "@invook/database";
 import {
   tenantTaskQueueLanes,
   workflowStepWorkflow,
-  type TenantTaskQueueLane,
   type WorkflowStepActivities,
-  type WorkflowStepExecution,
 } from "@invook/workflows";
 
-const gmailControlConcurrency = 5;
-const tenantWorkflowConcurrency = 4;
-export const gmailContentConcurrency = parsePositiveInteger(
-  process.env.GMAIL_CONTENT_CONCURRENCY,
-  5,
-  "GMAIL_CONTENT_CONCURRENCY",
-);
-const mailLabelConcurrency = parsePositiveInteger(
-  process.env.MAIL_LABEL_CONCURRENCY,
-  5,
-  "MAIL_LABEL_CONCURRENCY",
-);
-const mailBulkConcurrency = parsePositiveInteger(
-  process.env.MAIL_BULK_CONCURRENCY,
-  3,
-  "MAIL_BULK_CONCURRENCY",
-);
+import {
+  getTemporalCloudConfiguration,
+  getWorkflowStartDelay,
+  taskQueueRouteForCommand,
+  tenantActivityConcurrency,
+  tenantShardForUserId,
+  tenantTaskQueueName,
+  workflowStepExecution,
+  type TemporalCloudConfiguration,
+} from "./configuration";
 
-export interface TemporalCloudConfiguration {
-  address: string;
-  namespace: string;
-  apiKey: string;
-  taskQueuePrefix: string;
-  tenantShardCount: number;
-  tenantShardIndex: number;
-}
+const tenantWorkflowConcurrency = 4;
 
 interface CreateTemporalRuntimeInput {
   activities: WorkflowStepActivities;
-}
-
-export function parsePositiveInteger(
-  value: string | undefined,
-  fallback: number,
-  name: string,
-): number {
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error(`${name} must be a positive integer.`);
-  }
-  return parsed;
-}
-
-export function parseNonNegativeInteger(
-  value: string | undefined,
-  fallback: number,
-  name: string,
-): number {
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`${name} must be a non-negative integer.`);
-  }
-  return parsed;
-}
-
-function requiredEnvironmentValue(
-  value: string | undefined,
-  name: string,
-): string {
-  const normalized = value?.trim() ?? "";
-  if (!normalized) throw new Error(`${name} is required for Temporal Cloud.`);
-  return normalized;
-}
-
-export function getTemporalCloudConfiguration(
-  environment: NodeJS.ProcessEnv = process.env,
-): TemporalCloudConfiguration {
-  const taskQueuePrefix = requiredEnvironmentValue(
-    environment.TEMPORAL_TASK_QUEUE_PREFIX,
-    "TEMPORAL_TASK_QUEUE_PREFIX",
-  );
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(taskQueuePrefix)) {
-    throw new Error(
-      "TEMPORAL_TASK_QUEUE_PREFIX must contain lowercase letters, digits, and hyphens.",
-    );
-  }
-  const tenantShardCount = parsePositiveInteger(
-    environment.TEMPORAL_TENANT_SHARD_COUNT,
-    1,
-    "TEMPORAL_TENANT_SHARD_COUNT",
-  );
-  const tenantShardIndex = parseNonNegativeInteger(
-    environment.TEMPORAL_TENANT_SHARD_INDEX,
-    0,
-    "TEMPORAL_TENANT_SHARD_INDEX",
-  );
-  if (tenantShardIndex >= tenantShardCount) {
-    throw new Error(
-      "TEMPORAL_TENANT_SHARD_INDEX must be lower than TEMPORAL_TENANT_SHARD_COUNT.",
-    );
-  }
-  return {
-    address: requiredEnvironmentValue(
-      environment.TEMPORAL_ADDRESS,
-      "TEMPORAL_ADDRESS",
-    ),
-    namespace: requiredEnvironmentValue(
-      environment.TEMPORAL_NAMESPACE,
-      "TEMPORAL_NAMESPACE",
-    ),
-    apiKey: requiredEnvironmentValue(
-      environment.TEMPORAL_API_KEY,
-      "TEMPORAL_API_KEY",
-    ),
-    taskQueuePrefix,
-    tenantShardCount,
-    tenantShardIndex,
-  };
-}
-
-export function tenantTaskQueueName(
-  configuration: Pick<TemporalCloudConfiguration, "taskQueuePrefix">,
-  userId: string,
-  lane: TenantTaskQueueLane,
-): string {
-  if (!validateUuid(userId)) {
-    throw new Error("Temporal tenant routing requires a valid user ID.");
-  }
-  const taskQueue = `${configuration.taskQueuePrefix}-tenant-${userId.toLowerCase()}-${lane}`;
-  if (taskQueue.length > 255) {
-    throw new Error(
-      "The derived Temporal tenant task queue exceeds 255 characters.",
-    );
-  }
-  return taskQueue;
-}
-
-export function tenantShardForUserId(
-  userId: string,
-  shardCount: number,
-): number {
-  if (!validateUuid(userId)) {
-    throw new Error("Temporal tenant sharding requires a valid user ID.");
-  }
-  if (!Number.isInteger(shardCount) || shardCount < 1) {
-    throw new Error("Temporal tenant shard count must be a positive integer.");
-  }
-  let hash = 2_166_136_261;
-  for (const byte of parseUuid(userId)) {
-    hash = Math.imul(hash ^ byte, 16_777_619) >>> 0;
-  }
-  return hash % shardCount;
-}
-
-export function getWorkflowStartDelay(
-  payload: Record<string, unknown>,
-  now: number = Date.now(),
-): number | undefined {
-  if (typeof payload.runAt !== "string") return undefined;
-  const runAt = Date.parse(payload.runAt);
-  if (!Number.isFinite(runAt) || runAt <= now) return undefined;
-  return runAt - now;
-}
-
-export function tenantActivityConcurrency(lane: TenantTaskQueueLane): number {
-  switch (lane) {
-    case "control":
-      return gmailControlConcurrency;
-    case "live":
-      return Math.max(mailLabelConcurrency, 5);
-    case "bulk":
-      // Above one so a user's Gmail accounts synchronize in parallel; each
-      // account's provider content work is bounded by GMAIL_CONTENT_CONCURRENCY.
-      return mailBulkConcurrency;
-  }
-}
-
-function workflowStepExecution(
-  command: TemporalCommandJob,
-  activityTaskQueue: string,
-): WorkflowStepExecution {
-  return {
-    id: command.id,
-    userId: command.userId,
-    accountId: command.accountId,
-    runId: command.runId,
-    stepType: command.stepType,
-    payload: command.payload,
-    attempts: command.attempts,
-    maxAttempts: command.maxAttempts,
-    activityTaskQueue,
-  };
-}
-
-export function taskQueueRouteForCommand(
-  configuration: TemporalCloudConfiguration,
-  command: TemporalCommandJob,
-): { workflowTaskQueue: string; activityTaskQueue: string } {
-  return {
-    workflowTaskQueue: tenantTaskQueueName(
-      configuration,
-      command.userId,
-      "control",
-    ),
-    activityTaskQueue: tenantTaskQueueName(
-      configuration,
-      command.userId,
-      command.activityTaskLane,
-    ),
-  };
 }
 
 export class TemporalRuntime {
@@ -269,7 +79,7 @@ export class TemporalRuntime {
     });
     const workflowBundle = await bundleWorkflowCode({
       workflowsPath: fileURLToPath(
-        new URL("./temporal-workflows.ts", import.meta.url),
+        new URL("./workflow-bundle.ts", import.meta.url),
       ),
     });
     return new TemporalRuntime({
