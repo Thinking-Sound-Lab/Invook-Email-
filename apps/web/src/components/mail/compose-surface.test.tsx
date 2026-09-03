@@ -225,18 +225,9 @@ test("sending the redesigned composer saves and sends one Gmail draft", async ()
   await enter("#compose-body", "The work is ready for review.");
 
   await click("Send");
-  const confirmation = document.querySelector<HTMLElement>(
-    '[role="alertdialog"][aria-label="Confirm Gmail send"]',
-  );
-  assert.ok(confirmation);
-  assert.match(
-    confirmation.textContent?.replace(/\s+/g, " ").trim() ?? "",
-    /Send now to To: recipient@example\.com; Cc: copy@example\.com; Bcc: private@example\.com\?/,
-  );
-  assert.equal(requests.length, 0);
 
-  await click("Send now");
-
+  // Send is a single click: the sidebar composer never interposes a prompt.
+  assert.equal(document.querySelector('[role="alertdialog"]'), null);
   assert.deepEqual(
     requests.map((request) => `${request.method} ${request.url}`),
     [
@@ -299,14 +290,12 @@ test("an unresolved send retries the same draft and idempotency keys", async () 
   await enter("#compose-body", "The work is ready for review.");
 
   await click("Send");
-  await click("Send now");
   assert.equal(
     document.querySelector<HTMLInputElement>("#compose-recipients")?.disabled,
     true,
   );
 
   await click("Retry send");
-  await click("Send now");
 
   assert.deepEqual(
     requests.map((request) => `${request.method} ${request.url}`),
@@ -318,48 +307,4 @@ test("an unresolved send retries the same draft and idempotency keys", async () 
   );
   assert.equal(requests[1]?.data, requests[2]?.data);
   assert.ok(button("Sent with Gmail"));
-});
-
-test("cancelling the confirmation sends nothing and reopens the message", async () => {
-  const requests: AxiosRequestConfig[] = [];
-  axios.defaults.adapter = async (config) => {
-    requests.push(config);
-    return {
-      data: {
-        draft: {
-          providerDraftId: "provider-draft",
-          providerMessageId: "provider-message",
-          providerThreadId: "provider-thread",
-        },
-      },
-      status: 200,
-      statusText: "OK",
-      headers: {},
-      config,
-    };
-  };
-  await renderComposeSurface();
-  await enter("#compose-recipients", "recipient@example.com");
-  await enter("#compose-subject", "Project update");
-  await enter("#compose-body", "The work is ready for review.");
-
-  await click("Send");
-  // The approved recipients must be the sent ones, so confirming freezes the message.
-  assert.equal(
-    document.querySelector<HTMLInputElement>("#compose-recipients")?.disabled,
-    true,
-  );
-
-  await click("Cancel");
-
-  assert.equal(requests.length, 0);
-  assert.equal(
-    document.querySelector('[role="alertdialog"][aria-label="Confirm Gmail send"]'),
-    null,
-  );
-  assert.equal(
-    document.querySelector<HTMLInputElement>("#compose-recipients")?.disabled,
-    false,
-  );
-  assert.equal(button("Send").disabled, false);
 });
