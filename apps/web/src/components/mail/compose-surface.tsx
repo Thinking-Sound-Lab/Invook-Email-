@@ -220,7 +220,7 @@ export function ComposeSurface() {
         className="flex min-h-0 flex-1 flex-col p-2 sm:p-4 lg:p-6"
         onSubmit={(event) => void handleSend(event)}
       >
-        <div className="mx-auto flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-card shadow-[0_18px_48px_-32px_rgba(0,0,0,0.8)]">
+        <div className="mx-auto flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-card shadow-[0_18px_48px_-32px] shadow-overlay/80">
           <div
             role="region"
             aria-label="Message fields and body"
@@ -405,7 +405,7 @@ export function ComposeSurface() {
               <Button
                 type="submit"
                 disabled={isSending || isSent || isReconnectRequired}
-                className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent/90"
+                className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent-hover"
               >
                 <HugeiconsIcon
                   icon={isSent ? CheckmarkCircle02Icon : MailSend02Icon}

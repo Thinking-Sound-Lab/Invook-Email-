@@ -110,7 +110,7 @@ function MailRow({
           aria-hidden="true"
           className={cn(
             "size-1.5 shrink-0 rounded-full",
-            isUnread ? "bg-blue-500" : "bg-transparent",
+            isUnread ? "bg-primary-blue" : "bg-transparent",
           )}
         />
         <span className="sr-only">{isUnread ? "Unread" : "Read"}</span>

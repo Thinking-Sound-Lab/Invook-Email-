@@ -326,7 +326,7 @@ export function ThreadComposer({
               <Button
                 type="submit"
                 disabled={pending !== null || !isConnected}
-                className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent/90"
+                className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent-hover"
               >
                 {pending === "send"
                   ? "Sending…"
