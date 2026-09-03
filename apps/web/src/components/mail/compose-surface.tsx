@@ -405,7 +405,7 @@ export function ComposeSurface() {
               <Button
                 type="submit"
                 disabled={isSending || isSent || isReconnectRequired}
-                className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent/90"
+                className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent-hover"
               >
                 <HugeiconsIcon
                   icon={isSent ? CheckmarkCircle02Icon : MailSend02Icon}

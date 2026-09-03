@@ -114,6 +114,29 @@ test("the complete supplied light palette is represented by global tokens", () =
   }
 });
 
+test("semantic roles resolve through the supplied palette tokens", () => {
+  const expectedAliases = {
+    "--background": "var(--bg-primary)",
+    "--card": "var(--bg-primary)",
+    "--popover": "var(--dropdown)",
+    "--primary": "var(--brand)",
+    "--primary-hover": "var(--brand-hover)",
+    "--secondary": "var(--surface)",
+    "--muted": "var(--surface)",
+    "--accent": "var(--email-hover)",
+    "--input": "var(--border-strong)",
+    "--ring": "var(--brand)",
+    "--sidebar": "var(--surface)",
+    "--compose-accent": "var(--brand)",
+    "--compose-accent-hover": "var(--brand-hover)",
+  } satisfies Record<string, string>;
+
+  for (const [token, value] of Object.entries(expectedAliases)) {
+    assert.equal(themeValue(rootTheme, token), value, token);
+    assert.match(globalStyles, new RegExp(`--color-${token.slice(2)}:`), token);
+  }
+});
+
 test("dark semantic tokens use the supplied dark palette", () => {
   const expectedPalette = {
     "--bg-primary": "#191919",

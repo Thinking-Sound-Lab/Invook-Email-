@@ -79,6 +79,7 @@
   --popover: var(--dropdown);
   --popover-foreground: var(--foreground);
   --primary: var(--brand);
+  --primary-hover: var(--brand-hover);
   --primary-foreground: var(--inverse);
   --secondary: var(--surface);
   --secondary-foreground: var(--landing-ink-soft);
@@ -98,6 +99,7 @@
   --sidebar-border: var(--border);
   --sidebar-ring: var(--brand);
   --compose-accent: var(--brand);
+  --compose-accent-hover: var(--brand-hover);
   --compose-accent-foreground: var(--inverse);
   --chart-1: var(--graph-level-1);
   --chart-2: var(--graph-level-2);
@@ -116,6 +118,7 @@
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -138,6 +141,7 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-compose-accent: var(--compose-accent);
+  --color-compose-accent-hover: var(--compose-accent-hover);
   --color-compose-accent-foreground: var(--compose-accent-foreground);
   --color-landing-surface: var(--landing-surface);
   --color-landing-surface-warm: var(--landing-surface-warm);
@@ -280,6 +284,7 @@
   --popover: var(--dropdown);
   --popover-foreground: var(--foreground);
   --primary: var(--brand);
+  --primary-hover: var(--brand-hover);
   --primary-foreground: var(--bg-primary);
   --secondary: var(--dropdown);
   --secondary-foreground: var(--foreground);
@@ -298,5 +303,6 @@
   --sidebar-border: var(--border);
   --sidebar-ring: var(--brand);
   --compose-accent: var(--brand);
+  --compose-accent-hover: var(--brand-hover);
   --compose-accent-foreground: var(--bg-primary);
 }
