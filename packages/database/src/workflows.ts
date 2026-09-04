@@ -859,7 +859,10 @@ export async function enqueueImplausibleGmailMessageDateRepairs(
  * Step types whose Temporal Workflow owns the work outright, rather than
  * executing a single Activity through `workflowStepWorkflow`.
  */
-const temporalAdmissionStepTypes = new Set<string>(["gmail.sync.run"]);
+const temporalAdmissionStepTypes = new Set<string>([
+  "gmail.sync.run",
+  "gmail.history.catchup",
+]);
 
 export function isTemporalAdmissionStepType(stepType: string): boolean {
   return temporalAdmissionStepTypes.has(stepType);

@@ -42,6 +42,8 @@ import {
   listGmailThreads,
 } from "@invook/gmail";
 import type {
+  GmailCatchUpInput,
+  GmailCatchUpOutcome,
   GmailSyncFinalizeInput,
   GmailSyncFinalizeOutcome,
   GmailSyncPageInput,
@@ -52,7 +54,10 @@ import type {
 
 import { gmailContentConcurrency } from "./concurrency";
 import { classifyGmailWorkflowFailure } from "./workflow-failure";
-import { runGmailConnectionCleanup } from "./watch-lifecycle";
+import {
+  GmailConnectionInactiveError,
+  runGmailConnectionCleanup,
+} from "./watch-lifecycle";
 import {
   assertGmailThreadBatch,
   processGmailThreadBatch,
@@ -451,21 +456,71 @@ export async function finalizeGmailSyncActivity(
   });
 }
 
-export async function runGmailHistoryCatchup(job: WorkflowStepJob) {
-  if (!job.accountId) throw new Error("The Gmail history job has no account.");
-  const result = await catchUpGmailHistory({
-    accountId: job.accountId,
-    sourceStepId: job.id,
-    resumeNonReady: job.attempts > 1,
+/**
+ * Applies everything Gmail recorded since the account's cursor.
+ *
+ * One pass drains every trigger that preceded it, so the Workflow signals only
+ * that something changed and lets this Activity decide how much history that
+ * turned out to be. A retry re-reads the cursor, so a partially applied range
+ * is never applied twice.
+ */
+export async function catchUpGmailHistoryActivity(
+  input: GmailCatchUpInput,
+): Promise<GmailCatchUpOutcome> {
+  return withGmailAccountControlLock(input.accountId, async () => {
+    let result;
+    try {
+      result = await catchUpGmailHistory({
+        accountId: input.accountId,
+        // A retry means the previous attempt failed partway, so a replica left
+        // mid-flight is resumed rather than deferred forever.
+        resumeNonReady: activityInfo().attempt > 1,
+      });
+    } catch (error) {
+      if (error instanceof GmailConnectionInactiveError) {
+        return { status: "disconnected" };
+      }
+      if (isGoogleReauthenticationRequired(error)) {
+        throw ApplicationFailure.nonRetryable(
+          "gmail_reconnect_required",
+          "GmailReconnectRequired",
+        );
+      }
+      throw error;
+    }
+
+    switch (result.status) {
+      case "deferred":
+        return { status: "deferred" };
+      case "superseded":
+        return { status: "superseded" };
+      case "repair_started":
+        return { status: "repair_started", runId: result.runId };
+      case "applied": {
+        // A replica that just became ready has finished its recovery, so the
+        // derived work waiting on it is released here rather than on a sweep.
+        if (!result.hasPendingHistory) {
+          await completeGmailSynchronizationRecovery({
+            accountId: input.accountId,
+            historyCursor: result.historyCursor,
+          });
+          await enqueuePendingAnalysisWorkflowSteps();
+        }
+        return {
+          status: "applied",
+          historyCursor: result.historyCursor,
+          hasPendingHistory: result.hasPendingHistory,
+          changedThreadCount: result.changedThreadCount,
+        };
+      }
+      default: {
+        const unsupported: never = result;
+        throw new Error(
+          `Unsupported Gmail catch-up outcome: ${JSON.stringify(unsupported)}`,
+        );
+      }
+    }
   });
-  if (result.status === "complete" && typeof result.historyCursor === "string") {
-    await completeGmailSynchronizationRecovery({
-      accountId: job.accountId,
-      historyCursor: result.historyCursor,
-    });
-    await enqueuePendingAnalysisWorkflowSteps();
-  }
-  return result;
 }
 
 export async function runGmailWatchRenewal(job: WorkflowStepJob) {
@@ -475,7 +530,6 @@ export async function runGmailWatchRenewal(job: WorkflowStepJob) {
     renew: () => renewGmailWatch(account.id, credential.accessToken),
     catchUp: () => catchUpGmailHistory({
       accountId: account.id,
-      sourceStepId: job.id,
       resumeNonReady: job.attempts > 1,
       resumeFailedReplica: true,
     }),
@@ -487,10 +541,7 @@ export async function runGmailWatchRenewal(job: WorkflowStepJob) {
     }),
   });
   const catchup = renewal.catchup;
-  if (
-    catchup.status === "complete" &&
-    typeof catchup.historyCursor === "string"
-  ) {
+  if (catchup.status === "applied") {
     await completeGmailSynchronizationRecovery({
       accountId: account.id,
       historyCursor: catchup.historyCursor,

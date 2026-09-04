@@ -381,6 +381,9 @@ importers:
       '@temporalio/activity':
         specifier: 1.22.0
         version: 1.22.0
+      '@temporalio/client':
+        specifier: 1.22.0
+        version: 1.22.0
       '@temporalio/testing':
         specifier: 1.22.0
         version: 1.22.0

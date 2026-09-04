@@ -20,5 +20,22 @@ export {
   type GmailSyncWorkflowInput,
   type GmailSyncWorkflowResult,
 } from "./contracts/gmail-sync";
+export {
+  gmailIncrementalSyncCatchUpsPerExecution,
+  gmailIncrementalSyncIdleTimeout,
+  type GmailCatchUpInput,
+  type GmailCatchUpOutcome,
+  type GmailIncrementalSyncActivities,
+  type GmailIncrementalSyncState,
+  type GmailIncrementalSyncStatus,
+  type GmailIncrementalSyncWorkflowInput,
+  type GmailIncrementalSyncWorkflowResult,
+} from "./contracts/gmail-incremental-sync";
 export { workflowStepWorkflow } from "./workflows/workflow-step";
+export {
+  gmailAccountDisconnectedSignal,
+  gmailCatchUpSignal,
+  gmailIncrementalSyncStateQuery,
+  gmailIncrementalSyncWorkflow,
+} from "./workflows/gmail-incremental-sync";
 export { gmailSyncWorkflow } from "./workflows/gmail-sync";

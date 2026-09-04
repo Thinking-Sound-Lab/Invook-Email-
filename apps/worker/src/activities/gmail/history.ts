@@ -47,7 +47,6 @@ export async function applyHistoryRange(options: {
   startHistoryId: string;
   expectedCursor: string;
   stateAfterApply?: "ready" | "snapshotting" | "replaying" | "repairing";
-  continuationSourceStepId?: string;
   ingestionMode: "initial" | "incremental";
   isLiveDelivery?: boolean;
 }) {
@@ -196,7 +195,6 @@ export async function applyHistoryRange(options: {
     labelChanges,
     deletedMessageIds,
     stateAfterApply: options.stateAfterApply,
-    continuationSourceStepId: options.continuationSourceStepId,
   });
   if (applied.applied) {
     await refreshAffectedGmailDraftResources({
@@ -228,12 +226,28 @@ async function repairExpiredHistory(options: {
   return { runId, startingHistoryCursor: baseline.historyId };
 }
 
+/**
+ * The outcome of one catch-up pass. `deferred` and `superseded` are ordinary
+ * states, not failures: the first means the replica is still being built and
+ * the cursor stays pending, the second means another pass already applied the
+ * range.
+ */
+export type GmailHistoryCatchUpResult =
+  | {
+      status: "applied";
+      historyCursor: string;
+      hasPendingHistory: boolean;
+      changedThreadCount: number;
+    }
+  | { status: "deferred"; historyCursor: string | null }
+  | { status: "repair_started"; runId: string; startingHistoryCursor: string }
+  | { status: "superseded"; historyCursor: string };
+
 export async function catchUpGmailHistory(options: {
   accountId: string;
-  sourceStepId: string;
   resumeNonReady?: boolean;
   resumeFailedReplica?: boolean;
-}) {
+}): Promise<GmailHistoryCatchUpResult> {
   const replica = await getGmailReplicaContext(options.accountId);
   if (!replica) throw new Error("The Gmail replica state was not found.");
   const activeRepairRun =
@@ -258,13 +272,9 @@ export async function catchUpGmailHistory(options: {
         userId: account.userId,
         accountId: account.id,
       });
-      return { status: "repair_queued", ...repair, changedThreadCount: 0 };
+      return { status: "repair_started", ...repair };
     }
-    return {
-      status: "deferred",
-      state: plan.state,
-      historyCursor: replica.historyCursor,
-    };
+    return { status: "deferred", historyCursor: replica.historyCursor };
   }
   const { account, credential } = await getMailSyncContext(options.accountId);
   const apply = () =>
@@ -278,7 +288,6 @@ export async function catchUpGmailHistory(options: {
       stateAfterApply: plan.stateAfterApply,
       ingestionMode: plan.ingestionMode,
       isLiveDelivery: true,
-      continuationSourceStepId: options.sourceStepId,
     });
   const replayOrRepair = plan.shouldRepairExpiredCursor
     ? await applyGmailHistoryWithExpiredCursorRepair({
@@ -292,41 +301,18 @@ export async function catchUpGmailHistory(options: {
       })
     : { outcome: "applied" as const, result: await apply() };
   if (replayOrRepair.outcome === "repaired") {
-    return {
-      status: "repair_queued",
-      ...replayOrRepair.result,
-      changedThreadCount: 0,
-    };
+    return { status: "repair_started", ...replayOrRepair.result };
   }
   const replay = replayOrRepair.result;
   const disposition = gmailHistoryCatchupDisposition(replay);
   if (disposition === "superseded") {
-    return {
-      status: "superseded",
-      historyCursor: replay.historyId,
-      changedThreadCount: 0,
-    };
-  }
-  if (disposition === "continue_durably") {
-    const pendingHistoryCursor = replay.pendingHistoryCursor;
-    if (!pendingHistoryCursor) {
-      throw new Error("The Gmail history continuation cursor is missing.");
-    }
-    const continuationStepId = replay.continuationStepId;
-    if (!continuationStepId) {
-      throw new Error("The Gmail history continuation step is missing.");
-    }
-    return {
-      status: "continued",
-      historyCursor: replay.historyId,
-      pendingHistoryCursor,
-      continuationStepId,
-      changedThreadCount: replay.changedThreadIds.length,
-    };
+    return { status: "superseded", historyCursor: replay.historyId };
   }
   return {
-    status: plan.stateAfterApply === "ready" ? "complete" : "live_applied",
+    status: "applied",
     historyCursor: replay.historyId,
+    // Gmail capped the range, so the Workflow must schedule another pass.
+    hasPendingHistory: disposition === "continue_durably",
     changedThreadCount: replay.changedThreadIds.length,
   };
 }

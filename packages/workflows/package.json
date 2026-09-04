@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@temporalio/activity": "1.22.0",
+    "@temporalio/client": "1.22.0",
     "@temporalio/testing": "1.22.0",
     "@temporalio/worker": "1.22.0",
     "@types/node": "^24.0.0",

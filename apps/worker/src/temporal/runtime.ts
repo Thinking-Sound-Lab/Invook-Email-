@@ -17,9 +17,12 @@ import {
   type TemporalCommandJob,
 } from "@invook/database";
 import {
+  gmailCatchUpSignal,
+  gmailIncrementalSyncWorkflow,
   gmailSyncWorkflow,
   tenantTaskQueueLanes,
   workflowStepWorkflow,
+  type GmailIncrementalSyncActivities,
   type GmailSyncActivities,
   type WorkflowStepActivities,
 } from "@invook/workflows";
@@ -37,7 +40,9 @@ import {
 
 const tenantWorkflowConcurrency = 4;
 
-type TemporalActivities = WorkflowStepActivities & GmailSyncActivities;
+type TemporalActivities = WorkflowStepActivities &
+  GmailSyncActivities &
+  GmailIncrementalSyncActivities;
 
 interface CreateTemporalRuntimeInput {
   activities: TemporalActivities;
@@ -189,12 +194,35 @@ export class TemporalRuntime {
     command: TemporalCommandJob,
     taskQueueRoute: { workflowTaskQueue: string; activityTaskQueue: string },
   ): Promise<void> {
+    if (!command.accountId) {
+      throw new Error("The Temporal admission step is missing its account.");
+    }
+    if (command.stepType === "gmail.history.catchup") {
+      // The entity coalesces triggers, so every catch-up request is the same
+      // signal and an idle Execution is recreated rather than kept open.
+      await this.client.workflow.signalWithStart(gmailIncrementalSyncWorkflow, {
+        args: [
+          {
+            userId: command.userId,
+            accountId: command.accountId,
+            activityTaskQueue: taskQueueRoute.activityTaskQueue,
+            pendingRequestCount: 0,
+            catchUpsCompleted: 0,
+          },
+        ],
+        signal: gmailCatchUpSignal,
+        signalArgs: [],
+        taskQueue: taskQueueRoute.workflowTaskQueue,
+        workflowId: `gmail-incremental-sync:${command.accountId}`,
+      });
+      return;
+    }
     if (command.stepType !== "gmail.sync.run") {
       throw new Error(
         `Unsupported Temporal admission step: ${command.stepType}`,
       );
     }
-    if (!command.accountId || !command.runId) {
+    if (!command.runId) {
       throw new Error(
         "The Gmail synchronization admission step is missing its run.",
       );

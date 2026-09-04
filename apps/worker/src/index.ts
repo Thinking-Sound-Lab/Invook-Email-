@@ -31,6 +31,7 @@ import { terminateWorkerAfterFatalError } from "./temporal/process-lifecycle";
 
 import { terminalProviderBatchStates } from "./activities/configuration";
 import {
+  catchUpGmailHistoryActivity,
   finalizeGmailSyncActivity,
   ingestGmailThreadBatchActivity,
   syncGmailThreadPageActivity,
@@ -127,6 +128,7 @@ async function run() {
       syncGmailThreadPageActivity,
       ingestGmailThreadBatchActivity,
       finalizeGmailSyncActivity,
+      catchUpGmailHistoryActivity,
     },
   });
   const outboxSignal = createJobSignal();
