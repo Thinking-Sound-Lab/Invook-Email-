@@ -18,7 +18,7 @@ import type {
   InvookSystemLabelKey,
   ThreadLabelAnalysisState,
 } from "@invook/contracts";
-import type { TenantTaskQueueLane } from "@invook/workflows";
+import type { TaskQueueLane } from "@invook/workflows";
 
 import type { AccountSyncState } from "./types";
 
@@ -1094,9 +1094,6 @@ export const threadLabelBatchSubmissions = pgTable(
   "thread_label_batch_submissions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workflowStepId: uuid("workflow_step_id")
-      .notNull()
-      .references(() => workflowSteps.id, { onDelete: "cascade" }),
     userId: uuid("user_id")
       .notNull()
       .references(() => profiles.id, { onDelete: "cascade" }),
@@ -1145,9 +1142,6 @@ export const threadLabelBatchSubmissions = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => [
-    uniqueIndex("thread_label_batch_submissions_workflow_step_idx").on(
-      table.workflowStepId,
-    ),
     uniqueIndex("thread_label_batch_submissions_provider_batch_idx")
       .on(table.provider, table.providerBatchId)
       .where(sql`${table.providerBatchId} is not null`),
@@ -1194,7 +1188,7 @@ export const temporalCommands = pgTable(
       .notNull()
       .references(() => workflowSteps.id, { onDelete: "cascade" }),
     activityTaskLane: text("activity_task_lane")
-      .$type<TenantTaskQueueLane>()
+      .$type<TaskQueueLane>()
       .notNull(),
     dispatchAttempts: integer("dispatch_attempts").notNull().default(0),
     lastError: text("last_error"),

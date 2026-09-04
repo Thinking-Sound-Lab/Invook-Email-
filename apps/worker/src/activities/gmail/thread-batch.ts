@@ -1,27 +1,19 @@
-import { GMAIL_SYNC_THREAD_BATCH_SIZE } from "@invook/database";
-
-export interface GmailThreadBatchPayload {
-  runId: string;
-  providerThreadIds: string[];
-}
+import { gmailSyncThreadBatchSize } from "@invook/workflows";
 
 export interface GmailThreadBatchFailure {
   providerThreadId: string;
   error: unknown;
 }
 
-export function parseGmailThreadBatchPayload(
-  payload: Record<string, unknown>,
-): GmailThreadBatchPayload {
-  const runId = payload.runId;
-  const providerThreadIds = payload.providerThreadIds;
-  if (typeof runId !== "string" || !runId.trim()) {
-    throw new Error("Gmail thread batch run ID is missing.");
-  }
+/**
+ * Guards the batch an Activity was handed. The Workflow builds these batches,
+ * so a malformed one is a contract violation rather than a provider fault and
+ * must not be retried against Gmail.
+ */
+export function assertGmailThreadBatch(providerThreadIds: string[]): void {
   if (
-    !Array.isArray(providerThreadIds) ||
     providerThreadIds.length === 0 ||
-    providerThreadIds.length > GMAIL_SYNC_THREAD_BATCH_SIZE ||
+    providerThreadIds.length > gmailSyncThreadBatchSize ||
     providerThreadIds.some(
       (providerThreadId) =>
         typeof providerThreadId !== "string" || !providerThreadId.trim(),
@@ -30,7 +22,6 @@ export function parseGmailThreadBatchPayload(
   ) {
     throw new Error("Gmail thread batch IDs are invalid.");
   }
-  return { runId, providerThreadIds };
 }
 
 export async function processGmailThreadBatch(input: {

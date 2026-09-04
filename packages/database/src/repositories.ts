@@ -3043,16 +3043,12 @@ export async function enqueueBatchEvent(
       input.provider === "openai"
         ? await transaction
             .select({
-              id: threadLabelBatchSubmissions.workflowStepId,
+              id: threadLabelBatchSubmissions.id,
               userId: threadLabelBatchSubmissions.userId,
               accountId: threadLabelBatchSubmissions.accountId,
-              stepType: workflowSteps.stepType,
+              historicalScanId: threadLabelBatchSubmissions.historicalScanId,
             })
             .from(threadLabelBatchSubmissions)
-            .innerJoin(
-              workflowSteps,
-              eq(workflowSteps.id, threadLabelBatchSubmissions.workflowStepId),
-            )
             .where(
               and(
                 eq(threadLabelBatchSubmissions.provider, "openai"),
@@ -3076,7 +3072,7 @@ export async function enqueueBatchEvent(
             id: workflowSteps.id,
             userId: workflowSteps.userId,
             accountId: workflowSteps.accountId,
-            stepType: workflowSteps.stepType,
+            historicalScanId: sql<string | null>`null`,
           })
           .from(workflowSteps)
           .where(
@@ -3102,12 +3098,17 @@ export async function enqueueBatchEvent(
       eventType: input.eventType,
       provider: input.provider,
       providerBatchId: input.providerBatchId,
+      // The scan owns the Workflow the completion releases, so dispatch can
+      // address the signal without reading the submission again.
+      ...(submission.historicalScanId
+        ? { historicalScanId: submission.historicalScanId }
+        : {}),
     };
     const idempotencyKey = createBatchEventIdempotencyKey({
       provider: input.provider,
       webhookId: input.webhookId,
     });
-    const eventJobType = submission.stepType.startsWith("label.")
+    const eventJobType = submission.historicalScanId
       ? "label.batch.event"
       : "memory.batch.event";
     await enqueueWorkflowStep(

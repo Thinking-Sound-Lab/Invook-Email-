@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm";
 import { validate as validateUuid } from "uuid";
 
-import type { TenantTaskQueueLane } from "@invook/workflows";
+import type { TaskQueueLane } from "@invook/workflows";
 
 import {
   getDatabase,
@@ -47,16 +47,13 @@ import { MEMORY_SCHEMA_VERSION } from "./versions";
 
 export type TemporalCommandJob = WorkflowStepJob & {
   userId: string;
-  activityTaskLane: TenantTaskQueueLane;
+  activityTaskLane: TaskQueueLane;
 };
 
 export const TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE = 10;
-export const GMAIL_SYNC_THREAD_BATCH_SIZE = 10;
 
 const gmailConnectedAccountStepTypes = [
-  "gmail.sync.page",
-  "gmail.sync.thread.batch",
-  "gmail.sync.finalize",
+  "gmail.sync.run",
   "gmail.message.refresh",
   "gmail.history.catchup",
   "gmail.watch.renew",
@@ -279,13 +276,11 @@ export async function markGmailAccountReconnectRequired(
   );
 }
 
-export function tenantTaskQueueLaneForStepType(
+export function taskQueueLaneForStepType(
   stepType: string,
-): TenantTaskQueueLane {
+): TaskQueueLane {
   switch (stepType) {
-    case "gmail.sync.page":
-    case "gmail.sync.thread.batch":
-    case "gmail.sync.finalize":
+    case "gmail.sync.run":
     case "gmail.account.cleanup":
     case "gmail.objects.delete":
     case "memory.extract":
@@ -308,10 +303,10 @@ export function tenantTaskQueueLaneForStepType(
   }
 }
 
-export function tenantTaskQueueLaneForStep(
+export function taskQueueLaneForStep(
   input: Pick<WorkflowStepInput, "stepType">,
-): TenantTaskQueueLane {
-  return tenantTaskQueueLaneForStepType(input.stepType);
+): TaskQueueLane {
+  return taskQueueLaneForStepType(input.stepType);
 }
 
 export function temporalCommandPriority(
@@ -327,36 +322,55 @@ export function temporalCommandPriority(
   return 1;
 }
 
-export function createGmailSyncThreadBatchSteps(input: {
+/**
+ * `superseded` means another run has taken ownership of the account, so the
+ * caller must stop rather than compete with it.
+ */
+export type MailSyncPageRecord =
+  | { status: "recorded"; pendingThreadIds: string[] }
+  | { status: "superseded" };
+
+/**
+ * The admission record that hands a synchronization run to Temporal.
+ *
+ * The step exists only so the transaction that creates the run and the command
+ * that starts `gmailSyncWorkflow` commit together. Temporal owns pagination,
+ * ingestion, and retries once it acknowledges the command, so the step carries
+ * no cursor and is completed as soon as dispatch succeeds.
+ */
+export function createGmailSyncRunStep(input: {
   runId: string;
   userId: string;
   accountId: string;
-  pageNumber: number;
-  providerThreadIds: string[];
-}): WorkflowStepInput[] {
-  const steps: WorkflowStepInput[] = [];
-  for (
-    let offset = 0;
-    offset < input.providerThreadIds.length;
-    offset += GMAIL_SYNC_THREAD_BATCH_SIZE
-  ) {
-    const batchNumber = Math.floor(offset / GMAIL_SYNC_THREAD_BATCH_SIZE) + 1;
-    steps.push({
-      runId: input.runId,
-      userId: input.userId,
-      accountId: input.accountId,
-      stepType: "gmail.sync.thread.batch",
-      payload: {
-        runId: input.runId,
-        providerThreadIds: input.providerThreadIds.slice(
-          offset,
-          offset + GMAIL_SYNC_THREAD_BATCH_SIZE,
-        ),
-      },
-      idempotencyKey: `gmail-thread-batch:${input.runId}:${input.pageNumber}:${batchNumber}`,
-    });
-  }
-  return steps;
+}): WorkflowStepInput {
+  return {
+    runId: input.runId,
+    userId: input.userId,
+    accountId: input.accountId,
+    stepType: "gmail.sync.run",
+    payload: { runId: input.runId },
+    idempotencyKey: `gmail-sync-run:${input.runId}`,
+  };
+}
+
+/**
+ * The admission record that hands an account's label scan to Temporal.
+ *
+ * One step per account: the scan entity coalesces repeat offers, so a boot
+ * sweep and a live trigger converge on the same Execution rather than queueing
+ * two walks of the same threads.
+ */
+export function createThreadLabelScanStep(input: {
+  userId: string;
+  accountId: string;
+}): WorkflowStepInput {
+  return {
+    userId: input.userId,
+    accountId: input.accountId,
+    stepType: "label.recent.scan",
+    payload: {},
+    idempotencyKey: `label-scan:${input.accountId}`,
+  };
 }
 
 export async function enqueueWorkflowStepsWithExecutor(
@@ -392,7 +406,7 @@ export async function enqueueWorkflowStepsWithExecutor(
     await database.insert(temporalCommands).values(
       inserted.map((step) => ({
         workflowStepId: step.id,
-        activityTaskLane: tenantTaskQueueLaneForStep(
+        activityTaskLane: taskQueueLaneForStep(
           byIdempotencyKey.get(step.idempotencyKey)!,
         ),
       })),
@@ -419,7 +433,7 @@ export async function enqueueWorkflowStepWithExecutor(
       .insert(temporalCommands)
       .values({
         workflowStepId: existing.id,
-        activityTaskLane: tenantTaskQueueLaneForStep(input),
+        activityTaskLane: taskQueueLaneForStep(input),
       })
       .onConflictDoNothing({ target: temporalCommands.workflowStepId });
   }
@@ -517,14 +531,11 @@ async function createMailSyncRun(
 
     if (active) {
       await enqueueWorkflowStep(
-        {
+        createGmailSyncRunStep({
           runId,
           userId: input.userId,
           accountId: input.accountId,
-          stepType: "gmail.sync.page",
-          payload: { runId, pageNumber: 1, pageToken: null },
-          idempotencyKey: `gmail-page:${runId}:1`,
-        },
+        }),
         executor,
       );
       if (input.runType === "repair") {
@@ -724,6 +735,32 @@ export async function getMailSyncRunProviderMessageIds(
   return rows.map((row) => row.providerMessageId);
 }
 
+/**
+ * Re-offers an already admitted step to Temporal.
+ *
+ * A Workflow that failed outright leaves its work with nothing driving it, and
+ * PostgreSQL cannot tell a live Execution from a dead one. Clearing the
+ * dispatch marker makes the command eligible again; the Workflow decides what
+ * that means — a start is rejected while its Execution runs, and a signal is
+ * absorbed by the entity that receives it.
+ */
+export async function readmitWorkflowStep(
+  step: WorkflowStepInput,
+  database: Database = getDatabase(),
+): Promise<void> {
+  const stepId = await database.transaction((transaction) =>
+    enqueueWorkflowStepWithExecutor(step, transaction),
+  );
+  await database
+    .update(temporalCommands)
+    .set({
+      dispatchedAt: null,
+      lastError: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(temporalCommands.workflowStepId, stepId));
+}
+
 export async function enqueueMissingMailSyncRuns(
   database: Database = getDatabase(),
 ): Promise<number> {
@@ -758,15 +795,12 @@ export async function enqueueMissingMailSyncRuns(
       )
       .limit(1);
     if (existingRun) {
-      await enqueueWorkflowStep(
-        {
+      await readmitWorkflowStep(
+        createGmailSyncRunStep({
           runId: existingRun.id,
           userId: account.userId,
           accountId: account.id,
-          stepType: "gmail.sync.page",
-          payload: { runId: existingRun.id, pageNumber: 1, pageToken: null },
-          idempotencyKey: `gmail-page:${existingRun.id}:1`,
-        },
+        }),
         database,
       );
       continue;
@@ -839,6 +873,22 @@ export async function enqueueImplausibleGmailMessageDateRepairs(
     }
     return candidates.length;
   });
+}
+
+/**
+ * Step types whose Temporal Workflow owns the work outright, rather than
+ * executing a single Activity through `workflowStepWorkflow`.
+ */
+const temporalAdmissionStepTypes = new Set<string>([
+  "gmail.sync.run",
+  "gmail.history.catchup",
+  "label.recent.scan",
+  "label.batch.submit",
+  "label.batch.event",
+]);
+
+export function isTemporalAdmissionStepType(stepType: string): boolean {
+  return temporalAdmissionStepTypes.has(stepType);
 }
 
 export async function dispatchTemporalCommandBatch(
@@ -928,46 +978,37 @@ export async function dispatchTemporalCommandBatch(
         updatedAt: new Date(),
       })
       .where(inArray(temporalCommands.id, rows.map((row) => row.commandId)));
+
+    // An admission step only bridges the transaction into Temporal. Once the
+    // Workflow has started, Temporal owns execution and retries, so the step
+    // must not stay queued and be re-dispatched.
+    const admittedStepIds = rows
+      .filter((row) => isTemporalAdmissionStepType(row.stepType))
+      .map((row) => row.id);
+    if (admittedStepIds.length > 0) {
+      await transaction
+        .update(workflowSteps)
+        .set({
+          status: "complete",
+          completedAt: new Date(),
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(inArray(workflowSteps.id, admittedStepIds));
+    }
     return { dispatched: rows.length, failed: false };
   });
 }
 
 export function temporalCommandJobFromRow(
   input: WorkflowStepJob & {
-    activityTaskLane: TenantTaskQueueLane;
+    activityTaskLane: TaskQueueLane;
   },
 ): TemporalCommandJob {
   if (input.userId) return { ...input, userId: input.userId };
   throw new Error(
     "The Temporal command has an invalid durable routing contract.",
   );
-}
-
-export async function listActiveTemporalTenantIds(
-  database: Database = getDatabase(),
-): Promise<string[]> {
-  const accountTenants = await database
-    .selectDistinct({ userId: connectedAccounts.userId })
-    .from(connectedAccounts)
-    .where(
-      inArray(connectedAccounts.status, ["connected", "reconnect_required"]),
-    );
-  const workflowTenants = await database
-    .selectDistinct({ userId: workflowSteps.userId })
-    .from(workflowSteps)
-    .where(
-      and(
-        isNotNull(workflowSteps.userId),
-        inArray(workflowSteps.status, ["queued", "running"]),
-      ),
-    );
-  return [
-    ...new Set(
-      [...accountTenants, ...workflowTenants].flatMap((row) =>
-        row.userId ? [row.userId] : [],
-      ),
-    ),
-  ].sort();
 }
 
 export async function markWorkflowStepRunning(
@@ -1248,30 +1289,6 @@ export async function failWorkflowStep(
         );
       }
     }
-    if (input.terminal && input.step.stepType === "label.batch.submit") {
-      const historicalScanId = input.step.payload.historicalScanId;
-      if (
-        typeof historicalScanId === "string" && validateUuid(historicalScanId) &&
-        input.step.accountId && input.step.userId
-      ) {
-        await transaction
-          .update(historicalThreadLabelScans)
-          .set({ status: "failed", lastError: message, completedAt: new Date(), updatedAt: new Date() })
-          .where(and(
-            eq(historicalThreadLabelScans.id, historicalScanId),
-            eq(historicalThreadLabelScans.accountId, input.step.accountId),
-            eq(historicalThreadLabelScans.userId, input.step.userId),
-            inArray(historicalThreadLabelScans.status, ["queued", "running"]),
-          ));
-      }
-      await transaction
-        .update(threadLabelBatchSubmissions)
-        .set({ status: "failed", lastError: message, completedAt: new Date(), updatedAt: new Date() })
-        .where(and(
-          eq(threadLabelBatchSubmissions.workflowStepId, input.step.id),
-          eq(threadLabelBatchSubmissions.status, "preparing"),
-        ));
-    }
     if (!input.terminal || !input.step.accountId) return true;
     if (
       ["memory.extract", "memory.batch.retry", "memory.batch.event"].includes(
@@ -1353,19 +1370,15 @@ export async function isActiveMailSyncRun(
   return Boolean(run);
 }
 
-export async function hasCompletedMailSyncPage(
-  runId: string,
-  pageNumber: number,
-  database: Database = getDatabase(),
-): Promise<boolean> {
-  const [page] = await database
-    .select({ id: gmailSyncPages.id })
-    .from(gmailSyncPages)
-    .where(and(eq(gmailSyncPages.runId, runId), eq(gmailSyncPages.pageNumber, pageNumber)))
-    .limit(1);
-  return Boolean(page);
-}
-
+/**
+ * Persists one page of discovery and reports the threads the caller still owes
+ * ingestion for.
+ *
+ * The insert is idempotent on `(runId, pageNumber)`, so a replayed Activity
+ * attempt re-reports the same pending set rather than duplicating work. Threads
+ * an earlier page already claimed are excluded: Gmail can repeat a thread
+ * across pages when the mailbox changes mid-walk.
+ */
 export async function recordMailSyncPage(
   input: {
     runId: string;
@@ -1377,13 +1390,13 @@ export async function recordMailSyncPage(
     providerThreadIds: string[];
   },
   database: Database = getDatabase(),
-) {
+): Promise<MailSyncPageRecord> {
   return database.transaction(async (transaction) => {
     const run = await lockMailSyncRun(
       { runId: input.runId, accountId: input.accountId },
       transaction,
     );
-    if (!run || run.userId !== input.userId) return false;
+    if (!run || run.userId !== input.userId) return { status: "superseded" };
     if (
       input.providerThreadIds.some(
         (providerThreadId) => !providerThreadId.trim(),
@@ -1392,7 +1405,7 @@ export async function recordMailSyncPage(
       throw new Error("A Gmail synchronization page contains an invalid thread ID.");
     }
     const uniqueThreadIds = Array.from(new Set(input.providerThreadIds));
-    const [insertedPage] = await transaction
+    await transaction
       .insert(gmailSyncPages)
       .values({
         runId: input.runId,
@@ -1401,58 +1414,39 @@ export async function recordMailSyncPage(
         nextPageToken: input.nextPageToken,
         discoveredThreadCount: uniqueThreadIds.length,
       })
-      .onConflictDoNothing({ target: [gmailSyncPages.runId, gmailSyncPages.pageNumber] })
-      .returning({ id: gmailSyncPages.id });
-    if (!insertedPage) return true;
+      .onConflictDoNothing({ target: [gmailSyncPages.runId, gmailSyncPages.pageNumber] });
 
-    const insertedItems = uniqueThreadIds.length
-      ? await transaction
-          .insert(gmailSyncItems)
-          .values(
-            uniqueThreadIds.map((providerThreadId) => ({
-              runId: input.runId,
-              providerThreadId,
-            })),
-          )
-          .onConflictDoNothing({
-            target: [gmailSyncItems.runId, gmailSyncItems.providerThreadId],
-          })
-          .returning({ providerThreadId: gmailSyncItems.providerThreadId })
-      : [];
-    const insertedThreadIds = new Set(
-      insertedItems.map((item) => item.providerThreadId),
-    );
-
-    await enqueueWorkflowStepsWithExecutor(
-      createGmailSyncThreadBatchSteps({
-        runId: input.runId,
-        userId: input.userId,
-        accountId: input.accountId,
-        pageNumber: input.pageNumber,
-        providerThreadIds: uniqueThreadIds.filter((providerThreadId) =>
-          insertedThreadIds.has(providerThreadId),
-        ),
-      }),
-      transaction,
-    );
-
-    if (input.nextPageToken) {
-      await enqueueWorkflowStepWithExecutor(
-        {
-          runId: input.runId,
-          userId: input.userId,
-          accountId: input.accountId,
-          stepType: "gmail.sync.page",
-          payload: {
+    if (uniqueThreadIds.length) {
+      await transaction
+        .insert(gmailSyncItems)
+        .values(
+          uniqueThreadIds.map((providerThreadId) => ({
             runId: input.runId,
-            pageNumber: input.pageNumber + 1,
-            pageToken: input.nextPageToken,
-          },
-          idempotencyKey: `gmail-page:${input.runId}:${input.pageNumber + 1}`,
-        },
-        transaction,
-      );
+            providerThreadId,
+          })),
+        )
+        .onConflictDoNothing({
+          target: [gmailSyncItems.runId, gmailSyncItems.providerThreadId],
+        });
     }
+    // Read back rather than trusting the insert's returning clause: a replayed
+    // Activity attempt inserts nothing yet still owes ingestion for every thread
+    // on the page that has not completed.
+    const pendingItems = uniqueThreadIds.length
+      ? await transaction
+          .select({ providerThreadId: gmailSyncItems.providerThreadId })
+          .from(gmailSyncItems)
+          .where(
+            and(
+              eq(gmailSyncItems.runId, input.runId),
+              inArray(gmailSyncItems.providerThreadId, uniqueThreadIds),
+              inArray(gmailSyncItems.status, ["queued", "running"]),
+            ),
+          )
+      : [];
+    const pendingThreadIds = new Set(
+      pendingItems.map((item) => item.providerThreadId),
+    );
 
     const [[pageStats], [itemStats]] = await Promise.all([
       transaction
@@ -1480,10 +1474,12 @@ export async function recordMailSyncPage(
       );
     }
 
-    if (input.nextPageToken === null && insertedItems.length === 0) {
-      await enqueueFinalizeIfReady(input.runId, transaction);
-    }
-    return true;
+    return {
+      status: "recorded",
+      pendingThreadIds: uniqueThreadIds.filter((providerThreadId) =>
+        pendingThreadIds.has(providerThreadId),
+      ),
+    };
   });
 }
 
@@ -1561,14 +1557,20 @@ async function getItemCounts(runId: string, database: DatabaseExecutor) {
   };
 }
 
-async function enqueueFinalizeIfReady(
+/**
+ * Republishes a run's progress counters and notifies subscribed clients.
+ *
+ * Completion no longer gates a queued finalization step: `gmailSyncWorkflow`
+ * ingests every page before it finalizes, so the run's readiness is already
+ * known to the Workflow. This keeps the counters the UI reads truthful.
+ */
+async function recordMailSyncProgress(
   runId: string,
   database: DatabaseExecutor,
-) {
+): Promise<void> {
   const [run] = await database
     .select({
       id: mailSyncRuns.id,
-      userId: mailSyncRuns.userId,
       accountId: mailSyncRuns.accountId,
       status: mailSyncRuns.status,
       discoveryComplete: mailSyncRuns.discoveryComplete,
@@ -1578,12 +1580,7 @@ async function enqueueFinalizeIfReady(
     .where(eq(mailSyncRuns.id, runId))
     .limit(1)
     .for("update");
-  if (
-    !run ||
-    (run.status !== "queued" && run.status !== "running")
-  ) {
-    return false;
-  }
+  if (!run || (run.status !== "queued" && run.status !== "running")) return;
 
   const counts = await getItemCounts(runId, database);
   await database
@@ -1607,44 +1604,6 @@ async function enqueueFinalizeIfReady(
       sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: run.accountId })})`,
     );
   }
-  if (!run.discoveryComplete) return false;
-  if (counts.failed > 0 || counts.complete !== counts.total) return false;
-
-  await enqueueWorkflowStepWithExecutor(
-    {
-      runId,
-      userId: run.userId,
-      accountId: run.accountId,
-      stepType: "gmail.sync.finalize",
-      payload: { runId },
-      idempotencyKey: `gmail-finalize:${runId}`,
-    },
-    database,
-  );
-  return true;
-}
-
-export async function enqueueReadyMailSyncFinalizers(
-  database: Database = getDatabase(),
-): Promise<number> {
-  const runs = await database
-    .select({ id: mailSyncRuns.id })
-    .from(mailSyncRuns)
-    .where(
-      and(
-        inArray(mailSyncRuns.status, ["queued", "running"]),
-        eq(mailSyncRuns.discoveryComplete, true),
-      ),
-    );
-
-  let readyRunCount = 0;
-  for (const run of runs) {
-    const ready = await database.transaction((transaction) =>
-      enqueueFinalizeIfReady(run.id, transaction),
-    );
-    if (ready) readyRunCount += 1;
-  }
-  return readyRunCount;
 }
 
 export async function completeMailSyncThreadWithExecutor(
@@ -1672,7 +1631,7 @@ export async function completeMailSyncThreadWithExecutor(
       )
       .returning({ id: gmailSyncItems.id });
     if (!item) return false;
-    await enqueueFinalizeIfReady(input.runId, database);
+    await recordMailSyncProgress(input.runId, database);
     return true;
 }
 

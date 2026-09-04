@@ -6,13 +6,16 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { v4 as uuidv4 } from "uuid";
 
+import type { HistoricalLabelScanBatchScope } from "@invook/workflows";
+
 import type { Database } from "./client";
 import {
   claimThreadLabelBatchSubmission,
   enqueueHistoricalThreadLabelBatchRecoveries,
   finalizeThreadLabelBatchPreparation,
+  failHistoricalThreadLabelScan,
   finalizeThreadLabelBatchSubmission,
-  listSubmittedThreadLabelBatchIds,
+  getActiveThreadLabelBatchSubmission,
 } from "./historical-thread-label-batches";
 import {
   createLabelPreviewReceipt,
@@ -226,61 +229,51 @@ async function createHistoricalRequest(
   return { label, scan, stepId: step.id };
 }
 
-async function claim(context: TestContext, stepId: string) {
-  const [step] = await context.database
-    .select()
-    .from(workflowSteps)
-    .where(eq(workflowSteps.id, stepId));
-  assert.ok(step);
-  const historicalScanId = step.input.historicalScanId;
-  const retryAttempt = step.input.retryAttempt;
-  assert.equal(typeof historicalScanId, "string");
-  assert.equal(typeof retryAttempt, "number");
-  if (typeof historicalScanId !== "string" || typeof retryAttempt !== "number")
-    throw new Error("Invalid test request");
-  const candidateIds = step.input.threadIds;
-  const threadIds =
-    candidateIds === undefined
-      ? undefined
-      : Array.isArray(candidateIds)
-        ? candidateIds.filter((id): id is string => typeof id === "string")
-        : [];
-  const rawContinuations = step.input.continuations ?? [];
-  assert.ok(Array.isArray(rawContinuations));
-  const continuations = rawContinuations.map((value: unknown) => {
-    assert.ok(
-      value &&
-        typeof value === "object" &&
-        "retryAttempt" in value &&
-        "threadIds" in value,
-    );
-    assert.equal(typeof value.retryAttempt, "number");
-    assert.ok(Array.isArray(value.threadIds));
-    if (typeof value.retryAttempt !== "number")
-      throw new Error("Invalid test retry attempt");
-    return {
-      retryAttempt: value.retryAttempt,
-      threadIds: value.threadIds.map((threadId: unknown) => {
-        assert.equal(typeof threadId, "string");
-        if (typeof threadId !== "string")
-          throw new Error("Invalid test retry thread");
-        return threadId;
-      }),
-    };
-  });
+const openingScope: HistoricalLabelScanBatchScope = {
+  retryAttempt: 0,
+  threadIds: null,
+  continuations: [],
+  retryDelayMs: 0,
+};
+
+async function claim(
+  context: TestContext,
+  historicalScanId: string,
+  scope: HistoricalLabelScanBatchScope,
+) {
   return claimThreadLabelBatchSubmission(
     {
-      workflowStepId: stepId,
       historicalScanId,
-      retryAttempt,
-      threadIds,
-      continuations,
+      retryAttempt: scope.retryAttempt,
+      ...(scope.threadIds ? { threadIds: scope.threadIds } : {}),
+      continuations: scope.continuations,
       userId: context.userId,
       accountId: context.accountId,
       modelId: "test-model",
     },
     context.database,
   );
+}
+
+/** Asserts a scope produced a Batch and narrows to it. */
+async function claimBatch(
+  context: TestContext,
+  historicalScanId: string,
+  scope: HistoricalLabelScanBatchScope,
+) {
+  const claimed = await claim(context, historicalScanId, scope);
+  assert.equal(claimed.status, "claimed");
+  if (claimed.status !== "claimed") throw new Error("unreachable");
+  return claimed;
+}
+
+/** Asserts a finalization reported a next Batch and narrows to it. */
+function nextScope(
+  finalization: { nextScope: HistoricalLabelScanBatchScope | null },
+): HistoricalLabelScanBatchScope {
+  assert.ok(finalization.nextScope);
+  if (!finalization.nextScope) throw new Error("unreachable");
+  return finalization.nextScope;
 }
 
 async function finish(
@@ -702,7 +695,7 @@ for (const windowDays of [7, 30, 90] as const) {
           request.scan.before.getTime() - request.scan.after.getTime(),
           windowDays * DAY_MS,
         );
-        const batch = await claim(context, request.stepId);
+        const batch = await claimBatch(context, request.scan.id, openingScope);
         assert.ok(batch);
         const expectedCount = windowDays === 7 ? 1 : windowDays === 30 ? 2 : 3;
         assert.equal(batch.candidates.length, expectedCount);
@@ -731,8 +724,10 @@ for (const windowDays of [7, 30, 90] as const) {
           })),
         );
         assert.equal(result.appliedCount, expectedCount - 1);
-        assert.ok(result.continuationStepId);
-        assert.equal(await claim(context, result.continuationStepId), null);
+                assert.deepEqual(await claim(context, request.scan.id, nextScope(result)), {
+        status: "skipped",
+        nextScope: null,
+      });
         const [unchanged] = await database
           .select()
           .from(threadLabelAssignments)
@@ -798,9 +793,14 @@ test(
           ),
         );
       assert.equal(steps.length, 1);
-      const [step] = steps;
-      assert.ok(step);
-      assert.equal(await claim(context, step.id), null);
+      const [scan] = scans;
+      assert.ok(scan);
+      // The re-enabled label has no thread inside its window, so the scan ends
+      // rather than claiming a Batch.
+      assert.deepEqual(await claim(context, scan.id, openingScope), {
+        status: "skipped",
+        nextScope: null,
+      });
     });
   },
 );
@@ -818,10 +818,10 @@ test(
         })),
       );
       const request = await createHistoricalRequest(context, 30);
-      const batch = await claim(context, request.stepId);
+      const batch = await claimBatch(context, request.scan.id, openingScope);
       assert.ok(batch);
       assert.equal(batch.candidates.length, 2_000);
-      const resumed = await claim(context, request.stepId);
+      const resumed = await claimBatch(context, request.scan.id, openingScope);
       assert.equal(resumed?.submissionId, batch.submissionId);
       const retained = batch.candidates
         .slice(0, 10)
@@ -848,13 +848,15 @@ test(
           confidence: 85,
         })),
       );
-      assert.ok(completion.continuationStepId);
       assert.equal(
         (await finish(context, batch.submissionId, [])).alreadyFinalized,
         true,
       );
-      const next = await claim(context, completion.continuationStepId);
-      assert.ok(next);
+      const next = await claimBatch(
+        context,
+        request.scan.id,
+        nextScope(completion),
+      );
       assert.equal(next.candidates.length, 1_993);
       assert.equal(
         new Set(
@@ -871,8 +873,10 @@ test(
           confidence: 80,
         })),
       );
-      assert.ok(finalization.continuationStepId);
-      assert.equal(await claim(context, finalization.continuationStepId), null);
+      assert.deepEqual(await claim(context, request.scan.id, nextScope(finalization)), {
+        status: "skipped",
+        nextScope: null,
+      });
       const submissions = await database
         .select()
         .from(threadLabelBatchSubmissions)
@@ -908,21 +912,22 @@ test(
       const request = await createHistoricalRequest(context);
       await withContext(async (other) => {
         assert.equal(
-          await claimThreadLabelBatchSubmission(
-            {
-              workflowStepId: request.stepId,
-              historicalScanId: request.scan.id,
-              userId: other.userId,
-              accountId: other.accountId,
-              modelId: "test",
-              retryAttempt: 0,
-            },
-            other.database,
-          ),
+          (
+            await claimThreadLabelBatchSubmission(
+              {
+                historicalScanId: request.scan.id,
+                userId: other.userId,
+                accountId: other.accountId,
+                modelId: "test",
+                retryAttempt: 0,
+              },
+              other.database,
+            )
+          ).status,
           null,
         );
       });
-      assert.equal(await claim(context, request.stepId), null);
+      assert.equal(await claimBatch(context, request.scan.id, openingScope), null);
     });
   },
 );
@@ -942,7 +947,7 @@ test(
       const [changed, manual, invalid] = rows;
       assert.ok(changed && manual && invalid);
       const request = await createHistoricalRequest(context);
-      const batch = await claim(context, request.stepId);
+      const batch = await claimBatch(context, request.scan.id, openingScope);
       assert.ok(batch);
       await database
         .update(threads)
@@ -972,10 +977,13 @@ test(
         })),
       );
       assert.equal(completed.appliedCount, 0);
-      assert.ok(completed.continuationStepId);
-      const retry = await claim(context, completed.continuationStepId);
+      const retry = await claimBatch(
+        context,
+        request.scan.id,
+        nextScope(completed),
+      );
       assert.deepEqual(
-        retry?.candidates.map((entry) => entry.threadId),
+        retry.candidates.map((entry) => entry.threadId),
         [invalid.threadId],
       );
       const [choice] = await database
@@ -998,7 +1006,7 @@ for (const action of ["edit", "disable"] as const) {
           { sentAt: new Date(context.referenceAt.getTime() - DAY_MS) },
         ]);
         const request = await createHistoricalRequest(context);
-        const batch = await claim(context, request.stepId);
+        const batch = await claimBatch(context, request.scan.id, openingScope);
         assert.ok(batch);
         if (action === "edit")
           await updateInvookLabel(
@@ -1054,31 +1062,22 @@ test(
         { sentAt: new Date(context.referenceAt.getTime() - DAY_MS) },
       ]);
       const request = await createHistoricalRequest(context);
-      let stepId = request.stepId;
+      let scope = openingScope;
       for (let attempt = 0; attempt <= 6; attempt += 1) {
-        const batch = await claim(context, stepId);
-        assert.ok(batch);
+        const batch = await claimBatch(context, request.scan.id, scope);
         assert.equal(batch.candidates.length, 1);
-        const failureRecordedAt = Date.now();
         const completion = await finish(context, batch.submissionId, [], {
           providerState: "expired",
           retryableFailure: true,
         });
         if (attempt < 6) {
-          assert.ok(completion.continuationStepId);
-          const [retryStep] = await context.database
-            .select({ input: workflowSteps.input })
-            .from(workflowSteps)
-            .where(eq(workflowSteps.id, completion.continuationStepId));
-          const runAt = retryStep?.input.runAt;
-          assert.equal(typeof runAt, "string");
-          if (typeof runAt !== "string") throw new Error("Retry time is missing.");
-          const expectedDelay = 5 * 60 * 1_000 * 2 ** attempt;
-          const actualDelay = new Date(runAt).getTime() - failureRecordedAt;
-          assert.ok(actualDelay >= expectedDelay);
-          assert.ok(actualDelay < expectedDelay + 10_000);
-          stepId = completion.continuationStepId;
-        } else assert.equal(completion.continuationStepId, null);
+          const retryScope = nextScope(completion);
+          // The backoff is reported for the Workflow to sleep on rather than
+          // written into a scheduled step.
+          assert.equal(retryScope.retryDelayMs, 5 * 60 * 1_000 * 2 ** attempt);
+          assert.equal(retryScope.retryAttempt, attempt + 1);
+          scope = retryScope;
+        } else assert.equal(completion.nextScope, null);
       }
       const [scan] = await context.database
         .select()
@@ -1180,11 +1179,14 @@ test(
         })),
       );
       const request = await createHistoricalRequest(context);
-      const initial = await claim(context, request.stepId);
+      const initial = await claimBatch(context, request.scan.id, openingScope);
       assert.ok(initial);
       const initialFailure = await finish(context, initial.submissionId, []);
-      assert.ok(initialFailure.continuationStepId);
-      const retry = await claim(context, initialFailure.continuationStepId);
+      const retry = await claimBatch(
+        context,
+        request.scan.id,
+        nextScope(initialFailure),
+      );
       assert.ok(retry);
       const retained = retry.candidates
         .slice(0, 2)
@@ -1214,8 +1216,11 @@ test(
       );
       // A second failure retries only the retained portion before its deferred tail.
       const retryFailure = await finish(context, retry.submissionId, []);
-      assert.ok(retryFailure.continuationStepId);
-      const secondRetry = await claim(context, retryFailure.continuationStepId);
+      const secondRetry = await claimBatch(
+        context,
+        request.scan.id,
+        nextScope(retryFailure),
+      );
       assert.ok(secondRetry);
       assert.deepEqual(
         secondRetry.candidates.map((entry) => entry.threadId),
@@ -1230,9 +1235,11 @@ test(
           confidence: 90,
         })),
       );
-      assert.ok(success.continuationStepId);
-      const tail = await claim(context, success.continuationStepId);
-      assert.ok(tail);
+      const tail = await claimBatch(
+        context,
+        request.scan.id,
+        nextScope(success),
+      );
       assert.deepEqual(
         tail.candidates.map((entry) => entry.threadId),
         excludedThreadIds,
@@ -1251,8 +1258,10 @@ test(
           confidence: 90,
         })),
       );
-      assert.ok(completion.continuationStepId);
-      assert.equal(await claim(context, completion.continuationStepId), null);
+      assert.deepEqual(await claim(context, request.scan.id, nextScope(completion)), {
+        status: "skipped",
+        nextScope: null,
+      });
       const assignments = await context.database
         .select()
         .from(threadLabelAssignments)
@@ -1464,20 +1473,10 @@ test(
         .from(labels)
         .where(and(eq(labels.accountId, accountId), eq(labels.kind, "invook")));
       assert.ok(label);
-      const stepId = uuidv4();
       const providerBatchId = `test-batch-${uuidv4()}`;
-      await database.insert(workflowSteps).values({
-        id: stepId,
-        userId,
-        accountId,
-        stepType: "label.batch.submit",
-        status: "complete",
-        idempotencyKey: stepId,
-      });
       const [submission] = await database
         .insert(threadLabelBatchSubmissions)
         .values({
-          workflowStepId: stepId,
           userId,
           accountId,
           providerBatchId,
@@ -1498,11 +1497,6 @@ test(
         })
         .returning();
       assert.ok(submission);
-      assert.ok(
-        (await listSubmittedThreadLabelBatchIds(database)).includes(
-          providerBatchId,
-        ),
-      );
       const result = await finalizeThreadLabelBatchSubmission(
         {
           submissionId: submission.id,
@@ -1521,7 +1515,7 @@ test(
       );
       assert.equal(result.alreadyFinalized, true);
       assert.equal(result.appliedCount, 0);
-      assert.equal(result.continuationStepId, null);
+      assert.equal(result.nextScope, null);
       assert.equal(
         (
           await database
@@ -1537,10 +1531,11 @@ test(
         .where(eq(threadLabelBatchSubmissions.id, submission.id));
       assert.equal(completed?.outputFileId, "test-output");
       assert.equal(completed?.status, "failed");
-      assert.ok(
-        !(await listSubmittedThreadLabelBatchIds(database)).includes(
-          providerBatchId,
-        ),
+      // The Batch is retired, so the scan that owned it has no active
+      // submission left to resume.
+      assert.equal(
+        await getActiveThreadLabelBatchSubmission(uuidv4(), database),
+        null,
       );
     });
   },
@@ -1557,23 +1552,27 @@ test(
       ]);
       assert.ok(row);
       const request = await createHistoricalRequest(context);
-      const batch = await claim(context, request.stepId);
-      assert.ok(batch);
-      const [step] = await database
-        .select()
-        .from(workflowSteps)
-        .where(eq(workflowSteps.id, request.stepId));
-      assert.ok(step);
+      const batch = await claimBatch(context, request.scan.id, openingScope);
       assert.equal(
-        await failWorkflowStep(
+        await failHistoricalThreadLabelScan(
           {
-            step: { ...step, payload: step.input },
-            message: "label_analysis_model_unavailable",
-            terminal: true,
+            historicalScanId: request.scan.id,
+            errorCode: "label_analysis_model_unavailable",
           },
           database,
         ),
         true,
+      );
+      // Closing an already closed scan must not reopen or re-report it.
+      assert.equal(
+        await failHistoricalThreadLabelScan(
+          {
+            historicalScanId: request.scan.id,
+            errorCode: "label_analysis_model_unavailable",
+          },
+          database,
+        ),
+        false,
       );
       const [scan] = await database
         .select()
@@ -1588,14 +1587,16 @@ test(
         .from(threads)
         .where(eq(threads.id, row.threadId));
       assert.equal(scan?.status, "failed");
+      assert.equal(scan?.lastError, "label_analysis_model_unavailable");
       assert.equal(submission?.status, "failed");
       assert.equal(thread?.labelAnalysisState, "not_requested");
+      // The failure closes the request without admitting automatic work.
       const steps = await database
         .select()
         .from(workflowSteps)
         .where(eq(workflowSteps.accountId, accountId));
       assert.equal(steps.length, 1);
-      assert.equal(steps[0]?.status, "failed");
+      assert.equal(steps[0]?.stepType, "label.batch.submit");
     });
   },
 );

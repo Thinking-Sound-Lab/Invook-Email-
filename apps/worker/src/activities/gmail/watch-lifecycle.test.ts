@@ -27,7 +27,7 @@ import {
   GmailConnectionInactiveError,
   renewGmailConnectionWatch,
   runGmailConnectionCleanup,
-} from "./gmail-watch-lifecycle";
+} from "./watch-lifecycle";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const encryptionKey = Buffer.alloc(32, 5).toString("base64");

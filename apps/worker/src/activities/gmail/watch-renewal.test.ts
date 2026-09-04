@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { runDailyGmailWatchRenewal } from "./gmail-watch-renewal";
+import { runDailyGmailWatchRenewal } from "./watch-renewal";
 
 test("daily watch renewal durably schedules one successor before catch-up", async () => {
   const calls: string[] = [];
