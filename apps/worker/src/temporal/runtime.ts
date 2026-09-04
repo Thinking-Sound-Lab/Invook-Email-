@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import {
   Client,
   WorkflowExecutionAlreadyStartedError,
+  WorkflowNotFoundError,
 } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
 import {
@@ -20,17 +21,21 @@ import {
   gmailCatchUpSignal,
   gmailIncrementalSyncWorkflow,
   gmailSyncWorkflow,
+  historicalLabelBatchCompletedSignal,
+  historicalLabelScanWorkflow,
   tenantTaskQueueLanes,
   threadLabelRescanSignal,
   threadLabelScanWorkflow,
   workflowStepWorkflow,
   type GmailIncrementalSyncActivities,
   type GmailSyncActivities,
+  type HistoricalLabelScanActivities,
   type ThreadLabelScanActivities,
   type WorkflowStepActivities,
 } from "@invook/workflows";
 
 import {
+  admittedWorkflowCommand,
   getTemporalCloudConfiguration,
   getWorkflowStartDelay,
   taskQueueRouteForCommand,
@@ -46,7 +51,8 @@ const tenantWorkflowConcurrency = 4;
 type TemporalActivities = WorkflowStepActivities &
   GmailSyncActivities &
   GmailIncrementalSyncActivities &
-  ThreadLabelScanActivities;
+  ThreadLabelScanActivities &
+  HistoricalLabelScanActivities;
 
 interface CreateTemporalRuntimeInput {
   activities: TemporalActivities;
@@ -186,94 +192,134 @@ export class TemporalRuntime {
   }
 
   /**
-   * Starts the Workflow an admission step exists to hand off to.
+   * Hands an admission step to the Workflow that owns its work.
    *
-   * The Workflow ID is derived from the run rather than the command, so a
-   * re-offered command can never put two Executions on one run. A restart
-   * begins at the first page again: Gmail page tokens do not outlive the walk
-   * that produced them, and both page recording and thread ingestion are
-   * idempotent, so the second walk only pays for what the first left undone.
+   * Workflow IDs are derived from the account, run, or scan rather than the
+   * command, so a re-offered command can never put two Executions on one piece
+   * of work: a start is rejected while its Execution lives, and a signal is
+   * absorbed by the entity that receives it.
    */
   private async startAdmittedWorkflow(
     command: TemporalCommandJob,
     taskQueueRoute: { workflowTaskQueue: string; activityTaskQueue: string },
   ): Promise<void> {
-    if (!command.accountId) {
-      throw new Error("The Temporal admission step is missing its account.");
-    }
-    if (command.stepType === "gmail.history.catchup") {
-      // The entity coalesces triggers, so every catch-up request is the same
-      // signal and an idle Execution is recreated rather than kept open.
-      await this.client.workflow.signalWithStart(gmailIncrementalSyncWorkflow, {
-        args: [
+    const admitted = admittedWorkflowCommand(command);
+    const { workflowTaskQueue: taskQueue, activityTaskQueue } = taskQueueRoute;
+    switch (admitted.kind) {
+      case "gmail-sync":
+        await this.client.workflow.start(gmailSyncWorkflow, {
+          args: [
+            {
+              userId: command.userId,
+              accountId: admitted.accountId,
+              runId: admitted.runId,
+              activityTaskQueue,
+              pageNumber: 1,
+              pageToken: null,
+              pagesCompleted: 0,
+              threadsDiscovered: 0,
+              threadsIngested: 0,
+            },
+          ],
+          taskQueue,
+          workflowId: `gmail-sync:${admitted.accountId}:${admitted.runId}`,
+          // A re-offered run restarts only when its previous Execution died.
+          workflowIdReusePolicy:
+            WorkflowIdReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
+        });
+        return;
+      case "gmail-incremental-sync":
+        // The entity coalesces triggers, so every catch-up request is the same
+        // signal and an idle Execution is recreated rather than kept open.
+        await this.client.workflow.signalWithStart(
+          gmailIncrementalSyncWorkflow,
           {
-            userId: command.userId,
-            accountId: command.accountId,
-            activityTaskQueue: taskQueueRoute.activityTaskQueue,
-            pendingRequestCount: 0,
-            catchUpsCompleted: 0,
+            args: [
+              {
+                userId: command.userId,
+                accountId: admitted.accountId,
+                activityTaskQueue,
+                pendingRequestCount: 0,
+                catchUpsCompleted: 0,
+              },
+            ],
+            signal: gmailCatchUpSignal,
+            signalArgs: [],
+            taskQueue,
+            workflowId: `gmail-incremental-sync:${admitted.accountId}`,
           },
-        ],
-        signal: gmailCatchUpSignal,
-        signalArgs: [],
-        taskQueue: taskQueueRoute.workflowTaskQueue,
-        workflowId: `gmail-incremental-sync:${command.accountId}`,
-      });
-      return;
+        );
+        return;
+      case "thread-label-scan":
+        // A scan already walking the account absorbs the signal as one extra
+        // pass, so a boot sweep never queues a second walk of the same threads.
+        await this.client.workflow.signalWithStart(threadLabelScanWorkflow, {
+          args: [
+            {
+              userId: command.userId,
+              accountId: admitted.accountId,
+              activityTaskQueue,
+              referenceAt: null,
+              cursorThreadId: null,
+              pagesCompleted: 0,
+              reservedThreadCount: 0,
+              isRescanRequested: false,
+            },
+          ],
+          signal: threadLabelRescanSignal,
+          signalArgs: [],
+          taskQueue,
+          workflowId: `thread-label-scan:${admitted.accountId}`,
+        });
+        return;
+      case "historical-label-scan":
+        await this.client.workflow.start(historicalLabelScanWorkflow, {
+          args: [
+            {
+              userId: command.userId,
+              accountId: admitted.accountId,
+              historicalScanId: admitted.historicalScanId,
+              activityTaskQueue,
+              scope: {
+                retryAttempt: 0,
+                threadIds: null,
+                continuations: [],
+                retryDelayMs: 0,
+              },
+              batchesCompleted: 0,
+              appliedThreadCount: 0,
+            },
+          ],
+          taskQueue,
+          workflowId: `historical-label-scan:${admitted.historicalScanId}`,
+          workflowIdReusePolicy:
+            WorkflowIdReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
+        });
+        return;
+      case "historical-label-batch-completed": {
+        // The webhook only releases a wait. A scan that already finalized this
+        // Batch, or finished entirely, has no Execution to signal.
+        const handle = this.client.workflow.getHandle(
+          `historical-label-scan:${admitted.historicalScanId}`,
+        );
+        try {
+          await handle.signal(
+            historicalLabelBatchCompletedSignal,
+            admitted.providerBatchId,
+          );
+        } catch (error) {
+          if (error instanceof WorkflowNotFoundError) return;
+          throw error;
+        }
+        return;
+      }
+      default: {
+        const unsupported: never = admitted;
+        throw new Error(
+          `Unsupported Temporal admission step: ${JSON.stringify(unsupported)}`,
+        );
+      }
     }
-    if (command.stepType === "label.recent.scan") {
-      // A scan already walking the account absorbs the signal as one extra
-      // pass, so a boot sweep never queues a second walk of the same threads.
-      await this.client.workflow.signalWithStart(threadLabelScanWorkflow, {
-        args: [
-          {
-            userId: command.userId,
-            accountId: command.accountId,
-            activityTaskQueue: taskQueueRoute.activityTaskQueue,
-            referenceAt: null,
-            cursorThreadId: null,
-            pagesCompleted: 0,
-            reservedThreadCount: 0,
-            isRescanRequested: false,
-          },
-        ],
-        signal: threadLabelRescanSignal,
-        signalArgs: [],
-        taskQueue: taskQueueRoute.workflowTaskQueue,
-        workflowId: `thread-label-scan:${command.accountId}`,
-      });
-      return;
-    }
-    if (command.stepType !== "gmail.sync.run") {
-      throw new Error(
-        `Unsupported Temporal admission step: ${command.stepType}`,
-      );
-    }
-    if (!command.runId) {
-      throw new Error(
-        "The Gmail synchronization admission step is missing its run.",
-      );
-    }
-    await this.client.workflow.start(gmailSyncWorkflow, {
-      args: [
-        {
-          userId: command.userId,
-          accountId: command.accountId,
-          runId: command.runId,
-          activityTaskQueue: taskQueueRoute.activityTaskQueue,
-          pageNumber: 1,
-          pageToken: null,
-          pagesCompleted: 0,
-          threadsDiscovered: 0,
-          threadsIngested: 0,
-        },
-      ],
-      taskQueue: taskQueueRoute.workflowTaskQueue,
-      workflowId: `gmail-sync:${command.accountId}:${command.runId}`,
-      // A re-offered run must restart only when its previous Execution died.
-      // A live Execution rejects the start, which dispatch treats as a no-op.
-      workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
-    });
   }
 
   // Dispatch runs inside the outbox database transaction, so it must only

@@ -883,6 +883,8 @@ const temporalAdmissionStepTypes = new Set<string>([
   "gmail.sync.run",
   "gmail.history.catchup",
   "label.recent.scan",
+  "label.batch.submit",
+  "label.batch.event",
 ]);
 
 export function isTemporalAdmissionStepType(stepType: string): boolean {
@@ -1313,30 +1315,6 @@ export async function failWorkflowStep(
           executor,
         );
       }
-    }
-    if (input.terminal && input.step.stepType === "label.batch.submit") {
-      const historicalScanId = input.step.payload.historicalScanId;
-      if (
-        typeof historicalScanId === "string" && validateUuid(historicalScanId) &&
-        input.step.accountId && input.step.userId
-      ) {
-        await transaction
-          .update(historicalThreadLabelScans)
-          .set({ status: "failed", lastError: message, completedAt: new Date(), updatedAt: new Date() })
-          .where(and(
-            eq(historicalThreadLabelScans.id, historicalScanId),
-            eq(historicalThreadLabelScans.accountId, input.step.accountId),
-            eq(historicalThreadLabelScans.userId, input.step.userId),
-            inArray(historicalThreadLabelScans.status, ["queued", "running"]),
-          ));
-      }
-      await transaction
-        .update(threadLabelBatchSubmissions)
-        .set({ status: "failed", lastError: message, completedAt: new Date(), updatedAt: new Date() })
-        .where(and(
-          eq(threadLabelBatchSubmissions.workflowStepId, input.step.id),
-          eq(threadLabelBatchSubmissions.status, "preparing"),
-        ));
     }
     if (!input.terminal || !input.step.accountId) return true;
     if (

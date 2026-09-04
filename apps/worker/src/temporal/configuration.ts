@@ -170,3 +170,81 @@ export function taskQueueRouteForCommand(
     ),
   };
 }
+
+/**
+ * What a dispatched admission step asks Temporal to do.
+ *
+ * Each variant names the Workflow that owns the work and the identity it is
+ * addressed by. Parsing here keeps the untrusted parts of a step payload — the
+ * scan ID a webhook wrote, the run a transaction recorded — out of the dispatch
+ * path's control flow.
+ */
+export type AdmittedWorkflowCommand =
+  | { kind: "gmail-sync"; accountId: string; runId: string }
+  | { kind: "gmail-incremental-sync"; accountId: string }
+  | { kind: "thread-label-scan"; accountId: string }
+  | { kind: "historical-label-scan"; accountId: string; historicalScanId: string }
+  | {
+      kind: "historical-label-batch-completed";
+      accountId: string;
+      historicalScanId: string;
+      providerBatchId: string;
+    };
+
+function requiredUuid(value: unknown, name: string): string {
+  if (typeof value !== "string" || !validateUuid(value)) {
+    throw new Error(`${name} must be a UUID.`);
+  }
+  return value;
+}
+
+export function admittedWorkflowCommand(
+  command: TemporalCommandJob,
+): AdmittedWorkflowCommand {
+  const accountId = command.accountId;
+  if (!accountId) {
+    throw new Error("The Temporal admission step is missing its account.");
+  }
+  switch (command.stepType) {
+    case "gmail.sync.run": {
+      if (!command.runId) {
+        throw new Error(
+          "The Gmail synchronization admission step is missing its run.",
+        );
+      }
+      return { kind: "gmail-sync", accountId, runId: command.runId };
+    }
+    case "gmail.history.catchup":
+      return { kind: "gmail-incremental-sync", accountId };
+    case "label.recent.scan":
+      return { kind: "thread-label-scan", accountId };
+    case "label.batch.submit":
+      return {
+        kind: "historical-label-scan",
+        accountId,
+        historicalScanId: requiredUuid(
+          command.payload.historicalScanId,
+          "The historical label scan ID",
+        ),
+      };
+    case "label.batch.event": {
+      const providerBatchId = command.payload.providerBatchId;
+      if (typeof providerBatchId !== "string" || !providerBatchId.trim()) {
+        throw new Error("The provider Batch ID is missing.");
+      }
+      return {
+        kind: "historical-label-batch-completed",
+        accountId,
+        historicalScanId: requiredUuid(
+          command.payload.historicalScanId,
+          "The historical label scan ID",
+        ),
+        providerBatchId,
+      };
+    }
+    default:
+      throw new Error(
+        `Unsupported Temporal admission step: ${command.stepType}`,
+      );
+  }
+}

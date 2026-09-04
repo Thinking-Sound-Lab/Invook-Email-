@@ -45,6 +45,26 @@ export {
   threadLabelScanWorkflow,
 } from "./workflows/thread-label-scan";
 export {
+  historicalLabelScanBatchesPerExecution,
+  historicalLabelScanCompletionTimeout,
+  historicalLabelScanRetryLimit,
+  type FailHistoricalLabelScanInput,
+  type FinalizeHistoricalLabelBatchInput,
+  type FinalizeHistoricalLabelBatchOutcome,
+  type HistoricalLabelScanActivities,
+  type HistoricalLabelScanBatchScope,
+  type HistoricalLabelScanContinuation,
+  type HistoricalLabelScanStatus,
+  type HistoricalLabelScanWorkflowInput,
+  type HistoricalLabelScanWorkflowResult,
+  type SubmitHistoricalLabelBatchInput,
+  type SubmitHistoricalLabelBatchOutcome,
+} from "./contracts/historical-label-scan";
+export {
+  historicalLabelBatchCompletedSignal,
+  historicalLabelScanWorkflow,
+} from "./workflows/historical-label-scan";
+export {
   gmailAccountDisconnectedSignal,
   gmailCatchUpSignal,
   gmailIncrementalSyncStateQuery,

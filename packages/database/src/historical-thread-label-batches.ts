@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import { and, asc, eq, gt, inArray, lte, sql } from "drizzle-orm";
 
+import {
+  historicalLabelScanRetryLimit,
+  type HistoricalLabelScanBatchScope,
+} from "@invook/workflows";
+
 import { getDatabase, type Database, type DatabaseExecutor } from "./client";
 import { insertMailboxChange } from "./mailbox-change-events";
 import {
@@ -18,16 +23,41 @@ import {
   type ThreadLabelDefinition,
 } from "./thread-label-analysis";
 import { recentInboxThreadCondition } from "./thread-label-eligibility";
-import { enqueueWorkflowStepWithExecutor } from "./workflows";
+import {
+  enqueueWorkflowStepWithExecutor,
+  readmitWorkflowStep,
+} from "./workflows";
+import type { WorkflowStepInput } from "./types";
 
 const REQUEST_LIMIT = 2_000;
-const RETRY_LIMIT = 6;
 const PROVIDER_RETRY_BASE_DELAY_MS = 5 * 60 * 1_000;
 
-function providerRetryRunAt(retryAttempt: number): Date {
-  return new Date(
-    Date.now() + PROVIDER_RETRY_BASE_DELAY_MS * 2 ** retryAttempt,
-  );
+function providerRetryDelayMs(retryAttempt: number): number {
+  return PROVIDER_RETRY_BASE_DELAY_MS * 2 ** retryAttempt;
+}
+
+/**
+ * The result of applying one provider Batch. `nextScope` is the Batch the scan
+ * should submit next, or null when the scan has nothing left to do.
+ */
+/**
+ * `skipped` means the scope produced no Batch — either every thread became
+ * ineligible or the scan reached its end — and carries whatever the scan still
+ * owes. `superseded` means this scan is no longer the account's active one.
+ */
+export type ThreadLabelBatchClaim =
+  | {
+      status: "claimed";
+      submissionId: string;
+      candidates: ThreadLabelBatchCandidate[];
+    }
+  | { status: "skipped"; nextScope: HistoricalLabelScanBatchScope | null }
+  | { status: "superseded" };
+
+export interface ThreadLabelBatchFinalization {
+  alreadyFinalized: boolean;
+  appliedCount: number;
+  nextScope: HistoricalLabelScanBatchScope | null;
 }
 
 export type ThreadLabelBatchManifestEntry =
@@ -54,35 +84,22 @@ function noMatchLabelId(labelId: string): string {
   return `no-match:${labelId}`;
 }
 
-async function enqueueHistoricalBatch(
-  input: {
-    scan: Pick<HistoricalScan, "id" | "userId" | "accountId">;
-    sourceKey: string;
-    retryAttempt?: number;
-    threadIds?: string[];
-    continuations?: ThreadLabelBatchContinuation[];
-    runAt?: Date;
-  },
-  database: DatabaseExecutor,
-): Promise<string> {
-  return enqueueWorkflowStepWithExecutor(
-    {
-      userId: input.scan.userId,
-      accountId: input.scan.accountId,
-      stepType: "label.batch.submit",
-      payload: {
-        historicalScanId: input.scan.id,
-        retryAttempt: input.retryAttempt ?? 0,
-        ...(input.threadIds ? { threadIds: input.threadIds } : {}),
-        ...(input.continuations?.length
-          ? { continuations: input.continuations }
-          : {}),
-        ...(input.runAt ? { runAt: input.runAt.toISOString() } : {}),
-      },
-      idempotencyKey: `label.batch.submit:${input.scan.id}:${input.sourceKey}`,
-    },
-    database,
-  );
+/**
+ * The admission record that hands a historical scan to Temporal.
+ *
+ * One step per scan: the Workflow owns every Batch the scan submits, including
+ * retries and continuation pages, so no further step is ever created.
+ */
+export function createHistoricalLabelScanStep(
+  scan: Pick<HistoricalScan, "id" | "userId" | "accountId">,
+): WorkflowStepInput {
+  return {
+    userId: scan.userId,
+    accountId: scan.accountId,
+    stepType: "label.batch.submit",
+    payload: { historicalScanId: scan.id },
+    idempotencyKey: `historical-label-scan:${scan.id}`,
+  };
 }
 
 export async function createHistoricalThreadLabelScan(
@@ -115,7 +132,10 @@ export async function createHistoricalThreadLabelScan(
     .returning();
   if (!scan)
     throw new Error("The historical label request could not be saved.");
-  return enqueueHistoricalBatch({ scan, sourceKey: "start" }, database);
+  return enqueueWorkflowStepWithExecutor(
+    createHistoricalLabelScanStep(scan),
+    database,
+  );
 }
 
 async function getCurrentHistoricalScan(
@@ -240,21 +260,43 @@ async function hydrateCandidates(
   return candidates;
 }
 
-export async function getThreadLabelBatchSubmissionForStep(
-  workflowStepId: string,
+/**
+ * The Batch a scan currently has in flight.
+ *
+ * A partial unique index allows one `preparing` or `submitted` row per scan, so
+ * this is the scan's single point of resumption after a retried Activity.
+ */
+export async function getActiveThreadLabelBatchSubmission(
+  historicalScanId: string,
   database: Database = getDatabase(),
 ): Promise<Submission | null> {
   const [submission] = await database
     .select()
     .from(threadLabelBatchSubmissions)
-    .where(eq(threadLabelBatchSubmissions.workflowStepId, workflowStepId))
+    .where(
+      and(
+        eq(threadLabelBatchSubmissions.historicalScanId, historicalScanId),
+        inArray(threadLabelBatchSubmissions.status, ["preparing", "submitted"]),
+      ),
+    )
+    .limit(1);
+  return submission ?? null;
+}
+
+export async function getThreadLabelBatchSubmission(
+  submissionId: string,
+  database: Database = getDatabase(),
+): Promise<Submission | null> {
+  const [submission] = await database
+    .select()
+    .from(threadLabelBatchSubmissions)
+    .where(eq(threadLabelBatchSubmissions.id, submissionId))
     .limit(1);
   return submission ?? null;
 }
 
 export async function claimThreadLabelBatchSubmission(
   input: {
-    workflowStepId: string;
     historicalScanId: string;
     userId: string;
     accountId: string;
@@ -264,54 +306,15 @@ export async function claimThreadLabelBatchSubmission(
     continuations?: ThreadLabelBatchContinuation[];
   },
   database: Database = getDatabase(),
-): Promise<{
-  submissionId: string;
-  candidates: ThreadLabelBatchCandidate[];
-} | null> {
+): Promise<ThreadLabelBatchClaim> {
   return database.transaction(async (transaction) => {
     const current = await getCurrentHistoricalScan(input, transaction);
-    if (!current) return null;
+    if (!current) return { status: "superseded" };
     const { scan, definition } = current;
-    const [step] = await transaction
-      .select({ id: workflowSteps.id })
-      .from(workflowSteps)
-      .where(
-        and(
-          eq(workflowSteps.id, input.workflowStepId),
-          eq(workflowSteps.userId, input.userId),
-          eq(workflowSteps.accountId, input.accountId),
-          eq(workflowSteps.stepType, "label.batch.submit"),
-          sql`${workflowSteps.input}->>'historicalScanId' = ${scan.id}`,
-        ),
-      )
-      .limit(1);
-    if (!step)
-      throw new Error(
-        "The Batch step does not belong to this historical request.",
-      );
+    // A retried Activity resumes the Batch it already claimed rather than
+    // claiming a second one; a Batch already at the provider is left alone.
     const [existing] = await transaction
       .select()
-      .from(threadLabelBatchSubmissions)
-      .where(
-        eq(threadLabelBatchSubmissions.workflowStepId, input.workflowStepId),
-      )
-      .limit(1);
-    if (existing) {
-      if (
-        existing.historicalScanId !== scan.id ||
-        existing.status !== "preparing"
-      )
-        return null;
-      return {
-        submissionId: existing.id,
-        candidates: await hydrateCandidates(
-          { ...current, manifest: existing.manifest },
-          transaction,
-        ),
-      };
-    }
-    const [active] = await transaction
-      .select({ id: threadLabelBatchSubmissions.id })
       .from(threadLabelBatchSubmissions)
       .where(
         and(
@@ -323,7 +326,17 @@ export async function claimThreadLabelBatchSubmission(
         ),
       )
       .limit(1);
-    if (active) return null;
+    if (existing) {
+      if (existing.status !== "preparing") return { status: "superseded" };
+      return {
+        status: "claimed",
+        submissionId: existing.id,
+        candidates: await hydrateCandidates(
+          { ...current, manifest: existing.manifest },
+          transaction,
+        ),
+      };
+    }
     const rows = await transaction
       .select({
         threadId: threads.id,
@@ -355,28 +368,29 @@ export async function claimThreadLabelBatchSubmission(
       .limit(REQUEST_LIMIT)
       .for("update", { of: threads });
     if (rows.length === 0) {
+      // A retry page whose threads all became ineligible still owes the
+      // continuations it was carrying; an empty first page ends the scan.
       if (input.threadIds) {
         const [next, ...remaining] = input.continuations ?? [];
-        await enqueueHistoricalBatch(
-          {
-            scan,
-            sourceKey: `continue:${input.workflowStepId}`,
-            ...next,
+        return {
+          status: "skipped",
+          nextScope: {
+            retryAttempt: next?.retryAttempt ?? 0,
+            threadIds: next?.threadIds ?? null,
             continuations: remaining,
+            retryDelayMs: 0,
           },
-          transaction,
-        );
-      } else {
-        await transaction
-          .update(historicalThreadLabelScans)
-          .set({
-            status: "complete",
-            completedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(historicalThreadLabelScans.id, scan.id));
+        };
       }
-      return null;
+      await transaction
+        .update(historicalThreadLabelScans)
+        .set({
+          status: "complete",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(historicalThreadLabelScans.id, scan.id));
+      return { status: "skipped", nextScope: null };
     }
     const manifest = rows.slice(0, REQUEST_LIMIT).map((row) => ({
       ...row,
@@ -385,7 +399,6 @@ export async function claimThreadLabelBatchSubmission(
     const [submission] = await transaction
       .insert(threadLabelBatchSubmissions)
       .values({
-        workflowStepId: input.workflowStepId,
         historicalScanId: scan.id,
         userId: scan.userId,
         accountId: scan.accountId,
@@ -406,6 +419,7 @@ export async function claimThreadLabelBatchSubmission(
       .set({ status: "running", updatedAt: new Date() })
       .where(eq(historicalThreadLabelScans.id, scan.id));
     return {
+      status: "claimed",
       submissionId: submission.id,
       candidates: await hydrateCandidates(
         { ...current, manifest },
@@ -543,24 +557,50 @@ export async function recordThreadLabelProviderBatch(
   return submission;
 }
 
-export async function listSubmittedThreadLabelBatchIds(
+/**
+ * Closes a scan the Workflow could not advance.
+ *
+ * Its in-flight Batch is closed with it: a `preparing` submission never reached
+ * the provider, so nothing is stranded there, and leaving it active would block
+ * the scan's partial unique index if the scan were ever restarted.
+ */
+export async function failHistoricalThreadLabelScan(
+  input: { historicalScanId: string; errorCode: string },
   database: Database = getDatabase(),
-): Promise<string[]> {
-  const rows = await database
-    .select({ providerBatchId: threadLabelBatchSubmissions.providerBatchId })
-    .from(threadLabelBatchSubmissions)
-    .where(
-      and(
-        sql`${threadLabelBatchSubmissions.providerBatchId} is not null`,
-        sql`(${threadLabelBatchSubmissions.status} = 'submitted' or (
-        ${threadLabelBatchSubmissions.lastError} = 'automatic_labeling_superseded'
-        and coalesce(${threadLabelBatchSubmissions.providerState}, '') not in ('completed', 'failed', 'expired', 'cancelled')
-      ))`,
-      ),
-    );
-  return rows.flatMap((row) =>
-    row.providerBatchId ? [row.providerBatchId] : [],
-  );
+): Promise<boolean> {
+  return database.transaction(async (transaction) => {
+    const [scan] = await transaction
+      .update(historicalThreadLabelScans)
+      .set({
+        status: "failed",
+        lastError: input.errorCode,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(historicalThreadLabelScans.id, input.historicalScanId),
+          inArray(historicalThreadLabelScans.status, ["queued", "running"]),
+        ),
+      )
+      .returning({ id: historicalThreadLabelScans.id });
+    if (!scan) return false;
+    await transaction
+      .update(threadLabelBatchSubmissions)
+      .set({
+        status: "failed",
+        lastError: input.errorCode,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(threadLabelBatchSubmissions.historicalScanId, scan.id),
+          eq(threadLabelBatchSubmissions.status, "preparing"),
+        ),
+      );
+    return true;
+  });
 }
 
 export async function finalizeThreadLabelBatchSubmission(
@@ -576,11 +616,7 @@ export async function finalizeThreadLabelBatchSubmission(
     failedThreadIds: string[];
   },
   database: Database = getDatabase(),
-): Promise<{
-  alreadyFinalized: boolean;
-  appliedCount: number;
-  continuationStepId: string | null;
-}> {
+): Promise<ThreadLabelBatchFinalization> {
   return database.transaction(async (transaction) => {
     const [identity] = await transaction
       .select()
@@ -617,11 +653,7 @@ export async function finalizeThreadLabelBatchSubmission(
           updatedAt: new Date(),
         })
         .where(eq(threadLabelBatchSubmissions.id, submission.id));
-      return {
-        alreadyFinalized: true,
-        appliedCount: 0,
-        continuationStepId: null,
-      };
+      return { alreadyFinalized: true, appliedCount: 0, nextScope: null };
     }
     const appliedThreadIds: string[] = [];
     const retryThreadIds: string[] = [];
@@ -741,11 +773,7 @@ export async function finalizeThreadLabelBatchSubmission(
       })
       .where(eq(threadLabelBatchSubmissions.id, submission.id));
     if (!current)
-      return {
-        alreadyFinalized: false,
-        appliedCount: 0,
-        continuationStepId: null,
-      };
+      return { alreadyFinalized: false, appliedCount: 0, nextScope: null };
     if (appliedThreadIds.length > 0) {
       await insertMailboxChange(transaction, {
         userId: current.scan.userId,
@@ -767,25 +795,22 @@ export async function finalizeThreadLabelBatchSubmission(
           .set({ cursorThreadId: lastThreadId, updatedAt: new Date() })
           .where(eq(historicalThreadLabelScans.id, current.scan.id));
     }
-    let continuationStepId: string | null = null;
+    // The next Batch is reported, not enqueued: the scan Workflow owns the
+    // sequence, so a retry page and a continuation page differ only in scope.
+    let nextScope: HistoricalLabelScanBatchScope | null = null;
     if (retryThreadIds.length > 0) {
       if (
-        submission.retryAttempt < RETRY_LIMIT &&
+        submission.retryAttempt < historicalLabelScanRetryLimit &&
         (input.providerState === "completed" || input.retryableFailure)
       ) {
-        continuationStepId = await enqueueHistoricalBatch(
-          {
-            scan: current.scan,
-            sourceKey: `retry:${submission.id}`,
-            retryAttempt: submission.retryAttempt + 1,
-            threadIds: retryThreadIds,
-            continuations: submission.continuations,
-            ...(input.retryableFailure
-              ? { runAt: providerRetryRunAt(submission.retryAttempt) }
-              : {}),
-          },
-          transaction,
-        );
+        nextScope = {
+          retryAttempt: submission.retryAttempt + 1,
+          threadIds: retryThreadIds,
+          continuations: submission.continuations,
+          retryDelayMs: input.retryableFailure
+            ? providerRetryDelayMs(submission.retryAttempt)
+            : 0,
+        };
       } else {
         await transaction
           .update(historicalThreadLabelScans)
@@ -801,34 +826,39 @@ export async function finalizeThreadLabelBatchSubmission(
       }
     } else {
       const [next, ...remaining] = submission.continuations;
-      continuationStepId = await enqueueHistoricalBatch(
-        {
-          scan: current.scan,
-          sourceKey: `continue:${submission.id}`,
-          ...next,
-          continuations: remaining,
-        },
-        transaction,
-      );
+      nextScope = {
+        retryAttempt: next?.retryAttempt ?? 0,
+        threadIds: next?.threadIds ?? null,
+        continuations: remaining,
+        retryDelayMs: 0,
+      };
     }
     return {
       alreadyFinalized: false,
       appliedCount: appliedThreadIds.length,
-      continuationStepId,
+      nextScope,
     };
   });
 }
 
+/**
+ * Re-offers every scan that has not finished.
+ *
+ * A running scan whose Execution died leaves nothing driving it, and PostgreSQL
+ * cannot tell that from a scan mid-Batch. Re-offering is safe either way: a
+ * live Execution rejects the start.
+ */
 export async function enqueueHistoricalThreadLabelBatchRecoveries(
   database: Database = getDatabase(),
 ): Promise<number> {
   const scans = await database
     .select()
     .from(historicalThreadLabelScans)
-    .where(eq(historicalThreadLabelScans.status, "queued"));
-  for (const scan of scans)
-    await database.transaction((transaction) =>
-      enqueueHistoricalBatch({ scan, sourceKey: "start" }, transaction),
+    .where(
+      inArray(historicalThreadLabelScans.status, ["queued", "running"]),
     );
+  for (const scan of scans) {
+    await readmitWorkflowStep(createHistoricalLabelScanStep(scan), database);
+  }
   return scans.length;
 }

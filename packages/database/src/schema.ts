@@ -1094,9 +1094,6 @@ export const threadLabelBatchSubmissions = pgTable(
   "thread_label_batch_submissions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workflowStepId: uuid("workflow_step_id")
-      .notNull()
-      .references(() => workflowSteps.id, { onDelete: "cascade" }),
     userId: uuid("user_id")
       .notNull()
       .references(() => profiles.id, { onDelete: "cascade" }),
@@ -1145,9 +1142,6 @@ export const threadLabelBatchSubmissions = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => [
-    uniqueIndex("thread_label_batch_submissions_workflow_step_idx").on(
-      table.workflowStepId,
-    ),
     uniqueIndex("thread_label_batch_submissions_provider_batch_idx")
       .on(table.provider, table.providerBatchId)
       .where(sql`${table.providerBatchId} is not null`),

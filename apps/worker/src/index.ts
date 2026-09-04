@@ -4,16 +4,11 @@
  * command outbox. All executable work lives under ./activities.
  */
 import {
-  getThreadLabelBatchState,
-  isThreadLabelBatchConfigured,
-} from "@invook/ai";
-import {
   deleteExpiredLabelPreviewReceipts,
   ensureDailyGmailWatchRenewals,
   enqueuePendingAnalysisWorkflowSteps,
   enqueueHistoricalThreadLabelBatchRecoveries,
   enqueueRecentThreadLabelRecoveries,
-  enqueueBatchEvent,
   enqueueMissingMailSyncRuns,
   enqueueImplausibleGmailMessageDateRepairs,
   enqueueFailedInitialGmailRepairRecoveries,
@@ -21,7 +16,6 @@ import {
   enqueuePostSyncWorkflowSteps,
   listenForTemporalCommandNotifications,
   listActiveTemporalTenantIds,
-  listSubmittedThreadLabelBatchIds,
   dispatchTemporalCommandBatch,
 } from "@invook/database";
 import { GMAIL_MESSAGE_FUTURE_TOLERANCE_MS } from "@invook/gmail";
@@ -29,13 +23,17 @@ import { GMAIL_MESSAGE_FUTURE_TOLERANCE_MS } from "@invook/gmail";
 import { TemporalRuntime } from "./temporal/runtime";
 import { terminateWorkerAfterFatalError } from "./temporal/process-lifecycle";
 
-import { terminalProviderBatchStates } from "./activities/configuration";
 import {
   catchUpGmailHistoryActivity,
   finalizeGmailSyncActivity,
   ingestGmailThreadBatchActivity,
   syncGmailThreadPageActivity,
 } from "./activities/gmail/sync";
+import {
+  failHistoricalLabelScanActivity,
+  finalizeHistoricalLabelBatchActivity,
+  submitHistoricalLabelBatchActivity,
+} from "./activities/label/batch";
 import { scanThreadLabelPageActivity } from "./activities/label/analysis";
 import {
   reconcileWorkflowStepFailureActivity,
@@ -70,36 +68,6 @@ function createJobSignal() {
   };
 }
 
-async function reconcileSubmittedThreadLabelBatches() {
-  if (!isThreadLabelBatchConfigured()) return;
-  const providerBatchIds = await listSubmittedThreadLabelBatchIds();
-  let enqueued = 0;
-  for (const providerBatchId of providerBatchIds) {
-    try {
-      const state = await getThreadLabelBatchState(providerBatchId);
-      if (!terminalProviderBatchStates.has(state)) continue;
-      const event = await enqueueBatchEvent({
-        provider: "openai",
-        webhookId: `worker-startup:thread-label:${providerBatchId}:${state}`,
-        eventType: `batch.${state}`,
-        providerBatchId,
-      });
-      if (event) enqueued += 1;
-    } catch (error) {
-      console.error("worker: submitted thread-label Batch reconciliation failed", {
-        providerBatchId,
-        name: error instanceof Error ? error.name : "UnknownError",
-      });
-    }
-  }
-  if (providerBatchIds.length > 0) {
-    console.info("worker: submitted thread-label Batches reconciled", {
-      checked: providerBatchIds.length,
-      enqueued,
-    });
-  }
-}
-
 async function runTemporalCommandLoop(
   signal: ReturnType<typeof createJobSignal>,
   isStopped: () => boolean,
@@ -131,6 +99,9 @@ async function run() {
       finalizeGmailSyncActivity,
       catchUpGmailHistoryActivity,
       scanThreadLabelPageActivity,
+      submitHistoricalLabelBatchActivity,
+      finalizeHistoricalLabelBatchActivity,
+      failHistoricalLabelScanActivity,
     },
   });
   const outboxSignal = createJobSignal();
@@ -179,7 +150,6 @@ async function run() {
     await enqueueHistoricalThreadLabelBatchRecoveries();
     await enqueueRecentThreadLabelRecoveries();
     await enqueuePendingAnalysisWorkflowSteps();
-    await reconcileSubmittedThreadLabelBatches();
     outboxSignal.notify();
     await runTemporalCommandLoop(outboxSignal, () => stopRequested, runtime);
     if (fatalError) throw fatalError;

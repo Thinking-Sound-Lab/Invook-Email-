@@ -25,10 +25,6 @@ import {
   runLabelSubmission,
   threadLabelAnalysisErrorCode,
 } from "./label/analysis";
-import {
-  runThreadLabelBatchEvent,
-  runThreadLabelBatchSubmission,
-} from "./label/batch";
 
 import {
   runGmailAccountCleanup,
@@ -86,10 +82,6 @@ async function runWorkflowStepHandler(
         return runMemoryFeedback(job);
       case "label.thread.assign":
         return runLabelSubmission(job);
-      case "label.batch.submit":
-        return runThreadLabelBatchSubmission(job);
-      case "label.batch.event":
-        return runThreadLabelBatchEvent(job);
       default:
         throw new Error(`Unsupported Temporal workflow step: ${job.stepType}`);
     }
