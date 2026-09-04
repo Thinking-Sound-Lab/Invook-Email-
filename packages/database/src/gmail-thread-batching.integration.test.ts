@@ -15,13 +15,11 @@ import {
   mailSyncRuns,
   messages,
   profiles,
-  temporalCommands,
   threads,
   workflowSteps,
 } from "./schema";
 import {
   completeMailSyncThread,
-  GMAIL_SYNC_THREAD_BATCH_SIZE,
   isMailSyncThreadComplete,
   recordMailSyncPage,
 } from "./workflows";
@@ -30,7 +28,7 @@ import { upsertMailboxThreadMessages } from "./repositories";
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
 test(
-  "mail sync pages admit bounded Temporal thread batches atomically",
+  "a recorded page reports the threads still owed ingestion",
   { skip: !testDatabaseUrl },
   async () => {
     if (!testDatabaseUrl) return;
@@ -40,7 +38,7 @@ test(
     const accountId = uuidv4();
     const runId = uuidv4();
     const providerThreadIds = Array.from(
-      { length: GMAIL_SYNC_THREAD_BATCH_SIZE * 2 + 3 },
+      { length: 23 },
       (_, index) => `provider-thread-${index + 1}`,
     );
     try {
@@ -70,8 +68,8 @@ test(
         idempotencyKey: `thread-batch-test:${runId}`,
       });
 
-      assert.equal(
-        await recordMailSyncPage(
+      const recordPage = () =>
+        recordMailSyncPage(
           {
             runId,
             userId,
@@ -82,55 +80,34 @@ test(
             providerThreadIds,
           },
           database,
-        ),
-        true,
-      );
+        );
+
+      assert.deepEqual(await recordPage(), {
+        status: "recorded",
+        pendingThreadIds: providerThreadIds,
+      });
 
       const items = await database
         .select({ providerThreadId: gmailSyncItems.providerThreadId })
         .from(gmailSyncItems)
         .where(eq(gmailSyncItems.runId, runId));
-      const batches = await database
-        .select({
-          idempotencyKey: workflowSteps.idempotencyKey,
-          input: workflowSteps.input,
-          activityTaskLane: temporalCommands.activityTaskLane,
-        })
+      assert.equal(items.length, providerThreadIds.length);
+
+      // A retried Activity attempt must still be told what it owes, so the
+      // replayed call reports the same pending set rather than an empty one.
+      assert.deepEqual(await recordPage(), {
+        status: "recorded",
+        pendingThreadIds: providerThreadIds,
+      });
+
+      // Discovery no longer enqueues durable steps: the Workflow drives both
+      // pagination and ingestion.
+      const steps = await database
+        .select({ idempotencyKey: workflowSteps.idempotencyKey })
         .from(workflowSteps)
-        .innerJoin(
-          temporalCommands,
-          eq(temporalCommands.workflowStepId, workflowSteps.id),
-        )
         .where(eq(workflowSteps.runId, runId))
         .orderBy(asc(workflowSteps.idempotencyKey));
-
-      assert.equal(items.length, providerThreadIds.length);
-      assert.deepEqual(
-        batches.map((batch) => ({
-          idempotencyKey: batch.idempotencyKey,
-          activityTaskLane: batch.activityTaskLane,
-          threadCount: Array.isArray(batch.input.providerThreadIds)
-            ? batch.input.providerThreadIds.length
-            : 0,
-        })),
-        [
-          {
-            idempotencyKey: `gmail-thread-batch:${runId}:1:1`,
-            activityTaskLane: "bulk",
-            threadCount: GMAIL_SYNC_THREAD_BATCH_SIZE,
-          },
-          {
-            idempotencyKey: `gmail-thread-batch:${runId}:1:2`,
-            activityTaskLane: "bulk",
-            threadCount: GMAIL_SYNC_THREAD_BATCH_SIZE,
-          },
-          {
-            idempotencyKey: `gmail-thread-batch:${runId}:1:3`,
-            activityTaskLane: "bulk",
-            threadCount: 3,
-          },
-        ],
-      );
+      assert.deepEqual(steps, []);
 
       const completedProviderThreadId = providerThreadIds[0]!;
       const completedThreadId = uuidv4();
@@ -185,6 +162,29 @@ test(
           database,
         ),
         false,
+      );
+
+      // Gmail can repeat a thread across pages when the mailbox changes
+      // mid-walk; an already ingested thread must not be ingested twice.
+      assert.deepEqual(
+        await recordMailSyncPage(
+          {
+            runId,
+            userId,
+            accountId,
+            pageNumber: 2,
+            pageToken: "page-2",
+            nextPageToken: null,
+            providerThreadIds,
+          },
+          database,
+        ),
+        {
+          status: "recorded",
+          pendingThreadIds: providerThreadIds.filter(
+            (providerThreadId) => providerThreadId !== completedProviderThreadId,
+          ),
+        },
       );
     } finally {
       await database.delete(profiles).where(eq(profiles.id, userId));

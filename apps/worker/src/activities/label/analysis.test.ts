@@ -4,9 +4,9 @@ import test from "node:test";
 import type { WorkflowStepJob } from "@invook/database";
 
 import {
-  parseRecentThreadLabelScanJob,
   parseThreadLabelAnalysisJob,
-} from "./thread-label-analysis";
+  scanThreadLabelPageActivity,
+} from "./analysis";
 
 function workflowJob(
   stepType: string,
@@ -60,32 +60,15 @@ test("live thread assignment jobs reject invalid checkpoints", () => {
   );
 });
 
-test("recent recovery restores its fixed reference time and rejects invalid cursors", () => {
-  const referenceAt = "2026-08-31T08:00:00.000Z";
-  const job = workflowJob("label.recent.scan", {
-    referenceAt,
-    cursorThreadId: null,
-  });
-  assert.deepEqual(parseRecentThreadLabelScanJob(job), {
-    userId: "user-1",
-    accountId: "account-1",
-    referenceAt: new Date(referenceAt),
-    cursorThreadId: null,
-  });
-  assert.throws(
+test("a scan page rejects a reference time the Workflow could not have frozen", async () => {
+  await assert.rejects(
     () =>
-      parseRecentThreadLabelScanJob({
-        ...job,
-        payload: { referenceAt, cursorThreadId: "invalid" },
+      scanThreadLabelPageActivity({
+        userId: "11111111-1111-4111-8111-111111111111",
+        accountId: "22222222-2222-4222-8222-222222222222",
+        referenceAt: "not-a-timestamp",
+        cursorThreadId: null,
       }),
-    /UUID/,
-  );
-  assert.throws(
-    () =>
-      parseRecentThreadLabelScanJob({
-        ...job,
-        payload: { referenceAt: "invalid", cursorThreadId: null },
-      }),
-    /timestamp/,
+    /reference time is invalid/,
   );
 });

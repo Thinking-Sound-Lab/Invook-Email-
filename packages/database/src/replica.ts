@@ -844,24 +844,6 @@ export async function enqueueGmailHistoryCatchup(
   );
 }
 
-export function createGmailHistoryContinuationStep(input: {
-  userId: string;
-  accountId: string;
-  sourceStepId: string;
-  pendingHistoryCursor: string;
-}): WorkflowStepInput {
-  return {
-    userId: input.userId,
-    accountId: input.accountId,
-    stepType: "gmail.history.catchup",
-    payload: {
-      reason: "continuation",
-      pendingHistoryCursor: input.pendingHistoryCursor,
-    },
-    idempotencyKey: `gmail-history-continuation:${input.accountId}:${input.sourceStepId}`,
-  };
-}
-
 export async function enqueueGmailHistoryCatchupForAccount(
   input: { userId: string; accountId: string },
   database: Database = getDatabase(),
@@ -914,7 +896,6 @@ export async function applyGmailHistoryBatch(
     }>;
     deletedMessageIds: Array<{ providerMessageId: string; providerHistoryId: string | null }>;
     stateAfterApply?: "ready" | "snapshotting" | "replaying" | "repairing";
-    continuationSourceStepId?: string;
   },
   database: Database = getDatabase(),
 ): Promise<{
@@ -922,7 +903,6 @@ export async function applyGmailHistoryBatch(
   changedThreadIds: string[];
   eventId: string | null;
   pendingHistoryCursor: string | null;
-  continuationStepId: string | null;
 }> {
   return database.transaction(async (transaction) => {
     const [account] = await transaction
@@ -942,7 +922,6 @@ export async function applyGmailHistoryBatch(
         changedThreadIds: [],
         eventId: null,
         pendingHistoryCursor: null,
-        continuationStepId: null,
       };
     }
     const [replica] = await transaction
@@ -963,7 +942,6 @@ export async function applyGmailHistoryBatch(
         changedThreadIds: [],
         eventId: null,
         pendingHistoryCursor: replica.pendingHistoryCursor,
-        continuationStepId: null,
       };
     }
 
@@ -1046,24 +1024,11 @@ export async function applyGmailHistoryBatch(
           },
         })
       : null;
-    const continuationStepId =
-      pendingHistoryCursor && input.continuationSourceStepId
-        ? await enqueueWorkflowStepWithExecutor(
-            createGmailHistoryContinuationStep({
-              userId: input.userId,
-              accountId: input.accountId,
-              sourceStepId: input.continuationSourceStepId,
-              pendingHistoryCursor,
-            }),
-            transaction,
-          )
-        : null;
     return {
       applied: true,
       changedThreadIds: Array.from(changedThreadIds),
       eventId,
       pendingHistoryCursor,
-      continuationStepId,
     };
   });
 }

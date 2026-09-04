@@ -1,5 +1,5 @@
 import type { MailboxView, StaticMailboxView } from "@invook/contracts";
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 
 import {
   labels,
@@ -53,12 +53,24 @@ export function visibleThreadCondition() {
   return sql<boolean>`true`;
 }
 
+/**
+ * Views that show the mailbox rather than a provider folder.
+ *
+ * Mail, the Invook labels, and Important all describe what is in the inbox, so
+ * archived threads stay out of them. The Gmail system views keep their own
+ * scope: Spam, Trash, Sent, Drafts, and Starred are defined by their provider
+ * label, not by the inbox.
+ */
+function inboxScoped(condition: SQL<boolean>): SQL<boolean> {
+  return sql<boolean>`${inboxThreadCondition()} and ${condition}`;
+}
+
 export function mailboxViewCondition(view: MailboxView) {
   if (view.startsWith("label:")) {
     const labelId = view.slice(6);
     // One Invook label exists per connected account, so the view matches every
     // account label the signed-in user owns under the selected label's name.
-    return sql<boolean>`exists (
+    return inboxScoped(sql<boolean>`exists (
         select 1 from ${threadLabelAssignments} assignment
         inner join ${labels} assignment_label
           on assignment_label.id = assignment.label_id
@@ -73,15 +85,13 @@ export function mailboxViewCondition(view: MailboxView) {
               and selected_label.user_id = ${outerThreadUserId}
               and selected_label.kind = 'invook'
           )
-      )`;
+      )`);
   }
   switch (view) {
     case "all":
-      // All is Gmail's inbox: sent, archived, spam and trash mail live in their
-      // own views, so a thread appears here only while Gmail labels it INBOX.
       return inboxThreadCondition();
     case "important":
-      return sql<boolean>`exists (
+      return inboxScoped(sql<boolean>`exists (
           select 1 from ${threadLabelAssignments} important_assignment
           inner join ${labels} important_label
             on important_label.id = important_assignment.label_id
@@ -90,7 +100,7 @@ export function mailboxViewCondition(view: MailboxView) {
             and important_label.account_id = ${outerThreadAccountId}
             and important_label.kind = 'invook'
             and important_label.system_key = 'important'
-        )`;
+        )`);
     case "starred":
     case "drafts":
     case "sent":

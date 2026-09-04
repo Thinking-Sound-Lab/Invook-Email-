@@ -11,7 +11,6 @@ import { connectedAccounts, profiles } from "./schema";
 import {
   dispatchTemporalCommandBatch,
   enqueueWorkflowStep,
-  listActiveTemporalTenantIds,
   TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE,
   type TemporalCommandJob,
 } from "./workflows";
@@ -82,10 +81,6 @@ test(
         },
         database,
       );
-
-      const activeTenantIds = await listActiveTemporalTenantIds(database);
-      assert.ok(activeTenantIds.includes(firstUserId));
-      assert.ok(activeTenantIds.includes(secondUserId));
 
       let dispatchedJobs: TemporalCommandJob[] = [];
       await dispatchTemporalCommandBatch(

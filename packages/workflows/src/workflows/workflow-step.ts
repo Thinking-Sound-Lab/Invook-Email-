@@ -4,7 +4,7 @@ import type {
   WorkflowStepActivities,
   WorkflowStepExecution,
   WorkflowStepResult,
-} from "./contracts";
+} from "../contracts/workflow-step";
 
 const activityExecutionOptions = {
   startToCloseTimeout: "15 minutes",

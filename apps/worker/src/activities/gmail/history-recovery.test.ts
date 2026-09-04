@@ -6,7 +6,7 @@ import { GmailApiError } from "@invook/gmail";
 import {
   applyGmailHistoryWithExpiredCursorRepair,
   shouldRepairNonReadyGmailReplica,
-} from "./gmail-history-recovery";
+} from "./history-recovery";
 
 test("watch recovery repairs failed replicas without repairing an active initial sync", () => {
   assert.equal(

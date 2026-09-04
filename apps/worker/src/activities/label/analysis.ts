@@ -15,6 +15,10 @@ import {
   type ThreadLabelAnalysisCheckpoint,
   type WorkflowStepJob,
 } from "@invook/database";
+import type {
+  ThreadLabelScanPageInput,
+  ThreadLabelScanPageOutcome,
+} from "@invook/workflows";
 
 export type ThreadLabelAnalysisJob = {
   userId: string;
@@ -136,26 +140,26 @@ export async function runThreadLabelAnalysis(
   return { ...completion, threadId: parsed.checkpoint.threadId };
 }
 
-export function parseRecentThreadLabelScanJob(job: WorkflowStepJob): {
-  userId: string;
-  accountId: string;
-  referenceAt: Date;
-  cursorThreadId: string | null;
-} {
-  if (job.stepType !== "label.recent.scan")
-    throw new Error("The recent label scan type is invalid.");
-  return {
-    userId: requiredString(job.userId, "Recent label user ID"),
-    accountId: requiredString(job.accountId, "Recent label account ID"),
-    referenceAt: requiredDate(
-      job.payload.referenceAt,
-      "Recent label reference time",
-    ),
-    cursorThreadId:
-      job.payload.cursorThreadId === null
-        ? null
-        : requiredUuid(job.payload.cursorThreadId, "Recent label cursor"),
-  };
+/**
+ * Reserves one page of threads owed an automatic label.
+ *
+ * The Workflow owns the cursor, so this Activity is a pure page: it reserves
+ * what it finds and reports where the next page starts. Reservation is a
+ * compare-and-set, so a retried attempt re-reserves nothing already claimed.
+ */
+export async function scanThreadLabelPageActivity(
+  input: ThreadLabelScanPageInput,
+): Promise<ThreadLabelScanPageOutcome> {
+  const referenceAt = new Date(input.referenceAt);
+  if (Number.isNaN(referenceAt.getTime())) {
+    throw new Error("The thread label scan reference time is invalid.");
+  }
+  return scanRecentThreadLabelPage({
+    userId: input.userId,
+    accountId: input.accountId,
+    referenceAt,
+    cursorThreadId: input.cursorThreadId,
+  });
 }
 
 export function isThreadLabelWorkflowStep(stepType: string): boolean {
@@ -165,10 +169,7 @@ export function isThreadLabelWorkflowStep(stepType: string): boolean {
 export async function runLabelSubmission(
   job: WorkflowStepJob,
 ): Promise<Record<string, unknown>> {
-  if (job.stepType === "label.recent.scan")
-    return scanRecentThreadLabelPage(parseRecentThreadLabelScanJob(job));
-  if (job.stepType === "label.thread.assign")
-    return runThreadLabelAnalysis(job);
+  if (job.stepType === "label.thread.assign") return runThreadLabelAnalysis(job);
   throw new Error(`Unsupported thread label step: ${job.stepType}`);
 }
 

@@ -7,13 +7,17 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --import tsx --test src/*.test.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@temporalio/workflow": "1.22.0"
   },
   "devDependencies": {
+    "@temporalio/activity": "1.22.0",
+    "@temporalio/client": "1.22.0",
+    "@temporalio/testing": "1.22.0",
+    "@temporalio/worker": "1.22.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"

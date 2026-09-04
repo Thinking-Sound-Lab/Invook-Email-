@@ -881,10 +881,10 @@ test(
         .where(eq(workflowSteps.accountId, accountId));
       assert.deepEqual(
         steps.map((step) => step.stepType).sort(),
-        ["gmail.history.catchup", "gmail.sync.page"],
+        ["gmail.history.catchup", "gmail.sync.run"],
       );
       assert.equal(
-        steps.find((step) => step.stepType === "gmail.sync.page")?.runId,
+        steps.find((step) => step.stepType === "gmail.sync.run")?.runId,
         initialRunId,
       );
       assert.equal(

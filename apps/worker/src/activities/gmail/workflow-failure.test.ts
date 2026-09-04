@@ -6,7 +6,7 @@ import {
   GOOGLE_REAUTHENTICATION_REQUIRED_ERROR_CODE,
 } from "@invook/gmail";
 
-import { classifyGmailWorkflowFailure } from "./gmail-workflow-failure";
+import { classifyGmailWorkflowFailure } from "./workflow-failure";
 
 test("permanent Google authentication failure stops retries immediately", () => {
   const failure = classifyGmailWorkflowFailure(

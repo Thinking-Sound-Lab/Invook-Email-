@@ -7,8 +7,27 @@ import {
   automaticThreadLabelCutoff,
   recentInboxThreadCondition,
 } from "./thread-label-eligibility";
-import { enqueueWorkflowStepWithExecutor } from "./workflows";
+import { createThreadLabelScanStep, readmitWorkflowStep } from "./workflows";
 
+/**
+ * Threads examined per page.
+ *
+ * Reservation is one transaction per page, so the page bounds both lock
+ * duration and how much work a single Activity attempt can lose.
+ */
+export const THREAD_LABEL_SCAN_PAGE_SIZE = 100;
+
+export interface ThreadLabelScanPage {
+  reservedThreadCount: number;
+  nextCursorThreadId: string | null;
+}
+
+/**
+ * Offers every connected account's scan to Temporal.
+ *
+ * The scan entity coalesces repeat offers, so running this on each boot costs
+ * one signal per account rather than a queue of duplicated work.
+ */
 export async function enqueueRecentThreadLabelRecoveries(
   database: Database = getDatabase(),
 ): Promise<number> {
@@ -20,24 +39,19 @@ export async function enqueueRecentThreadLabelRecoveries(
     .from(connectedAccounts)
     .where(eq(connectedAccounts.status, "connected"));
   for (const account of accounts) {
-    await database.transaction((transaction) =>
-      enqueueWorkflowStepWithExecutor(
-        {
-          ...account,
-          stepType: "label.recent.scan",
-          payload: {
-            referenceAt: new Date().toISOString(),
-            cursorThreadId: null,
-          },
-          idempotencyKey: `label.recent.scan:recent-only-v1:${account.accountId}`,
-        },
-        transaction,
-      ),
-    );
+    await readmitWorkflowStep(createThreadLabelScanStep(account), database);
   }
   return accounts.length;
 }
 
+/**
+ * Reserves one page of threads still owed an automatic label.
+ *
+ * Reservation and analysis admission share a transaction, so a thread cannot be
+ * marked running without the durable work that will label it. The page is read
+ * one row wider than it is returned, which is how the caller learns whether a
+ * further page exists without a second query.
+ */
 export async function scanRecentThreadLabelPage(
   input: {
     userId: string;
@@ -46,7 +60,7 @@ export async function scanRecentThreadLabelPage(
     cursorThreadId: string | null;
   },
   database: Database = getDatabase(),
-): Promise<{ enqueuedCount: number; continuationStepId: string | null }> {
+): Promise<ThreadLabelScanPage> {
   return database.transaction(async (transaction) => {
     const candidates = await transaction
       .select({ id: threads.id })
@@ -65,29 +79,19 @@ export async function scanRecentThreadLabelPage(
         ),
       )
       .orderBy(asc(threads.id))
-      .limit(101);
-    const page = candidates.slice(0, 100);
-    const enqueuedCount = await enqueueLiveInboxThreadLabelAnalyses(
+      .limit(THREAD_LABEL_SCAN_PAGE_SIZE + 1);
+    const page = candidates.slice(0, THREAD_LABEL_SCAN_PAGE_SIZE);
+    const reservedThreadCount = await enqueueLiveInboxThreadLabelAnalyses(
       { ...input, threadIds: page.map((thread) => thread.id) },
       transaction,
     );
     const cursorThreadId = page.at(-1)?.id;
-    const continuationStepId =
-      candidates.length > 100 && cursorThreadId
-        ? await enqueueWorkflowStepWithExecutor(
-            {
-              userId: input.userId,
-              accountId: input.accountId,
-              stepType: "label.recent.scan",
-              payload: {
-                referenceAt: input.referenceAt.toISOString(),
-                cursorThreadId,
-              },
-              idempotencyKey: `label.recent.scan:recent-only-v1:${input.accountId}:${cursorThreadId}`,
-            },
-            transaction,
-          )
-        : null;
-    return { enqueuedCount, continuationStepId };
+    return {
+      reservedThreadCount,
+      nextCursorThreadId:
+        candidates.length > THREAD_LABEL_SCAN_PAGE_SIZE && cursorThreadId
+          ? cursorThreadId
+          : null,
+    };
   });
 }
