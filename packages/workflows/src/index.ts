@@ -33,6 +33,18 @@ export {
 } from "./contracts/gmail-incremental-sync";
 export { workflowStepWorkflow } from "./workflows/workflow-step";
 export {
+  threadLabelScanPagesPerExecution,
+  type ThreadLabelScanActivities,
+  type ThreadLabelScanPageInput,
+  type ThreadLabelScanPageOutcome,
+  type ThreadLabelScanWorkflowInput,
+  type ThreadLabelScanWorkflowResult,
+} from "./contracts/thread-label-scan";
+export {
+  threadLabelRescanSignal,
+  threadLabelScanWorkflow,
+} from "./workflows/thread-label-scan";
+export {
   gmailAccountDisconnectedSignal,
   gmailCatchUpSignal,
   gmailIncrementalSyncStateQuery,

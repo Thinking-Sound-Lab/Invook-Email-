@@ -36,6 +36,7 @@ import {
   ingestGmailThreadBatchActivity,
   syncGmailThreadPageActivity,
 } from "./activities/gmail/sync";
+import { scanThreadLabelPageActivity } from "./activities/label/analysis";
 import {
   reconcileWorkflowStepFailureActivity,
   runWorkflowStepActivity,
@@ -129,6 +130,7 @@ async function run() {
       ingestGmailThreadBatchActivity,
       finalizeGmailSyncActivity,
       catchUpGmailHistoryActivity,
+      scanThreadLabelPageActivity,
     },
   });
   const outboxSignal = createJobSignal();

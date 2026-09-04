@@ -84,7 +84,6 @@ async function runWorkflowStepHandler(
         return runMemoryBatchEvent(job);
       case "memory.feedback":
         return runMemoryFeedback(job);
-      case "label.recent.scan":
       case "label.thread.assign":
         return runLabelSubmission(job);
       case "label.batch.submit":

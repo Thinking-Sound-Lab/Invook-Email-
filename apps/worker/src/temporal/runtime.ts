@@ -21,9 +21,12 @@ import {
   gmailIncrementalSyncWorkflow,
   gmailSyncWorkflow,
   tenantTaskQueueLanes,
+  threadLabelRescanSignal,
+  threadLabelScanWorkflow,
   workflowStepWorkflow,
   type GmailIncrementalSyncActivities,
   type GmailSyncActivities,
+  type ThreadLabelScanActivities,
   type WorkflowStepActivities,
 } from "@invook/workflows";
 
@@ -42,7 +45,8 @@ const tenantWorkflowConcurrency = 4;
 
 type TemporalActivities = WorkflowStepActivities &
   GmailSyncActivities &
-  GmailIncrementalSyncActivities;
+  GmailIncrementalSyncActivities &
+  ThreadLabelScanActivities;
 
 interface CreateTemporalRuntimeInput {
   activities: TemporalActivities;
@@ -214,6 +218,29 @@ export class TemporalRuntime {
         signalArgs: [],
         taskQueue: taskQueueRoute.workflowTaskQueue,
         workflowId: `gmail-incremental-sync:${command.accountId}`,
+      });
+      return;
+    }
+    if (command.stepType === "label.recent.scan") {
+      // A scan already walking the account absorbs the signal as one extra
+      // pass, so a boot sweep never queues a second walk of the same threads.
+      await this.client.workflow.signalWithStart(threadLabelScanWorkflow, {
+        args: [
+          {
+            userId: command.userId,
+            accountId: command.accountId,
+            activityTaskQueue: taskQueueRoute.activityTaskQueue,
+            referenceAt: null,
+            cursorThreadId: null,
+            pagesCompleted: 0,
+            reservedThreadCount: 0,
+            isRescanRequested: false,
+          },
+        ],
+        signal: threadLabelRescanSignal,
+        signalArgs: [],
+        taskQueue: taskQueueRoute.workflowTaskQueue,
+        workflowId: `thread-label-scan:${command.accountId}`,
       });
       return;
     }

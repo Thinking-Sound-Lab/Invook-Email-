@@ -353,6 +353,26 @@ export function createGmailSyncRunStep(input: {
   };
 }
 
+/**
+ * The admission record that hands an account's label scan to Temporal.
+ *
+ * One step per account: the scan entity coalesces repeat offers, so a boot
+ * sweep and a live trigger converge on the same Execution rather than queueing
+ * two walks of the same threads.
+ */
+export function createThreadLabelScanStep(input: {
+  userId: string;
+  accountId: string;
+}): WorkflowStepInput {
+  return {
+    userId: input.userId,
+    accountId: input.accountId,
+    stepType: "label.recent.scan",
+    payload: {},
+    idempotencyKey: `label-scan:${input.accountId}`,
+  };
+}
+
 export async function enqueueWorkflowStepsWithExecutor(
   inputs: WorkflowStepInput[],
   database: DatabaseExecutor,
@@ -716,18 +736,18 @@ export async function getMailSyncRunProviderMessageIds(
 }
 
 /**
- * Re-offers an already admitted run to Temporal.
+ * Re-offers an already admitted step to Temporal.
  *
- * A Workflow that failed outright leaves its run active with nothing driving
- * it, and PostgreSQL cannot tell a live Execution from a dead one. Clearing the
- * dispatch marker makes the command eligible again; the start is rejected while
- * the Execution is still running and only takes effect once it is not.
+ * A Workflow that failed outright leaves its work with nothing driving it, and
+ * PostgreSQL cannot tell a live Execution from a dead one. Clearing the
+ * dispatch marker makes the command eligible again; the Workflow decides what
+ * that means — a start is rejected while its Execution runs, and a signal is
+ * absorbed by the entity that receives it.
  */
-export async function readmitMailSyncRun(
-  input: { runId: string; userId: string; accountId: string },
+export async function readmitWorkflowStep(
+  step: WorkflowStepInput,
   database: Database = getDatabase(),
 ): Promise<void> {
-  const step = createGmailSyncRunStep(input);
   const stepId = await database.transaction((transaction) =>
     enqueueWorkflowStepWithExecutor(step, transaction),
   );
@@ -775,12 +795,12 @@ export async function enqueueMissingMailSyncRuns(
       )
       .limit(1);
     if (existingRun) {
-      await readmitMailSyncRun(
-        {
+      await readmitWorkflowStep(
+        createGmailSyncRunStep({
           runId: existingRun.id,
           userId: account.userId,
           accountId: account.id,
-        },
+        }),
         database,
       );
       continue;
@@ -862,6 +882,7 @@ export async function enqueueImplausibleGmailMessageDateRepairs(
 const temporalAdmissionStepTypes = new Set<string>([
   "gmail.sync.run",
   "gmail.history.catchup",
+  "label.recent.scan",
 ]);
 
 export function isTemporalAdmissionStepType(stepType: string): boolean {
