@@ -23,7 +23,7 @@ import {
   gmailSyncWorkflow,
   historicalLabelBatchCompletedSignal,
   historicalLabelScanWorkflow,
-  tenantTaskQueueLanes,
+  taskQueueLanes,
   threadLabelRescanSignal,
   threadLabelScanWorkflow,
   workflowStepWorkflow,
@@ -38,15 +38,14 @@ import {
   admittedWorkflowCommand,
   getTemporalCloudConfiguration,
   getWorkflowStartDelay,
+  laneActivityConcurrency,
+  laneTaskQueueName,
   taskQueueRouteForCommand,
-  tenantActivityConcurrency,
-  tenantShardForUserId,
-  tenantTaskQueueName,
   workflowStepExecution,
   type TemporalCloudConfiguration,
 } from "./configuration";
 
-const tenantWorkflowConcurrency = 4;
+const laneWorkflowConcurrency = 8;
 
 type TemporalActivities = WorkflowStepActivities &
   GmailSyncActivities &
@@ -63,11 +62,10 @@ export class TemporalRuntime {
   private readonly client: Client;
   private readonly configuration: TemporalCloudConfiguration;
   private readonly connection: NativeConnection;
-  private readonly tenantWorkersByUserId = new Map<string, Promise<Worker[]>>();
   private readonly workerRuns = new Map<Worker, Promise<void>>();
+  private workers: Worker[] = [];
   private readonly workflowBundle: WorkflowBundleWithSourceMap;
   private isClosing = false;
-  private isRunning = false;
   private lifecyclePromise: Promise<void> | null = null;
   private resolveLifecycle: (() => void) | null = null;
   private rejectLifecycle: ((error: Error) => void) | null = null;
@@ -113,28 +111,23 @@ export class TemporalRuntime {
     });
   }
 
-  private ownsTenant(userId: string): boolean {
-    return (
-      tenantShardForUserId(userId, this.configuration.tenantShardCount) ===
-      this.configuration.tenantShardIndex
-    );
-  }
-
-  private async createTenantWorkers(userId: string): Promise<Worker[]> {
+  private async createLaneWorkers(): Promise<Worker[]> {
     return Promise.all(
-      tenantTaskQueueLanes.map((lane) => {
-        const concurrency = tenantActivityConcurrency(lane);
+      taskQueueLanes.map((lane) => {
+        const concurrency = laneActivityConcurrency(lane);
         return Worker.create({
           activities: this.activities,
           connection: this.connection,
           namespace: this.configuration.namespace,
-          taskQueue: tenantTaskQueueName(this.configuration, userId, lane),
+          taskQueue: laneTaskQueueName(this.configuration, lane),
           maxConcurrentActivityTaskExecutions: concurrency,
           maxConcurrentActivityTaskPolls: Math.min(concurrency, 2),
+          // Only the control lane serves Workflow Tasks, so the Workflow bundle
+          // is loaded once rather than on every lane.
           ...(lane === "control"
             ? {
                 workflowBundle: this.workflowBundle,
-                maxConcurrentWorkflowTaskExecutions: tenantWorkflowConcurrency,
+                maxConcurrentWorkflowTaskExecutions: laneWorkflowConcurrency,
                 maxConcurrentWorkflowTaskPolls: 2,
               }
             : {}),
@@ -164,31 +157,6 @@ export class TemporalRuntime {
       },
     );
     this.workerRuns.set(worker, workerRun);
-  }
-
-  private async ensureTenantWorker(userId: string): Promise<void> {
-    if (!this.ownsTenant(userId)) return;
-    let workersPromise = this.tenantWorkersByUserId.get(userId);
-    if (!workersPromise) {
-      workersPromise = this.createTenantWorkers(userId);
-      this.tenantWorkersByUserId.set(userId, workersPromise);
-    }
-    try {
-      const workers = await workersPromise;
-      if (this.isRunning) workers.forEach((worker) => this.startWorker(worker));
-    } catch (error) {
-      this.tenantWorkersByUserId.delete(userId);
-      throw error;
-    }
-  }
-
-  async ensureTenantWorkers(userIds: Iterable<string>): Promise<void> {
-    if (this.isClosing) {
-      throw new Error("Temporal tenant Workers cannot start during shutdown.");
-    }
-    await Promise.all(
-      [...new Set(userIds)].map((userId) => this.ensureTenantWorker(userId)),
-    );
   }
 
   /**
@@ -323,9 +291,9 @@ export class TemporalRuntime {
   }
 
   // Dispatch runs inside the outbox database transaction, so it must only
-  // start Workflows. Tenant Workers are ensured by the command loop before
-  // each drain; Temporal retains Workflow Tasks durably until a Worker polls,
-  // so a tenant whose Worker is not yet running loses no work.
+  // start or signal Workflows. Temporal retains Workflow Tasks durably until a
+  // Worker polls, so dispatching before this process's Workers are running
+  // loses no work.
   async dispatch(commands: TemporalCommandJob[]): Promise<void> {
     await Promise.all(
       commands.map(async (command) => {
@@ -362,35 +330,25 @@ export class TemporalRuntime {
       this.resolveLifecycle = resolve;
       this.rejectLifecycle = reject;
     });
-    this.isRunning = true;
-    for (const workersPromise of this.tenantWorkersByUserId.values()) {
-      void workersPromise
-        .then((workers) => {
-          if (!this.isClosing) {
-            workers.forEach((worker) => this.startWorker(worker));
-          }
-        })
-        .catch((error: unknown) => {
-          this.rejectLifecycle?.(
-            error instanceof Error
-              ? error
-              : new Error("An unknown Temporal tenant Worker error occurred."),
-          );
-        });
-    }
+    void this.createLaneWorkers()
+      .then((workers) => {
+        this.workers = workers;
+        if (!this.isClosing) workers.forEach((worker) => this.startWorker(worker));
+      })
+      .catch((error: unknown) => {
+        this.rejectLifecycle?.(
+          error instanceof Error
+            ? error
+            : new Error("An unknown Temporal Worker error occurred."),
+        );
+      });
     return this.lifecyclePromise;
   }
 
   async close(): Promise<void> {
     if (this.isClosing) return;
     this.isClosing = true;
-    const tenantWorkerResults = await Promise.allSettled(
-      this.tenantWorkersByUserId.values(),
-    );
-    const tenantWorkers = tenantWorkerResults.flatMap((result) =>
-      result.status === "fulfilled" ? result.value : [],
-    );
-    await Promise.all(tenantWorkers.map((worker) => worker.shutdown()));
+    await Promise.all(this.workers.map((worker) => worker.shutdown()));
     await Promise.all(this.workerRuns.values());
     await this.connection.close();
     this.resolveLifecycle?.();

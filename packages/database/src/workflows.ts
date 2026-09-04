@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm";
 import { validate as validateUuid } from "uuid";
 
-import type { TenantTaskQueueLane } from "@invook/workflows";
+import type { TaskQueueLane } from "@invook/workflows";
 
 import {
   getDatabase,
@@ -47,7 +47,7 @@ import { MEMORY_SCHEMA_VERSION } from "./versions";
 
 export type TemporalCommandJob = WorkflowStepJob & {
   userId: string;
-  activityTaskLane: TenantTaskQueueLane;
+  activityTaskLane: TaskQueueLane;
 };
 
 export const TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE = 10;
@@ -276,9 +276,9 @@ export async function markGmailAccountReconnectRequired(
   );
 }
 
-export function tenantTaskQueueLaneForStepType(
+export function taskQueueLaneForStepType(
   stepType: string,
-): TenantTaskQueueLane {
+): TaskQueueLane {
   switch (stepType) {
     case "gmail.sync.run":
     case "gmail.account.cleanup":
@@ -303,10 +303,10 @@ export function tenantTaskQueueLaneForStepType(
   }
 }
 
-export function tenantTaskQueueLaneForStep(
+export function taskQueueLaneForStep(
   input: Pick<WorkflowStepInput, "stepType">,
-): TenantTaskQueueLane {
-  return tenantTaskQueueLaneForStepType(input.stepType);
+): TaskQueueLane {
+  return taskQueueLaneForStepType(input.stepType);
 }
 
 export function temporalCommandPriority(
@@ -406,7 +406,7 @@ export async function enqueueWorkflowStepsWithExecutor(
     await database.insert(temporalCommands).values(
       inserted.map((step) => ({
         workflowStepId: step.id,
-        activityTaskLane: tenantTaskQueueLaneForStep(
+        activityTaskLane: taskQueueLaneForStep(
           byIdempotencyKey.get(step.idempotencyKey)!,
         ),
       })),
@@ -433,7 +433,7 @@ export async function enqueueWorkflowStepWithExecutor(
       .insert(temporalCommands)
       .values({
         workflowStepId: existing.id,
-        activityTaskLane: tenantTaskQueueLaneForStep(input),
+        activityTaskLane: taskQueueLaneForStep(input),
       })
       .onConflictDoNothing({ target: temporalCommands.workflowStepId });
   }
@@ -1002,40 +1002,13 @@ export async function dispatchTemporalCommandBatch(
 
 export function temporalCommandJobFromRow(
   input: WorkflowStepJob & {
-    activityTaskLane: TenantTaskQueueLane;
+    activityTaskLane: TaskQueueLane;
   },
 ): TemporalCommandJob {
   if (input.userId) return { ...input, userId: input.userId };
   throw new Error(
     "The Temporal command has an invalid durable routing contract.",
   );
-}
-
-export async function listActiveTemporalTenantIds(
-  database: Database = getDatabase(),
-): Promise<string[]> {
-  const accountTenants = await database
-    .selectDistinct({ userId: connectedAccounts.userId })
-    .from(connectedAccounts)
-    .where(
-      inArray(connectedAccounts.status, ["connected", "reconnect_required"]),
-    );
-  const workflowTenants = await database
-    .selectDistinct({ userId: workflowSteps.userId })
-    .from(workflowSteps)
-    .where(
-      and(
-        isNotNull(workflowSteps.userId),
-        inArray(workflowSteps.status, ["queued", "running"]),
-      ),
-    );
-  return [
-    ...new Set(
-      [...accountTenants, ...workflowTenants].flatMap((row) =>
-        row.userId ? [row.userId] : [],
-      ),
-    ),
-  ].sort();
 }
 
 export async function markWorkflowStepRunning(

@@ -3,16 +3,17 @@ import { test } from "node:test";
 
 import type { TemporalCommandJob } from "@invook/database";
 
+import { taskQueueLanes } from "@invook/workflows";
+
 import {
   admittedWorkflowCommand,
   getTemporalCloudConfiguration,
   getWorkflowStartDelay,
+  laneActivityConcurrency,
+  laneTaskQueueName,
   taskQueueRouteForCommand,
-  tenantActivityConcurrency,
-  tenantShardForUserId,
-  tenantTaskQueueName,
 } from "./configuration";
-import { parseNonNegativeInteger, parsePositiveInteger } from "./environment";
+import { parsePositiveInteger } from "./environment";
 
 test("Temporal Cloud configuration requires an environment-specific task queue", () => {
   assert.deepEqual(
@@ -27,8 +28,6 @@ test("Temporal Cloud configuration requires an environment-specific task queue",
       namespace: "invook.example",
       apiKey: "test-key",
       taskQueuePrefix: "invook-test",
-      tenantShardCount: 1,
-      tenantShardIndex: 0,
     },
   );
   assert.throws(
@@ -43,46 +42,26 @@ test("Temporal Cloud configuration requires an environment-specific task queue",
   );
 });
 
-test("Temporal tenant shard configuration is bounded", () => {
-  assert.equal(parseNonNegativeInteger(undefined, 0, "TEST_SHARD"), 0);
-  assert.throws(
-    () => parseNonNegativeInteger("-1", 0, "TEST_SHARD"),
-    /non-negative integer/i,
-  );
-  assert.throws(
-    () =>
-      getTemporalCloudConfiguration({
-        TEMPORAL_ADDRESS: "example.tmprl.cloud:7233",
-        TEMPORAL_NAMESPACE: "invook.example",
-        TEMPORAL_API_KEY: "test-key",
-        TEMPORAL_TASK_QUEUE_PREFIX: "invook-test",
-        TEMPORAL_TENANT_SHARD_COUNT: "2",
-        TEMPORAL_TENANT_SHARD_INDEX: "2",
-      }),
-    /must be lower/i,
-  );
-});
-
-test("Temporal tenant queues use only stable user ownership and logical lanes", () => {
-  const userId = "11111111-1111-4111-8111-111111111111";
+test("lane queues are named once per lane, not once per tenant", () => {
+  const configuration = { taskQueuePrefix: "invook-test" };
   assert.equal(
-    tenantTaskQueueName({ taskQueuePrefix: "invook-test" }, userId, "control"),
-    `invook-test-tenant-${userId}-control`,
+    laneTaskQueueName(configuration, "control"),
+    "invook-test-control",
   );
-  assert.equal(tenantShardForUserId(userId, 8), tenantShardForUserId(userId, 8));
-  assert.ok(tenantShardForUserId(userId, 8) < 8);
-  assert.throws(
-    () =>
-      tenantTaskQueueName(
-        { taskQueuePrefix: "invook-test" },
-        "person@example.com",
-        "control",
+  assert.equal(laneTaskQueueName(configuration, "live"), "invook-test-live");
+  assert.equal(laneTaskQueueName(configuration, "bulk"), "invook-test-bulk");
+  // Poller count follows the number of lanes, so it cannot grow with signups.
+  assert.equal(
+    new Set(
+      taskQueueLanes.map((lane) =>
+        laneTaskQueueName(configuration, lane),
       ),
-    /valid user ID/i,
+    ).size,
+    taskQueueLanes.length,
   );
 });
 
-test("Temporal commands route only through isolated tenant lanes", () => {
+test("commands route Workflow Tasks to control and Activities to their lane", () => {
   const configuration = getTemporalCloudConfiguration({
     TEMPORAL_ADDRESS: "example.tmprl.cloud:7233",
     TEMPORAL_NAMESPACE: "invook.example",
@@ -105,11 +84,16 @@ test("Temporal commands route only through isolated tenant lanes", () => {
       activityTaskLane: "live",
     }),
     {
-      workflowTaskQueue:
-        "invook-test-tenant-22222222-2222-4222-8222-222222222222-control",
-      activityTaskQueue:
-        "invook-test-tenant-22222222-2222-4222-8222-222222222222-live",
+      workflowTaskQueue: "invook-test-control",
+      activityTaskQueue: "invook-test-live",
     },
+  );
+  assert.equal(
+    taskQueueRouteForCommand(configuration, {
+      ...base,
+      activityTaskLane: "bulk",
+    }).activityTaskQueue,
+    "invook-test-bulk",
   );
 });
 
@@ -122,10 +106,10 @@ test("Temporal Activity concurrency is a positive integer", () => {
   );
 });
 
-test("every tenant lane executes Activities in parallel", () => {
-  assert.ok(tenantActivityConcurrency("control") >= 2);
-  assert.ok(tenantActivityConcurrency("live") >= 5);
-  assert.ok(tenantActivityConcurrency("bulk") >= 2);
+test("every lane executes Activities in parallel", () => {
+  assert.ok(laneActivityConcurrency("control") >= 2);
+  assert.ok(laneActivityConcurrency("live") >= 5);
+  assert.ok(laneActivityConcurrency("bulk") >= 2);
 });
 
 test("Temporal workflow start delay preserves a future runAt checkpoint", () => {

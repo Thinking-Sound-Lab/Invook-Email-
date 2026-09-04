@@ -1,13 +1,12 @@
-import { parse as parseUuid, validate as validateUuid } from "uuid";
+import { validate as validateUuid } from "uuid";
 
 import type { TemporalCommandJob } from "@invook/database";
 import type {
-  TenantTaskQueueLane,
+  TaskQueueLane,
   WorkflowStepExecution,
 } from "@invook/workflows";
 
 import {
-  parseNonNegativeInteger,
   parsePositiveInteger,
   requiredEnvironmentValue,
 } from "./environment";
@@ -29,8 +28,6 @@ export interface TemporalCloudConfiguration {
   namespace: string;
   apiKey: string;
   taskQueuePrefix: string;
-  tenantShardCount: number;
-  tenantShardIndex: number;
 }
 
 export function getTemporalCloudConfiguration(
@@ -43,21 +40,6 @@ export function getTemporalCloudConfiguration(
   if (!/^[a-z0-9][a-z0-9-]*$/.test(taskQueuePrefix)) {
     throw new Error(
       "TEMPORAL_TASK_QUEUE_PREFIX must contain lowercase letters, digits, and hyphens.",
-    );
-  }
-  const tenantShardCount = parsePositiveInteger(
-    environment.TEMPORAL_TENANT_SHARD_COUNT,
-    1,
-    "TEMPORAL_TENANT_SHARD_COUNT",
-  );
-  const tenantShardIndex = parseNonNegativeInteger(
-    environment.TEMPORAL_TENANT_SHARD_INDEX,
-    0,
-    "TEMPORAL_TENANT_SHARD_INDEX",
-  );
-  if (tenantShardIndex >= tenantShardCount) {
-    throw new Error(
-      "TEMPORAL_TENANT_SHARD_INDEX must be lower than TEMPORAL_TENANT_SHARD_COUNT.",
     );
   }
   return {
@@ -74,43 +56,23 @@ export function getTemporalCloudConfiguration(
       "TEMPORAL_API_KEY",
     ),
     taskQueuePrefix,
-    tenantShardCount,
-    tenantShardIndex,
   };
 }
 
-export function tenantTaskQueueName(
+/**
+ * The queue a lane's work is served from.
+ *
+ * One queue per lane, not one per tenant. Tenant isolation is no longer a
+ * routing concern: a Workflow schedules its own Activities one step at a time,
+ * so a mailbox with a hundred thousand threads contributes a page of work to
+ * the queue rather than a hundred thousand tasks. Poller count now scales with
+ * the number of worker processes instead of the number of signups.
+ */
+export function laneTaskQueueName(
   configuration: Pick<TemporalCloudConfiguration, "taskQueuePrefix">,
-  userId: string,
-  lane: TenantTaskQueueLane,
+  lane: TaskQueueLane,
 ): string {
-  if (!validateUuid(userId)) {
-    throw new Error("Temporal tenant routing requires a valid user ID.");
-  }
-  const taskQueue = `${configuration.taskQueuePrefix}-tenant-${userId.toLowerCase()}-${lane}`;
-  if (taskQueue.length > 255) {
-    throw new Error(
-      "The derived Temporal tenant task queue exceeds 255 characters.",
-    );
-  }
-  return taskQueue;
-}
-
-export function tenantShardForUserId(
-  userId: string,
-  shardCount: number,
-): number {
-  if (!validateUuid(userId)) {
-    throw new Error("Temporal tenant sharding requires a valid user ID.");
-  }
-  if (!Number.isInteger(shardCount) || shardCount < 1) {
-    throw new Error("Temporal tenant shard count must be a positive integer.");
-  }
-  let hash = 2_166_136_261;
-  for (const byte of parseUuid(userId)) {
-    hash = Math.imul(hash ^ byte, 16_777_619) >>> 0;
-  }
-  return hash % shardCount;
+  return `${configuration.taskQueuePrefix}-${lane}`;
 }
 
 export function getWorkflowStartDelay(
@@ -123,15 +85,16 @@ export function getWorkflowStartDelay(
   return runAt - now;
 }
 
-export function tenantActivityConcurrency(lane: TenantTaskQueueLane): number {
+export function laneActivityConcurrency(lane: TaskQueueLane): number {
   switch (lane) {
     case "control":
       return gmailControlConcurrency;
     case "live":
       return Math.max(mailLabelConcurrency, 5);
     case "bulk":
-      // Above one so a user's Gmail accounts synchronize in parallel; each
-      // account's provider content work is bounded by GMAIL_CONTENT_CONCURRENCY.
+      // Bounds the process, not a tenant: each Workflow already paces its own
+      // Activities, and provider content work is bounded separately by
+      // GMAIL_CONTENT_CONCURRENCY.
       return mailBulkConcurrency;
   }
 }
@@ -158,16 +121,10 @@ export function taskQueueRouteForCommand(
   command: TemporalCommandJob,
 ): { workflowTaskQueue: string; activityTaskQueue: string } {
   return {
-    workflowTaskQueue: tenantTaskQueueName(
-      configuration,
-      command.userId,
-      "control",
-    ),
-    activityTaskQueue: tenantTaskQueueName(
-      configuration,
-      command.userId,
-      command.activityTaskLane,
-    ),
+    // Workflow Tasks are cheap and ordering-sensitive, so they all run on the
+    // control lane; only Activities follow the step's lane.
+    workflowTaskQueue: laneTaskQueueName(configuration, "control"),
+    activityTaskQueue: laneTaskQueueName(configuration, command.activityTaskLane),
   };
 }
 

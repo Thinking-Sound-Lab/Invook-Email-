@@ -1,6 +1,6 @@
 export {
-  tenantTaskQueueLanes,
-  type TenantTaskQueueLane,
+  taskQueueLanes,
+  type TaskQueueLane,
 } from "./task-queues";
 export type {
   WorkflowStepActivities,

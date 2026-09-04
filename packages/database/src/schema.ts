@@ -18,7 +18,7 @@ import type {
   InvookSystemLabelKey,
   ThreadLabelAnalysisState,
 } from "@invook/contracts";
-import type { TenantTaskQueueLane } from "@invook/workflows";
+import type { TaskQueueLane } from "@invook/workflows";
 
 import type { AccountSyncState } from "./types";
 
@@ -1188,7 +1188,7 @@ export const temporalCommands = pgTable(
       .notNull()
       .references(() => workflowSteps.id, { onDelete: "cascade" }),
     activityTaskLane: text("activity_task_lane")
-      .$type<TenantTaskQueueLane>()
+      .$type<TaskQueueLane>()
       .notNull(),
     dispatchAttempts: integer("dispatch_attempts").notNull().default(0),
     lastError: text("last_error"),

@@ -12,8 +12,8 @@ import {
   TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE,
   temporalCommandJobFromRow,
   temporalCommandPriority,
-  tenantTaskQueueLaneForStep,
-  tenantTaskQueueLaneForStepType,
+  taskQueueLaneForStep,
+  taskQueueLaneForStepType,
 } from "./workflows";
 
 test("live Gmail work dispatches ahead of bulk synchronization work", () => {
@@ -31,44 +31,44 @@ test("live Gmail work dispatches ahead of bulk synchronization work", () => {
       temporalCommandPriority("label.batch.submit"),
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("gmail.sync.run"),
+    taskQueueLaneForStepType("gmail.sync.run"),
     "bulk",
   );
   assert.equal(
-    tenantTaskQueueLaneForStep({
+    taskQueueLaneForStep({
       stepType: "label.thread.assign",
     }),
     "live",
   );
   assert.equal(
-    tenantTaskQueueLaneForStep({
+    taskQueueLaneForStep({
       stepType: "label.recent.scan",
     }),
     "bulk",
   );
   assert.equal(
-    tenantTaskQueueLaneForStep({
+    taskQueueLaneForStep({
       stepType: "label.batch.submit",
     }),
     "bulk",
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("label.batch.submit"),
+    taskQueueLaneForStepType("label.batch.submit"),
     "bulk",
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("label.batch.event"),
+    taskQueueLaneForStepType("label.batch.event"),
     "bulk",
   );
 });
 
 test("new mail control work is isolated from live enrichment and bulk history", () => {
-  assert.equal(tenantTaskQueueLaneForStepType("gmail.history.catchup"), "control");
-  assert.equal(tenantTaskQueueLaneForStepType("gmail.message.refresh"), "control");
-  assert.equal(tenantTaskQueueLaneForStepType("gmail.watch.renew"), "control");
-  assert.equal(tenantTaskQueueLaneForStepType("memory.incremental"), "live");
-  assert.equal(tenantTaskQueueLaneForStepType("gmail.sync.run"), "bulk");
-  assert.equal(tenantTaskQueueLaneForStepType("memory.extract"), "bulk");
+  assert.equal(taskQueueLaneForStepType("gmail.history.catchup"), "control");
+  assert.equal(taskQueueLaneForStepType("gmail.message.refresh"), "control");
+  assert.equal(taskQueueLaneForStepType("gmail.watch.renew"), "control");
+  assert.equal(taskQueueLaneForStepType("memory.incremental"), "live");
+  assert.equal(taskQueueLaneForStepType("gmail.sync.run"), "bulk");
+  assert.equal(taskQueueLaneForStepType("memory.extract"), "bulk");
 });
 
 test("Temporal command routing requires stable tenant ownership", () => {
@@ -115,7 +115,7 @@ test("a synchronization run is admitted once per run identifier", () => {
   assert.deepEqual(step.payload, {
     runId: "11111111-1111-4111-8111-111111111111",
   });
-  assert.equal(tenantTaskQueueLaneForStep(step), "bulk");
+  assert.equal(taskQueueLaneForStep(step), "bulk");
 });
 
 test("daily Gmail watch renewal is deterministic and scheduled one day later", () => {
@@ -138,7 +138,7 @@ test("daily Gmail watch renewal is deterministic and scheduled one day later", (
     first.idempotencyKey,
     "gmail-watch-renew:22222222-2222-4222-8222-222222222222:daily:2026-08-14",
   );
-  assert.equal(tenantTaskQueueLaneForStepType(first.stepType), "control");
+  assert.equal(taskQueueLaneForStepType(first.stepType), "control");
 });
 
 test("terminal watch recovery schedules a unique bounded daily successor", () => {
@@ -188,7 +188,7 @@ test("terminal initial synchronization failure creates an immediate repair trigg
     step.idempotencyKey,
     "gmail-repair-recovery:22222222-2222-4222-8222-222222222222:33333333-3333-4333-8333-333333333333",
   );
-  assert.equal(tenantTaskQueueLaneForStepType(step.stepType), "control");
+  assert.equal(taskQueueLaneForStepType(step.stepType), "control");
 });
 
 test("ready replicas enqueue only the post-sync Memory derivation", () => {
@@ -203,19 +203,19 @@ test("ready replicas enqueue only the post-sync Memory derivation", () => {
     ["memory.extract"],
   );
   assert.deepEqual(
-    new Set(steps.map((step) => tenantTaskQueueLaneForStepType(step.stepType))),
+    new Set(steps.map((step) => taskQueueLaneForStepType(step.stepType))),
     new Set(["bulk"]),
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("memory.incremental"),
+    taskQueueLaneForStepType("memory.incremental"),
     "live",
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("label.thread.assign"),
+    taskQueueLaneForStepType("label.thread.assign"),
     "live",
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("label.recent.scan"),
+    taskQueueLaneForStepType("label.recent.scan"),
     "bulk",
   );
 });

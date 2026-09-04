@@ -1,6 +1,6 @@
 /**
  * Worker process entry point. Owns only process lifecycle: it opens the
- * Temporal connection, ensures a Worker per active tenant, and drains the
+ * Temporal connection, runs one Worker per task queue lane, and drains the
  * command outbox. All executable work lives under ./activities.
  */
 import {
@@ -15,7 +15,6 @@ import {
   enqueuePendingGmailHistoryCatchups,
   enqueuePostSyncWorkflowSteps,
   listenForTemporalCommandNotifications,
-  listActiveTemporalTenantIds,
   dispatchTemporalCommandBatch,
 } from "@invook/database";
 import { GMAIL_MESSAGE_FUTURE_TOLERANCE_MS } from "@invook/gmail";
@@ -76,7 +75,6 @@ async function runTemporalCommandLoop(
   while (!isStopped()) {
     await signal.wait();
     if (isStopped()) break;
-    await runtime.ensureTenantWorkers(await listActiveTemporalTenantIds());
     while (!isStopped()) {
       const result = await dispatchTemporalCommandBatch((jobs) =>
         runtime.dispatch(jobs),
