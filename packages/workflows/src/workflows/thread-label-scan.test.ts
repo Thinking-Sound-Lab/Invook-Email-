@@ -111,9 +111,13 @@ describe("threadLabelScanWorkflow", () => {
   test("a rescan restarts from the first thread with a fresh reference time", async () => {
     const passes: Array<{ referenceAt: string; cursorThreadId: string | null }> =
       [];
-    let signalRescan: (() => void) | null = null;
-    const firstPageDone = new Promise<void>((resolve) => {
-      signalRescan = resolve;
+    let startSignalling: (() => void) | null = null;
+    const walkStarted = new Promise<void>((resolve) => {
+      startSignalling = resolve;
+    });
+    let confirmRescanRequested: (() => void) | null = null;
+    const rescanRequested = new Promise<void>((resolve) => {
+      confirmRescanRequested = resolve;
     });
 
     const result = await withWorker(
@@ -122,38 +126,56 @@ describe("threadLabelScanWorkflow", () => {
           referenceAt: input.referenceAt,
           cursorThreadId: input.cursorThreadId,
         });
-        if (passes.length === 1) signalRescan?.();
+        if (passes.length === 1) {
+          startSignalling?.();
+          // Hand the walk a second page. Ending the pass here would race the
+          // signal against the workflow's own decision to stop.
+          return { reservedThreadCount: 1, nextCursorThreadId: "thread-2" };
+        }
+        if (passes.length === 2) await rescanRequested;
         return { reservedThreadCount: 1, nextCursorThreadId: null };
       },
       async (handle) => {
-        await firstPageDone;
+        await walkStarted;
         await handle.signal(threadLabelRescanSignal);
+        confirmRescanRequested?.();
         return handle.result();
       },
     );
 
     assert.equal(result.passesCompleted, 2);
-    assert.equal(result.pagesCompleted, 2);
+    assert.equal(result.pagesCompleted, 3);
     // The second pass restarts at the first thread, because a thread that
     // arrived during the walk can sort before the cursor.
     assert.deepEqual(
       passes.map((pass) => pass.cursorThreadId),
-      [null, null],
+      [null, "thread-2", null],
     );
-    assert.notEqual(passes[0]?.referenceAt, passes[1]?.referenceAt);
+    assert.equal(passes[0]?.referenceAt, passes[1]?.referenceAt);
+    assert.notEqual(passes[0]?.referenceAt, passes[2]?.referenceAt);
   });
 
   test("many rescan signals during one walk cost exactly one extra pass", async () => {
     let pageCount = 0;
-    let signalRescans: (() => void) | null = null;
+    let startSignalling: (() => void) | null = null;
     const walkStarted = new Promise<void>((resolve) => {
-      signalRescans = resolve;
+      startSignalling = resolve;
+    });
+    let confirmSignalsDelivered: (() => void) | null = null;
+    const signalsDelivered = new Promise<void>((resolve) => {
+      confirmSignalsDelivered = resolve;
     });
 
     const result = await withWorker(
       async () => {
         pageCount += 1;
-        if (pageCount === 1) signalRescans?.();
+        if (pageCount === 1) {
+          startSignalling?.();
+          // Hand the walk a second page so all six signals are recorded while
+          // the first pass is still running, which is what coalescing claims.
+          return { reservedThreadCount: 0, nextCursorThreadId: "thread-2" };
+        }
+        if (pageCount === 2) await signalsDelivered;
         return { reservedThreadCount: 0, nextCursorThreadId: null };
       },
       async (handle) => {
@@ -163,14 +185,13 @@ describe("threadLabelScanWorkflow", () => {
             handle.signal(threadLabelRescanSignal),
           ),
         );
+        confirmSignalsDelivered?.();
         return handle.result();
       },
     );
 
-    assert.ok(
-      result.passesCompleted <= 2,
-      `six coalesced rescans ran ${result.passesCompleted} passes`,
-    );
+    assert.equal(result.passesCompleted, 2);
+    assert.equal(result.pagesCompleted, 3);
   });
 
   test("continues as new past the page budget without losing the cursor", async () => {
