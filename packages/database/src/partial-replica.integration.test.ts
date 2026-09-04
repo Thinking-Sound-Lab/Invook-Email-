@@ -465,6 +465,187 @@ test(
 );
 
 test(
+  "All and Invook label views exclude spam and trash while keeping archived mail",
+  { skip: !testDatabaseUrl },
+  async () => {
+    await withPartialReplicaFixture(async (fixture) => {
+      const { database, userId, accountId, threadId, invookLabelId } = fixture;
+      const archivedThreadId = uuidv4();
+      const importantArchivedThreadId = uuidv4();
+      const spamThreadId = uuidv4();
+      const trashThreadId = uuidv4();
+      const importantLabelId = uuidv4();
+      const spamLabelId = uuidv4();
+      const trashLabelId = uuidv4();
+      const sentAt = new Date("2026-08-14T08:00:00.000Z");
+
+      await database.insert(labels).values([
+        {
+          id: importantLabelId,
+          userId,
+          accountId,
+          kind: "invook",
+          name: "Important",
+          normalizedName: "important",
+          description: "Needs timely attention",
+          systemKey: "important",
+        },
+        {
+          id: spamLabelId,
+          userId,
+          accountId,
+          kind: "gmail",
+          providerLabelId: "SPAM",
+          name: "Spam",
+          normalizedName: "spam",
+          providerType: "system",
+        },
+        {
+          id: trashLabelId,
+          userId,
+          accountId,
+          kind: "gmail",
+          providerLabelId: "TRASH",
+          name: "Trash",
+          normalizedName: "trash",
+          providerType: "system",
+        },
+      ]);
+
+      async function insertStoredThread(input: {
+        threadId: string;
+        subject: string;
+        membershipIds: string[];
+        assignmentLabelId: string;
+      }) {
+        const messageId = uuidv4();
+        await database.insert(threads).values({
+          id: input.threadId,
+          userId,
+          accountId,
+          providerThreadId: `provider-thread-${input.threadId}`,
+          subject: input.subject,
+          snippet: input.subject,
+          participants: ["Sender <sender@example.com>"],
+          latestMessageAt: sentAt,
+          messageCount: 1,
+        });
+        await database.insert(messages).values({
+          id: messageId,
+          userId,
+          accountId,
+          threadId: input.threadId,
+          providerMessageId: `provider-message-${messageId}`,
+          direction: "incoming",
+          sender: {
+            raw: "Sender <sender@example.com>",
+            email: "sender@example.com",
+          },
+          recipients: ["owner@example.com"],
+          providerHistoryId: "106",
+          internalDate: sentAt,
+          headerLines: [],
+          subject: input.subject,
+          snippet: input.subject,
+          bodyText: input.subject,
+          sentAt,
+        });
+        if (input.membershipIds.length > 0) {
+          await database.insert(messageLabels).values(
+            input.membershipIds.map((labelId) => ({
+              userId,
+              accountId,
+              messageId,
+              labelId,
+              source: "gmail" as const,
+            })),
+          );
+        }
+        await database.insert(threadLabelAssignments).values({
+          userId,
+          accountId,
+          threadId: input.threadId,
+          labelId: input.assignmentLabelId,
+          source: "user",
+          definitionVersion: 1,
+        });
+      }
+
+      await insertStoredThread({
+        threadId: archivedThreadId,
+        subject: "Archived outside Inbox",
+        membershipIds: [],
+        assignmentLabelId: invookLabelId,
+      });
+      await insertStoredThread({
+        threadId: importantArchivedThreadId,
+        subject: "Archived important mail",
+        membershipIds: [],
+        assignmentLabelId: importantLabelId,
+      });
+      await insertStoredThread({
+        threadId: spamThreadId,
+        subject: "Reported as spam",
+        membershipIds: [spamLabelId],
+        assignmentLabelId: invookLabelId,
+      });
+      await insertStoredThread({
+        threadId: trashThreadId,
+        subject: "Moved to trash",
+        membershipIds: [trashLabelId],
+        assignmentLabelId: importantLabelId,
+      });
+
+      const [
+        allThreads,
+        labelThreads,
+        importantThreads,
+        spamThreads,
+        trashThreads,
+        sidebarCounts,
+      ] = await Promise.all([
+        listMailboxThreads(userId, { accountId, view: "all" }, database),
+        listMailboxThreads(
+          userId,
+          { accountId, view: `label:${invookLabelId}` },
+          database,
+        ),
+        listMailboxThreads(userId, { accountId, view: "important" }, database),
+        listMailboxThreads(userId, { accountId, view: "spam" }, database),
+        listMailboxThreads(userId, { accountId, view: "trash" }, database),
+        getMailboxSidebarCounts(userId, database),
+      ]);
+
+      assert.deepEqual(
+        allThreads?.threads.map((thread) => thread.id).sort(),
+        [threadId, archivedThreadId, importantArchivedThreadId].sort(),
+      );
+      assert.deepEqual(
+        labelThreads?.threads.map((thread) => thread.id).sort(),
+        [threadId, archivedThreadId].sort(),
+      );
+      assert.deepEqual(
+        importantThreads?.threads.map((thread) => thread.id),
+        [importantArchivedThreadId],
+      );
+      assert.deepEqual(
+        spamThreads?.threads.map((thread) => thread.id),
+        [spamThreadId],
+      );
+      assert.deepEqual(
+        trashThreads?.threads.map((thread) => thread.id),
+        [trashThreadId],
+      );
+      assert.equal(sidebarCounts?.accounts[accountId]?.views.all, 3);
+      assert.equal(sidebarCounts?.accounts[accountId]?.views.important, 1);
+      assert.equal(sidebarCounts?.accounts[accountId]?.views.spam, 1);
+      assert.equal(sidebarCounts?.accounts[accountId]?.views.trash, 1);
+      assert.equal(sidebarCounts?.accounts[accountId]?.labels[invookLabelId], 2);
+    });
+  },
+);
+
+test(
   "mailbox account scopes preserve every account and aggregate All",
   { skip: !testDatabaseUrl },
   async () => {

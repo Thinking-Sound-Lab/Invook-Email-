@@ -53,12 +53,31 @@ export function visibleThreadCondition() {
   return sql<boolean>`true`;
 }
 
+// Gmail All Mail: archived mail stays visible; spam and trash do not.
+export function allMailThreadCondition() {
+  return sql<boolean>`exists (
+    select 1 from ${messages} active_message
+    where active_message.thread_id = ${outerThreadId}
+      and active_message.account_id = ${outerThreadAccountId}
+      and not exists (
+        select 1 from ${messageLabels} hidden_membership
+        inner join ${labels} hidden_label on hidden_label.id = hidden_membership.label_id
+        where hidden_membership.message_id = active_message.id
+          and hidden_membership.account_id = ${outerThreadAccountId}
+          and hidden_label.account_id = ${outerThreadAccountId}
+          and hidden_label.kind = 'gmail'
+          and hidden_label.provider_label_id in ('SPAM', 'TRASH')
+      )
+  )`;
+}
+
 export function mailboxViewCondition(view: MailboxView) {
   if (view.startsWith("label:")) {
     const labelId = view.slice(6);
     // One Invook label exists per connected account, so the view matches every
     // account label the signed-in user owns under the selected label's name.
-    return sql<boolean>`exists (
+    return sql<boolean>`
+      (${allMailThreadCondition()}) and exists (
         select 1 from ${threadLabelAssignments} assignment
         inner join ${labels} assignment_label
           on assignment_label.id = assignment.label_id
@@ -73,13 +92,15 @@ export function mailboxViewCondition(view: MailboxView) {
               and selected_label.user_id = ${outerThreadUserId}
               and selected_label.kind = 'invook'
           )
-      )`;
+      )
+    `;
   }
   switch (view) {
     case "all":
-      return visibleThreadCondition();
+      return allMailThreadCondition();
     case "important":
-      return sql<boolean>`exists (
+      return sql<boolean>`
+        (${allMailThreadCondition()}) and exists (
           select 1 from ${threadLabelAssignments} important_assignment
           inner join ${labels} important_label
             on important_label.id = important_assignment.label_id
@@ -88,7 +109,8 @@ export function mailboxViewCondition(view: MailboxView) {
             and important_label.account_id = ${outerThreadAccountId}
             and important_label.kind = 'invook'
             and important_label.system_key = 'important'
-        )`;
+        )
+      `;
     case "starred":
     case "drafts":
     case "sent":
