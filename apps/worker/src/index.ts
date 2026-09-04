@@ -19,7 +19,6 @@ import {
   enqueueFailedInitialGmailRepairRecoveries,
   enqueuePendingGmailHistoryCatchups,
   enqueuePostSyncWorkflowSteps,
-  enqueueReadyMailSyncFinalizers,
   listenForTemporalCommandNotifications,
   listActiveTemporalTenantIds,
   listSubmittedThreadLabelBatchIds,
@@ -31,6 +30,11 @@ import { TemporalRuntime } from "./temporal/runtime";
 import { terminateWorkerAfterFatalError } from "./temporal/process-lifecycle";
 
 import { terminalProviderBatchStates } from "./activities/configuration";
+import {
+  finalizeGmailSyncActivity,
+  ingestGmailThreadBatchActivity,
+  syncGmailThreadPageActivity,
+} from "./activities/gmail/sync";
 import {
   reconcileWorkflowStepFailureActivity,
   runWorkflowStepActivity,
@@ -120,6 +124,9 @@ async function run() {
     activities: {
       runWorkflowStepActivity,
       reconcileWorkflowStepFailureActivity,
+      syncGmailThreadPageActivity,
+      ingestGmailThreadBatchActivity,
+      finalizeGmailSyncActivity,
     },
   });
   const outboxSignal = createJobSignal();
@@ -163,7 +170,6 @@ async function run() {
     await enqueueMissingMailSyncRuns();
     await enqueueFailedInitialGmailRepairRecoveries();
     await enqueuePendingGmailHistoryCatchups();
-    await enqueueReadyMailSyncFinalizers();
     await ensureDailyGmailWatchRenewals();
     await enqueuePostSyncWorkflowSteps();
     await enqueueHistoricalThreadLabelBatchRecoveries();

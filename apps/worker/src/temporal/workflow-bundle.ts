@@ -1,1 +1,1 @@
-export { workflowStepWorkflow } from "@invook/workflows";
+export { gmailSyncWorkflow, workflowStepWorkflow } from "@invook/workflows";

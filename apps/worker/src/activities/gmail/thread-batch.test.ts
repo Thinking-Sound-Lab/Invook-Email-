@@ -1,43 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GMAIL_SYNC_THREAD_BATCH_SIZE } from "@invook/database";
+import { gmailSyncThreadBatchSize } from "@invook/workflows";
 
 import {
-  parseGmailThreadBatchPayload,
+  assertGmailThreadBatch,
   processGmailThreadBatch,
 } from "./thread-batch";
 
-test("Gmail thread batch payloads are bounded and unique", () => {
+test("Gmail thread batches are bounded and unique", () => {
   const providerThreadIds = Array.from(
-    { length: GMAIL_SYNC_THREAD_BATCH_SIZE },
+    { length: gmailSyncThreadBatchSize },
     (_, index) => `thread-${index + 1}`,
   );
-  assert.deepEqual(
-    parseGmailThreadBatchPayload({ runId: "run-1", providerThreadIds }),
-    { runId: "run-1", providerThreadIds },
-  );
+  assertGmailThreadBatch(providerThreadIds);
+  assert.throws(() => assertGmailThreadBatch([]), /IDs are invalid/i);
   assert.throws(
-    () =>
-      parseGmailThreadBatchPayload({
-        runId: "run-1",
-        providerThreadIds: [...providerThreadIds, "thread-overflow"],
-      }),
+    () => assertGmailThreadBatch([...providerThreadIds, "thread-overflow"]),
     /IDs are invalid/i,
   );
   assert.throws(
-    () =>
-      parseGmailThreadBatchPayload({
-        runId: "run-1",
-        providerThreadIds: ["thread-1", "thread-1"],
-      }),
+    () => assertGmailThreadBatch(["thread-1", "thread-1"]),
+    /IDs are invalid/i,
+  );
+  assert.throws(
+    () => assertGmailThreadBatch(["thread-1", "   "]),
     /IDs are invalid/i,
   );
 });
 
 test("a Gmail thread batch bounds concurrency and finishes independent threads", async () => {
   const providerThreadIds = Array.from(
-    { length: GMAIL_SYNC_THREAD_BATCH_SIZE },
+    { length: gmailSyncThreadBatchSize },
     (_, index) => `thread-${index + 1}`,
   );
   let activeCount = 0;

@@ -32,12 +32,9 @@ import {
 
 import {
   runGmailAccountCleanup,
-  runGmailFinalize,
   runGmailHistoryCatchup,
   runGmailMessageRefresh,
   runGmailObjectDelete,
-  runGmailPage,
-  runGmailThreadBatch,
   runGmailWatchRenewal,
 } from "./gmail/sync";
 import {
@@ -70,12 +67,6 @@ async function runWorkflowStepHandler(
 ): Promise<Record<string, unknown>> {
   const run = async (): Promise<Record<string, unknown>> => {
     switch (job.stepType) {
-      case "gmail.sync.page":
-        return runGmailPage(job);
-      case "gmail.sync.thread.batch":
-        return runGmailThreadBatch(job);
-      case "gmail.sync.finalize":
-        return runGmailFinalize(job);
       case "gmail.history.catchup":
         return runGmailHistoryCatchup(job);
       case "gmail.message.refresh":
@@ -109,8 +100,7 @@ async function runWorkflowStepHandler(
   };
   if (
     job.accountId &&
-    (job.stepType === "gmail.sync.finalize" ||
-      job.stepType === "gmail.history.catchup" ||
+    (job.stepType === "gmail.history.catchup" ||
       job.stepType === "gmail.message.refresh" ||
       job.stepType === "gmail.watch.renew" ||
       job.stepType === "gmail.objects.delete" ||

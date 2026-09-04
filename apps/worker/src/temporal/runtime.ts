@@ -12,10 +12,15 @@ import {
   type WorkflowBundleWithSourceMap,
 } from "@temporalio/worker";
 
-import type { TemporalCommandJob } from "@invook/database";
 import {
+  isTemporalAdmissionStepType,
+  type TemporalCommandJob,
+} from "@invook/database";
+import {
+  gmailSyncWorkflow,
   tenantTaskQueueLanes,
   workflowStepWorkflow,
+  type GmailSyncActivities,
   type WorkflowStepActivities,
 } from "@invook/workflows";
 
@@ -32,12 +37,14 @@ import {
 
 const tenantWorkflowConcurrency = 4;
 
+type TemporalActivities = WorkflowStepActivities & GmailSyncActivities;
+
 interface CreateTemporalRuntimeInput {
-  activities: WorkflowStepActivities;
+  activities: TemporalActivities;
 }
 
 export class TemporalRuntime {
-  private readonly activities: WorkflowStepActivities;
+  private readonly activities: TemporalActivities;
   private readonly client: Client;
   private readonly configuration: TemporalCloudConfiguration;
   private readonly connection: NativeConnection;
@@ -51,7 +58,7 @@ export class TemporalRuntime {
   private rejectLifecycle: ((error: Error) => void) | null = null;
 
   private constructor(input: {
-    activities: WorkflowStepActivities;
+    activities: TemporalActivities;
     client: Client;
     configuration: TemporalCloudConfiguration;
     connection: NativeConnection;
@@ -169,6 +176,51 @@ export class TemporalRuntime {
     );
   }
 
+  /**
+   * Starts the Workflow an admission step exists to hand off to.
+   *
+   * The Workflow ID is derived from the run rather than the command, so a
+   * re-offered command can never put two Executions on one run. A restart
+   * begins at the first page again: Gmail page tokens do not outlive the walk
+   * that produced them, and both page recording and thread ingestion are
+   * idempotent, so the second walk only pays for what the first left undone.
+   */
+  private async startAdmittedWorkflow(
+    command: TemporalCommandJob,
+    taskQueueRoute: { workflowTaskQueue: string; activityTaskQueue: string },
+  ): Promise<void> {
+    if (command.stepType !== "gmail.sync.run") {
+      throw new Error(
+        `Unsupported Temporal admission step: ${command.stepType}`,
+      );
+    }
+    if (!command.accountId || !command.runId) {
+      throw new Error(
+        "The Gmail synchronization admission step is missing its run.",
+      );
+    }
+    await this.client.workflow.start(gmailSyncWorkflow, {
+      args: [
+        {
+          userId: command.userId,
+          accountId: command.accountId,
+          runId: command.runId,
+          activityTaskQueue: taskQueueRoute.activityTaskQueue,
+          pageNumber: 1,
+          pageToken: null,
+          pagesCompleted: 0,
+          threadsDiscovered: 0,
+          threadsIngested: 0,
+        },
+      ],
+      taskQueue: taskQueueRoute.workflowTaskQueue,
+      workflowId: `gmail-sync:${command.accountId}:${command.runId}`,
+      // A re-offered run must restart only when its previous Execution died.
+      // A live Execution rejects the start, which dispatch treats as a no-op.
+      workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
+    });
+  }
+
   // Dispatch runs inside the outbox database transaction, so it must only
   // start Workflows. Tenant Workers are ensured by the command loop before
   // each drain; Temporal retains Workflow Tasks durably until a Worker polls,
@@ -180,14 +232,16 @@ export class TemporalRuntime {
           this.configuration,
           command,
         );
-        const input = workflowStepExecution(
-          command,
-          taskQueueRoute.activityTaskQueue,
-        );
         try {
+          if (isTemporalAdmissionStepType(command.stepType)) {
+            await this.startAdmittedWorkflow(command, taskQueueRoute);
+            return;
+          }
           const startDelay = getWorkflowStartDelay(command.payload);
           await this.client.workflow.start(workflowStepWorkflow, {
-            args: [input],
+            args: [
+              workflowStepExecution(command, taskQueueRoute.activityTaskQueue),
+            ],
             taskQueue: taskQueueRoute.workflowTaskQueue,
             workflowId: `workflow-step:${command.id}`,
             workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,

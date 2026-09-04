@@ -7,9 +7,8 @@ import {
   createImmediateGmailRepairRecoveryStep,
 } from "./gmail-watch";
 import {
-  createGmailSyncThreadBatchSteps,
+  createGmailSyncRunStep,
   createPostSyncDerivationSteps,
-  GMAIL_SYNC_THREAD_BATCH_SIZE,
   TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE,
   temporalCommandJobFromRow,
   temporalCommandPriority,
@@ -21,18 +20,18 @@ test("live Gmail work dispatches ahead of bulk synchronization work", () => {
   assert.equal(TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE, 10);
   assert.ok(
     temporalCommandPriority("gmail.history.catchup") <
-      temporalCommandPriority("gmail.sync.thread.batch"),
+      temporalCommandPriority("gmail.sync.run"),
   );
   assert.ok(
     temporalCommandPriority("label.thread.assign") <
-    temporalCommandPriority("gmail.sync.thread.batch"),
+    temporalCommandPriority("gmail.sync.run"),
   );
   assert.ok(
     temporalCommandPriority("label.batch.event") <
       temporalCommandPriority("label.batch.submit"),
   );
   assert.equal(
-    tenantTaskQueueLaneForStepType("gmail.sync.thread.batch"),
+    tenantTaskQueueLaneForStepType("gmail.sync.run"),
     "bulk",
   );
   assert.equal(
@@ -68,7 +67,7 @@ test("new mail control work is isolated from live enrichment and bulk history", 
   assert.equal(tenantTaskQueueLaneForStepType("gmail.message.refresh"), "control");
   assert.equal(tenantTaskQueueLaneForStepType("gmail.watch.renew"), "control");
   assert.equal(tenantTaskQueueLaneForStepType("memory.incremental"), "live");
-  assert.equal(tenantTaskQueueLaneForStepType("gmail.sync.page"), "bulk");
+  assert.equal(tenantTaskQueueLaneForStepType("gmail.sync.run"), "bulk");
   assert.equal(tenantTaskQueueLaneForStepType("memory.extract"), "bulk");
 });
 
@@ -101,38 +100,22 @@ test("Temporal command routing requires stable tenant ownership", () => {
   );
 });
 
-test("Gmail synchronization pages create stable bounded thread batches", () => {
-  const providerThreadIds = Array.from(
-    { length: GMAIL_SYNC_THREAD_BATCH_SIZE * 2 + 3 },
-    (_, index) => `thread-${index + 1}`,
-  );
-  const steps = createGmailSyncThreadBatchSteps({
+test("a synchronization run is admitted once per run identifier", () => {
+  const step = createGmailSyncRunStep({
     runId: "11111111-1111-4111-8111-111111111111",
     userId: "22222222-2222-4222-8222-222222222222",
     accountId: "33333333-3333-4333-8333-333333333333",
-    pageNumber: 4,
-    providerThreadIds,
   });
 
-  assert.deepEqual(
-    steps.map((step) => step.idempotencyKey),
-    [
-      "gmail-thread-batch:11111111-1111-4111-8111-111111111111:4:1",
-      "gmail-thread-batch:11111111-1111-4111-8111-111111111111:4:2",
-      "gmail-thread-batch:11111111-1111-4111-8111-111111111111:4:3",
-    ],
+  assert.equal(step.stepType, "gmail.sync.run");
+  assert.equal(
+    step.idempotencyKey,
+    "gmail-sync-run:11111111-1111-4111-8111-111111111111",
   );
-  assert.deepEqual(
-    steps.map((step) => step.payload?.providerThreadIds),
-    [
-      providerThreadIds.slice(0, GMAIL_SYNC_THREAD_BATCH_SIZE),
-      providerThreadIds.slice(
-        GMAIL_SYNC_THREAD_BATCH_SIZE,
-        GMAIL_SYNC_THREAD_BATCH_SIZE * 2,
-      ),
-      providerThreadIds.slice(GMAIL_SYNC_THREAD_BATCH_SIZE * 2),
-    ],
-  );
+  assert.deepEqual(step.payload, {
+    runId: "11111111-1111-4111-8111-111111111111",
+  });
+  assert.equal(tenantTaskQueueLaneForStep(step), "bulk");
 });
 
 test("daily Gmail watch renewal is deterministic and scheduled one day later", () => {
