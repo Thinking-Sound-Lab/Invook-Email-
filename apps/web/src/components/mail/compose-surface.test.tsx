@@ -19,6 +19,7 @@ for (const [name, value] of Object.entries({
   HTMLInputElement: browserWindow.HTMLInputElement,
   HTMLTextAreaElement: browserWindow.HTMLTextAreaElement,
   Event: browserWindow.Event,
+  KeyboardEvent: browserWindow.KeyboardEvent,
   MouseEvent: browserWindow.MouseEvent,
   IS_REACT_ACT_ENVIRONMENT: true,
 })) {
@@ -130,6 +131,20 @@ async function enter(selector: string, value: string): Promise<void> {
   });
 }
 
+async function pressEnter(selector: string): Promise<boolean> {
+  const input = document.querySelector<HTMLInputElement>(selector);
+  assert.ok(input);
+  const event = new KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    input.dispatchEvent(event);
+  });
+  return event.defaultPrevented;
+}
+
 afterEach(async () => {
   const currentRoot = root;
   if (currentRoot) await act(async () => currentRoot.unmount());
@@ -223,6 +238,16 @@ test("sending the redesigned composer saves and sends one Gmail draft", async ()
   await enter("#compose-bcc-recipients", "private@example.com");
   await enter("#compose-subject", "Project update");
   await enter("#compose-body", "The work is ready for review.");
+
+  for (const selector of [
+    "#compose-recipients",
+    "#compose-cc-recipients",
+    "#compose-bcc-recipients",
+    "#compose-subject",
+  ]) {
+    assert.equal(await pressEnter(selector), true);
+  }
+  assert.equal(requests.length, 0);
 
   await click("Send");
 

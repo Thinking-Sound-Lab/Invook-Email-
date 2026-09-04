@@ -17,6 +17,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
   useReducer,
   useRef,
@@ -146,6 +147,15 @@ export function ComposeSurface() {
     dispatch({ type: "change_sender" });
   }
 
+  function handleComposeKeyDown(event: KeyboardEvent<HTMLFormElement>): void {
+    if (
+      event.target instanceof HTMLInputElement &&
+      (event.key === "Enter" || event.key === "NumpadEnter")
+    ) {
+      event.preventDefault();
+    }
+  }
+
   async function handleSend(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (busyRef.current || isSending || isSent) return;
@@ -218,6 +228,7 @@ export function ComposeSurface() {
       <form
         aria-label="New message composer"
         className="flex min-h-0 flex-1 flex-col p-2 sm:p-4 lg:p-6"
+        onKeyDown={handleComposeKeyDown}
         onSubmit={(event) => void handleSend(event)}
       >
         <div className="mx-auto flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-card shadow-[0_18px_48px_-32px] shadow-overlay/80">
