@@ -164,7 +164,8 @@ export function createStoredThreadLabelClassifier(
     const { output } = await generateText({
       model,
       output: Output.object({ schema: modelOutputSchema }),
-      temperature: 0,
+      // The label model is a reasoning model, which rejects temperature. The
+      // response schema, not sampling, is what constrains the output here.
       maxOutputTokens: 1_000,
       system: [
         "You assign exactly one Invook-owned label to one email thread.",
