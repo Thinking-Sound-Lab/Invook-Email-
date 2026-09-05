@@ -47,8 +47,14 @@ test("sidebar counts follow the selected Inbox scope", () => {
 });
 
 test("connected accounts retain distinct stable avatar ring colors", () => {
-  assert.equal(accountRingClassName("first", accounts), "ring-blue-500");
-  assert.equal(accountRingClassName("second", accounts), "ring-emerald-500");
+  assert.equal(
+    accountRingClassName("first", accounts),
+    "ring-pill-blue-foreground",
+  );
+  assert.equal(
+    accountRingClassName("second", accounts),
+    "ring-pill-green-foreground",
+  );
   assert.notEqual(
     accountRingClassName("first", accounts),
     accountRingClassName("second", accounts),

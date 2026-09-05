@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { mailLabelColorClassName } from "./mail-label-colors";
 
-test("mail labels use a stable five-color palette", () => {
+test("mail labels use the complete stable pill palette", () => {
   const firstColor = mailLabelColorClassName({ id: "billing", kind: "invook" });
   const repeatedColor = mailLabelColorClassName({
     id: "billing",
@@ -16,5 +16,5 @@ test("mail labels use a stable five-color palette", () => {
   );
 
   assert.equal(firstColor, repeatedColor);
-  assert.equal(palette.size, 5);
+  assert.equal(palette.size, 8);
 });

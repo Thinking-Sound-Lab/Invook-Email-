@@ -45,6 +45,10 @@ const threadSyncMigrationUrl = new URL(
   "../drizzle/0035_wandering_lockheed.sql",
   import.meta.url,
 );
+const labelOnlyMigrationUrl = new URL(
+  "../drizzle/0040_last_alex_power.sql",
+  import.meta.url,
+);
 const schemaUrl = new URL("./schema.ts", import.meta.url);
 const migrationsUrl = new URL("../drizzle/", import.meta.url);
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -67,6 +71,33 @@ test("the Drizzle schema has exactly the 27 owned tables without embedding or Me
   assert.doesNotMatch(source, /embeddingBatchSubmissions/);
   assert.doesNotMatch(source, /embeddingContentHash/);
   assert.doesNotMatch(source, /\bvector\s*\(/);
+});
+
+test("the label-only migration retires Memory rows before the reduced schema rejects them", async () => {
+  const migration = await readFile(labelOnlyMigrationUrl, "utf8");
+
+  // Durable Memory commands outlive their handlers, so the migration retires
+  // them rather than leaving the dispatcher to retry a step type that no
+  // longer resolves to a Workflow.
+  assert.match(
+    migration,
+    /DELETE FROM "workflow_steps" WHERE "step_type" LIKE 'memory\.%'/,
+  );
+  assertBefore(
+    migration,
+    'DELETE FROM "drafts"',
+    'ADD CONSTRAINT "drafts_kind_check"',
+  );
+  assertBefore(
+    migration,
+    `UPDATE "connected_accounts" SET "sync_state" = "sync_state" - 'memory'`,
+    'DROP COLUMN "memory_acknowledged_at"',
+  );
+  assert.match(migration, /DROP TABLE "memory_entries" CASCADE/);
+  assert.match(
+    migration,
+    /ALTER TABLE "thread_label_batch_submissions" DROP COLUMN "provider"/,
+  );
 });
 
 test("the thread-sync migration preserves durable label and object work before retiring legacy storage", async () => {

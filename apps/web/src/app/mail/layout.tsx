@@ -22,7 +22,7 @@ export default async function MailLayout({ children }: MailLayoutProps) {
     <MailShellProvider shell={shell}>
       <main className="flex h-dvh flex-col overflow-hidden bg-background">
         <MailboxEventSubscriber />
-        <div className="grid min-h-0 flex-1 grid-cols-[64px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] grid-cols-[64px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
           <MailSidebar sidebarCounts={sidebarCounts} />
           {children}
         </div>

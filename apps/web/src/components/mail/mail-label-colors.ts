@@ -1,11 +1,14 @@
 import type { MailRowLabel } from "./mail-row-labels";
 
 const MAIL_LABEL_COLOR_CLASSES = [
-  "bg-violet-500/15 text-violet-700 dark:text-violet-300",
-  "bg-sky-500/15 text-sky-700 dark:text-sky-300",
-  "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-  "bg-amber-500/15 text-amber-800 dark:text-amber-300",
-  "bg-rose-500/15 text-rose-700 dark:text-rose-300",
+  "bg-pill-brown text-pill-brown-foreground",
+  "bg-pill-purple text-pill-purple-foreground",
+  "bg-pill-blue text-pill-blue-foreground",
+  "bg-pill-red text-pill-red-foreground",
+  "bg-pill-pink text-pill-pink-foreground",
+  "bg-pill-yellow text-pill-yellow-foreground",
+  "bg-pill-green text-pill-green-foreground",
+  "bg-pill-orange text-pill-orange-foreground",
 ] as const;
 
 export function mailLabelColorClassName(

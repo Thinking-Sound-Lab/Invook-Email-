@@ -17,9 +17,9 @@ import {
   type ThreadComposeSession,
 } from "@/components/mail/thread-composer-state";
 import {
-  sendThreadComposeAttempt,
-  type ThreadComposeSendAttempt,
-} from "@/lib/api/thread-compose-send";
+  sendGmailComposeAttempt,
+  type GmailComposeSendAttempt,
+} from "@/lib/api/gmail-compose-send";
 import { apiErrorMessage } from "@/lib/http-error";
 
 export interface UseThreadComposerProps {
@@ -54,7 +54,7 @@ export function useThreadComposer({
   const router = useRouter();
   const busyRef = useRef(false);
   const [session, setSession] = useState<ThreadComposeSession | null>(null);
-  const [attempt, setAttempt] = useState<ThreadComposeSendAttempt | null>(null);
+  const [attempt, setAttempt] = useState<GmailComposeSendAttempt | null>(null);
   const [pending, setPending] = useState<"send" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -126,7 +126,7 @@ export function useThreadComposer({
     setError(null);
     setNotice(null);
     try {
-      const nextAttempt: ThreadComposeSendAttempt = attempt ?? {
+      const nextAttempt: GmailComposeSendAttempt = attempt ?? {
         phase: "save",
         request: {
           ...validation.fields,
@@ -137,7 +137,7 @@ export function useThreadComposer({
         sendIdempotencyKey: uuidv4(),
       };
       setAttempt(nextAttempt);
-      await sendThreadComposeAttempt(nextAttempt, setAttempt);
+      await sendGmailComposeAttempt(nextAttempt, setAttempt);
       setAttempt(null);
       setSession(null);
       setNotice("Sent with Gmail.");
