@@ -2,13 +2,16 @@ import OpenAI, { APIError, toFile } from "openai";
 import { getEncoding } from "js-tiktoken";
 import { z } from "zod";
 
-import { readOpenAiCredentials, type OpenAiCredentials } from "./model";
+import {
+  DEFAULT_LABEL_MODEL,
+  readOpenAiCredentials,
+  type OpenAiCredentials,
+} from "./model";
 import type {
   InvookLabelDefinitionForAnalysis,
   StoredThreadLabelClassifierInput,
 } from "./thread-label-classifier";
 
-const DEFAULT_MODEL_ID = "gpt-5.6-luna";
 const BATCH_FILE_LIMIT_BYTES = 200_000_000;
 const DEFAULT_BATCH_INPUT_TOKEN_LIMIT = 500_000;
 const BATCH_REQUEST_TOKEN_OVERHEAD = 256;
@@ -113,7 +116,7 @@ function configuration(): {
   }
   return {
     credentials,
-    modelId: process.env.OPENAI_LABEL_BATCH_MODEL?.trim() || DEFAULT_MODEL_ID,
+    modelId: process.env.OPENAI_LABEL_BATCH_MODEL?.trim() || DEFAULT_LABEL_MODEL,
     inputTokenLimit: positiveIntegerConfiguration(
       process.env.OPENAI_LABEL_BATCH_INPUT_TOKEN_LIMIT,
       DEFAULT_BATCH_INPUT_TOKEN_LIMIT,
