@@ -43,7 +43,6 @@ import {
 import { hasMailSyncProgressAdvanced } from "./mail-sync-progress";
 import { toPostgresTextProjection } from "./text";
 import type { WorkflowStepInput, WorkflowStepJob } from "./types";
-import { MEMORY_SCHEMA_VERSION } from "./versions";
 
 export type TemporalCommandJob = WorkflowStepJob & {
   userId: string;
@@ -283,8 +282,6 @@ export function taskQueueLaneForStepType(
     case "gmail.sync.run":
     case "gmail.account.cleanup":
     case "gmail.objects.delete":
-    case "memory.extract":
-    case "memory.batch.retry":
     case "label.recent.scan":
     case "label.batch.submit":
     case "label.batch.event":
@@ -293,9 +290,6 @@ export function taskQueueLaneForStepType(
     case "gmail.message.refresh":
     case "gmail.watch.renew":
       return "control";
-    case "memory.incremental":
-    case "memory.batch.event":
-    case "memory.feedback":
     case "label.thread.assign":
       return "live";
     default:
@@ -438,22 +432,6 @@ export async function enqueueWorkflowStepWithExecutor(
       .onConflictDoNothing({ target: temporalCommands.workflowStepId });
   }
   return existing.id;
-}
-
-export function createPostSyncDerivationSteps(input: {
-  userId: string;
-  accountId: string;
-  historyCursor: string;
-}): WorkflowStepInput[] {
-  return [
-    {
-      userId: input.userId,
-      accountId: input.accountId,
-      stepType: "memory.extract",
-      payload: { schemaVersion: MEMORY_SCHEMA_VERSION },
-      idempotencyKey: `memory.extract:${input.accountId}:${MEMORY_SCHEMA_VERSION}:${input.historyCursor}`,
-    },
-  ];
 }
 
 export async function enqueueWorkflowStep(
@@ -1289,20 +1267,6 @@ export async function failWorkflowStep(
         );
       }
     }
-    if (!input.terminal || !input.step.accountId) return true;
-    if (
-      ["memory.extract", "memory.batch.retry", "memory.batch.event"].includes(
-        input.step.stepType,
-      )
-    ) {
-      await transaction
-        .update(connectedAccounts)
-        .set({
-          syncState: sql`jsonb_set(${connectedAccounts.syncState}, '{memory}', to_jsonb(${"failed"}::text), true)`,
-          updatedAt: new Date(),
-        })
-        .where(eq(connectedAccounts.id, input.step.accountId));
-    }
     return true;
   });
 }
@@ -1339,7 +1303,7 @@ export async function startMailSyncRun(
     await transaction
       .update(connectedAccounts)
       .set({
-        syncState: { mailSync: "running", memory: "pending" },
+        syncState: { mailSync: "running" },
         updatedAt: new Date(),
       })
       .where(
@@ -1765,7 +1729,7 @@ export async function completeMailSyncRun(
       .update(connectedAccounts)
       .set({
         lastSyncedAt: new Date(),
-        syncState: { mailSync: "complete", memory: "pending" },
+        syncState: { mailSync: "complete" },
         updatedAt: new Date(),
       })
       .where(eq(connectedAccounts.id, run.accountId));
@@ -1773,14 +1737,6 @@ export async function completeMailSyncRun(
       sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId: run.accountId })})`,
     );
 
-    await enqueueWorkflowStepsWithExecutor(
-      createPostSyncDerivationSteps({
-        userId: run.userId,
-        accountId: run.accountId,
-        historyCursor: input.finalHistoryCursor,
-      }),
-      executor,
-    );
     return true;
   });
 }
@@ -1833,68 +1789,3 @@ export async function completeGmailSynchronizationRecovery(
   });
 }
 
-export async function enqueuePostSyncWorkflowSteps(
-  database: Database = getDatabase(),
-): Promise<number> {
-  const accounts = await database
-    .select({
-      id: connectedAccounts.id,
-      userId: connectedAccounts.userId,
-      historyCursor: gmailReplicaStates.historyCursor,
-      replicaState: gmailReplicaStates.state,
-      syncState: connectedAccounts.syncState,
-    })
-    .from(connectedAccounts)
-    .innerJoin(
-      gmailReplicaStates,
-      eq(gmailReplicaStates.accountId, connectedAccounts.id),
-    )
-    .where(eq(connectedAccounts.status, "connected"));
-  let inserted = 0;
-  for (const account of accounts) {
-    if (
-      account.syncState.mailSync !== "complete" ||
-      account.replicaState !== "ready" ||
-      !account.historyCursor
-    ) continue;
-    const steps = await enqueueWorkflowStepsWithExecutor(
-      createPostSyncDerivationSteps({
-        userId: account.userId,
-        accountId: account.id,
-        historyCursor: account.historyCursor,
-      }),
-      database,
-    );
-    inserted += steps.length;
-  }
-  return inserted;
-}
-
-export async function getWorkflowStepSubmission(
-  stepId: string,
-  database: Database = getDatabase(),
-) {
-  const [step] = await database
-    .select({
-      id: workflowSteps.id,
-      userId: workflowSteps.userId,
-      accountId: workflowSteps.accountId,
-      jobType: workflowSteps.stepType,
-      result: workflowSteps.result,
-      maxAttempts: workflowSteps.maxAttempts,
-    })
-    .from(workflowSteps)
-    .where(
-      and(
-        eq(workflowSteps.id, stepId),
-        eq(workflowSteps.status, "complete"),
-        inArray(workflowSteps.stepType, [
-          "memory.extract",
-          "memory.incremental",
-          "memory.batch.retry",
-        ]),
-      ),
-    )
-    .limit(1);
-  return step ?? null;
-}

@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Brain02Icon,
   CreditCardIcon,
   Settings01Icon,
   TagsIcon,
@@ -13,7 +12,7 @@ import type {
   MailboxSettings,
 } from "@invook/contracts";
 import axios from "axios";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { Button } from "@/components/ui/button";
@@ -32,14 +31,11 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { useAccountSyncStore } from "@/stores/account-sync/store";
 
 import { LabelSettings } from "./label-settings";
-import { MemorySettings } from "./memory-settings";
 
 const settingsSections = [
   { value: "account", label: "Account", icon: UserAccountIcon },
-  { value: "memory", label: "Memory", icon: Brain02Icon },
   { value: "labels", label: "Labels", icon: TagsIcon },
   { value: "billing", label: "Billing", icon: CreditCardIcon },
 ] as const;
@@ -153,9 +149,6 @@ export function SettingsDialog({
   const [loadState, setLoadState] = useState<"idle" | "loading" | "available" | "error">(
     "idle",
   );
-  const liveMemoryState = useAccountSyncStore(
-    (state) => state.progress?.memory,
-  );
   const loadSettings = useCallback(async (
     accountId = settingsAccountIdRef.current,
   ): Promise<void> => {
@@ -188,19 +181,6 @@ export function SettingsDialog({
     },
     [loadSettings, loadState],
   );
-
-  useEffect(() => {
-    return useAccountSyncStore.subscribe((state, previousState) => {
-      if (
-        isOpen &&
-        settings &&
-        previousState.progress?.memory !== "complete" &&
-        state.progress?.memory === "complete"
-      ) {
-        void loadSettings();
-      }
-    });
-  }, [isOpen, loadSettings, settings]);
 
   if (!account) return null;
 
@@ -245,7 +225,7 @@ export function SettingsDialog({
         <DialogHeader className="sr-only">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Manage your account, Memory, labels, and billing.
+            Manage your account, labels, and billing.
           </DialogDescription>
         </DialogHeader>
         <Tabs
@@ -300,21 +280,6 @@ export function SettingsDialog({
 
           <TabsContent value="account" className="min-h-0 overflow-y-auto">
             <AccountSettings account={account} aiConfigured={aiConfigured} />
-          </TabsContent>
-          <TabsContent value="memory" className="min-h-0 overflow-y-auto">
-            {settings ? (
-              <MemorySettings
-                memories={settings.memories}
-                accountId={account.id}
-                syncState={
-                  account.id === selectedAccountId
-                    ? liveMemoryState ?? account.syncState.memory
-                    : account.syncState.memory
-                }
-                aiConfigured={aiConfigured}
-                onChanged={loadSettings}
-              />
-            ) : settingsUnavailable}
           </TabsContent>
           <TabsContent value="labels" className="min-h-0 overflow-y-auto">
             {settings ? (

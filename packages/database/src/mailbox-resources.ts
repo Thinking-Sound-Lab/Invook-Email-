@@ -45,7 +45,6 @@ import {
   drafts,
   gmailReplicaStates,
   labels,
-  memoryEntries,
   messageAttachments,
   messageLabels,
   messages,
@@ -602,7 +601,7 @@ export async function getMailboxThreadDetail(
     )
     .limit(1);
   if (!selectedThread) return null;
-  const [threadRowsWithLabels, invookLabels, threadMessages, [threadDraft], providerDrafts] =
+  const [threadRowsWithLabels, invookLabels, threadMessages, providerDrafts] =
     await Promise.all([
       attachThreadLabels(
         { userId, accountIds: [selectedThread.accountId], threadRows: [selectedThread] },
@@ -635,29 +634,6 @@ export async function getMailboxThreadDetail(
           ),
         )
         .orderBy(asc(messages.sentAt)),
-      database
-        .select({
-          id: drafts.id,
-          threadId: drafts.threadId,
-          status: drafts.status,
-          generatedText: drafts.generatedText,
-          currentText: drafts.currentText,
-          usedMemoryIds: drafts.usedMemoryIds,
-          updatedAt: drafts.updatedAt,
-        })
-        .from(drafts)
-        .where(
-          and(
-            eq(drafts.userId, userId),
-            eq(drafts.accountId, selectedThread.accountId),
-            eq(drafts.kind, "invook"),
-            eq(drafts.threadId, selectedThread.id),
-            eq(drafts.status, "editing"),
-            isNotNull(drafts.generatedText),
-          ),
-        )
-        .orderBy(desc(drafts.updatedAt))
-        .limit(1),
       database
         .select({
           id: drafts.id,
@@ -773,18 +749,6 @@ export async function getMailboxThreadDetail(
       isDraft: stateByMessageId.get(message.id)?.has("DRAFT") ?? false,
       attachments: attachmentsByMessage.get(message.id) ?? [],
     })),
-    aiReplyDraft:
-      threadDraft && threadDraft.threadId && threadDraft.generatedText
-        ? {
-            id: threadDraft.id,
-            threadId: threadDraft.threadId,
-            status: threadDraft.status,
-            generatedText: threadDraft.generatedText,
-            currentText: threadDraft.currentText,
-            usedMemoryIds: threadDraft.usedMemoryIds,
-            updatedAt: threadDraft.updatedAt.toISOString(),
-          }
-        : null,
     gmailDrafts: providerDrafts.flatMap((draft) =>
       !draft.providerDraftId || !draft.providerMessageId || !draft.providerThreadId
         ? []
@@ -813,42 +777,12 @@ export async function getMailboxSettings(
   );
   const account = accounts?.[0];
   if (!account) return null;
-  const [memoryRows, invookLabels] = await Promise.all([
-    database
-      .select({
-        id: memoryEntries.id,
-        type: memoryEntries.memoryType,
-        contactEmail: memoryEntries.contactEmail,
-        statement: memoryEntries.statement,
-        source: memoryEntries.source,
-        confidence: memoryEntries.confidence,
-        evidenceMessageIds: memoryEntries.evidenceMessageIds,
-        evidenceDraftIds: memoryEntries.evidenceDraftIds,
-        createdAt: memoryEntries.createdAt,
-        updatedAt: memoryEntries.updatedAt,
-      })
-      .from(memoryEntries)
-      .where(
-        and(
-          eq(memoryEntries.userId, userId),
-          eq(memoryEntries.accountId, account.id),
-        ),
-      )
-      .orderBy(
-        asc(memoryEntries.memoryType),
-        asc(memoryEntries.contactEmail),
-        asc(memoryEntries.createdAt),
-      ),
-    listInvookLabels({ userId, accountId: account.id }, database),
-  ]);
+  const invookLabels = await listInvookLabels(
+    { userId, accountId: account.id },
+    database,
+  );
   return {
     accountId: account.id,
-    memories: memoryRows.map((memory) => ({
-      ...memory,
-      confidence: memory.confidence === null ? null : Number(memory.confidence),
-      createdAt: memory.createdAt.toISOString(),
-      updatedAt: memory.updatedAt.toISOString(),
-    })),
     invookLabels,
   };
 }

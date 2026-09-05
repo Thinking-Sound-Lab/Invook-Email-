@@ -59,7 +59,6 @@ export {
 export {
   extractEmailAddress,
   GMAIL_MESSAGE_FUTURE_TOLERANCE_MS,
-  isMemoryEligible,
   normalizeGmailFullMessage,
   parseGmailMessage,
   resolveGmailMessageDate,

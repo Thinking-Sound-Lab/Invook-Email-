@@ -18,7 +18,7 @@
   <a href="./.github/CONTRIBUTING.md">Contribute</a>
 </p>
 
-Invook brings your Gmail accounts into one workspace, organizes your inbox with labels you control, and helps you write with Memory you can inspect and edit. Run it on your own infrastructure and connect the AI providers you choose.
+Invook brings your Gmail accounts into one workspace and organizes your inbox with labels you control, classified by an LLM. Run it on your own infrastructure with your own OpenAI key.
 
 > [!NOTE]
 > Invook is in early development, with no stable release yet. The current setup uses Google OAuth, Gmail Pub/Sub, and Temporal Cloud; Docker provides the local applications, PostgreSQL, and MinIO.
@@ -38,18 +38,8 @@ Invook brings your Gmail accounts into one workspace, organizes your inbox with 
   </tr>
   <tr>
     <td valign="top">
-      <h3>Memory you can edit</h3>
-      Inspect the writing preferences, contact rules, and scheduling habits learned from your sent mail. Add, correct, or delete them at any time.
-    </td>
-    <td valign="top">
-      <h3>Replies in your voice</h3>
-      Draft with the current conversation and relevant Memory. Edit the result, save a Gmail draft, and send when you choose.
-    </td>
-  </tr>
-  <tr>
-    <td valign="top">
       <h3>Find the conversation</h3>
-      Search message text, metadata, and attachment filenames. Ask the mail agent to find a thread, read it, or prepare a reply.
+      Search message text, metadata, and attachment filenames across every connected account.
     </td>
     <td valign="top">
       <h3>Stay connected to Gmail</h3>
@@ -58,7 +48,7 @@ Invook brings your Gmail accounts into one workspace, organizes your inbox with 
   </tr>
 </table>
 
-**You stay in control.** Invook's AI labels are separate from Gmail labels. The mail agent can read stored mail and prepare local drafts, but it has no tools to send email or change Gmail.
+**You stay in control.** Invook's AI labels are separate from Gmail labels, and you keep the final say over every assignment.
 
 ## Get started
 
@@ -82,7 +72,7 @@ Use the settings documented in [`.env.example`](./.env.example) to fill in `.env
 | --- | --- |
 | Google OAuth + Gmail Pub/Sub | Sign-in, mailbox access, and ongoing synchronization |
 | Temporal Cloud | Durable sync and background work; no local Temporal server is bundled |
-| AI providers | An OpenAI-compatible endpoint for interactive features, plus native Batch configuration for historical labels and Memory |
+| AI provider | One OpenAI key for both live thread classification and the historical label Batch |
 
 Generate `BETTER_AUTH_SECRET` and `TOKEN_ENCRYPTION_KEY` independently with `openssl rand -base64 32`. Gmail Pub/Sub and Batch webhooks require public HTTPS endpoints. Local database and object-storage defaults are already in `.env.example`.
 
@@ -98,9 +88,9 @@ Open [localhost:3000](http://localhost:3000), sign in with Google, then connect 
 
 ## Your mail and your data
 
-Gmail owns your messages, read state, stars, and drafts. Invook writes provider actions to Gmail first, then brings its stored replica up to date through Gmail history. Invook owns your AI labels, editable Memory, and local reply drafts.
+Gmail owns your messages, read state, stars, and drafts. Invook writes provider actions to Gmail first, then brings its stored replica up to date through Gmail history. Invook owns your AI labels.
 
-The same Gmail mailbox can be connected by multiple Invook users. Each user must independently complete Gmail authorization; credentials, replicas, attachments, Invook labels, Memory, and preferences remain isolated by their internal connection IDs. Provider actions still change the real shared mailbox and converge through each connection's own history cursor. Verified push notifications fan out to every active connection; a busy replica requests redelivery without undoing other admissions.
+The same Gmail mailbox can be connected by multiple Invook users. Each user must independently complete Gmail authorization; credentials, replicas, attachments, Invook labels, and preferences remain isolated by their internal connection IDs. Provider actions still change the real shared mailbox and converge through each connection's own history cursor. Verified push notifications fan out to every active connection; a busy replica requests redelivery without undoing other admissions.
 
 Disconnect removes only that user's connection and local data. Watch operations are serialized by Gmail identity, and cleanup stops the provider watch only when no other connected or reconnect-required connection needs it. Reconnecting a connection still being removed requires waiting for cleanup to finish. Invook does not revoke the shared Google application grant on disconnect.
 
@@ -115,6 +105,8 @@ Sender-hosted images currently load directly from their original URLs. Opening a
 When upgrading across the label-policy migration, stop API and worker processes before migrating, then restart them together with the updated web build. The migration retires automatic label jobs, preserves completed assignments and pending explicit settings requests, and removes imported Gmail label metadata. The worker resumes eligible recent labeling and saved settings requests after startup.
 
 Shared-mailbox support adds migration `0038_shared_gmail_connections` after label-policy migrations 0036/0037. Apply them in order with API and workers stopped, then deploy the updated API, worker, and web together. Do not run the older single-recipient push or unconditional watch-stop implementation after enabling multi-user connections. Migration 0038 preserves existing IDs and data while changing provider-identity uniqueness to `(user_id, provider, provider_account_id)`.
+
+Migration `0040` narrows Invook to labelling. It permanently drops the Memory tables, the AI reply-draft columns, and every locally generated Invook draft, and it removes the `AI_*`, `MEMORY_BATCH_PROVIDER`, and `AZURE_OPENAI_*` environment variables in favour of a single `OPENAI_*` group. There is no down migration; take a backup first if the database holds anything you want to keep. Stop the API and worker, migrate, then deploy all three processes together.
 
 **TypeScript throughout.** Next.js and React on the web, Fastify at the API, PostgreSQL with Drizzle for persistence, and Temporal Cloud for durable work.
 

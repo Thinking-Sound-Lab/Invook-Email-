@@ -4,7 +4,7 @@
   "private": true,
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.10.0",
-  "description": "An open-source, AI-native Gmail client that drafts with learned Memory.",
+  "description": "An open-source, AI-native Gmail client that labels your inbox automatically.",
   "scripts": {
     "dev": "pnpm --parallel --filter @invook/api --filter @invook/web run dev",
     "dev:web": "pnpm --filter @invook/web run dev",

@@ -513,15 +513,3 @@ export async function normalizeGmailFullMessage(
     attachments: normalizedParts.attachments,
   };
 }
-
-export function isMemoryEligible(message: ParsedGmailMessage): boolean {
-  const normalizedSubject = message.subject.toLowerCase();
-  const wordCount = (message.bodyText ?? "").split(/\s+/).filter(Boolean).length;
-
-  return (
-    message.labelIds.includes("SENT") &&
-    wordCount >= 5 &&
-    !normalizedSubject.startsWith("automatic reply") &&
-    !normalizedSubject.startsWith("out of office")
-  );
-}

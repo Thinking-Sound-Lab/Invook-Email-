@@ -20,18 +20,13 @@ import type {
   ThreadLabelScanPageOutcome,
 } from "@invook/workflows";
 
+import { requiredString } from "../workflow-step-payload";
+
 export type ThreadLabelAnalysisJob = {
   userId: string;
   accountId: string;
   checkpoint: ThreadLabelAnalysisCheckpoint;
 };
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new Error(`${name} is missing.`);
-  }
-  return value;
-}
 
 function requiredUuid(value: unknown, name: string): string {
   const identifier = requiredString(value, name);

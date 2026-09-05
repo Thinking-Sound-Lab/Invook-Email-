@@ -4,10 +4,7 @@ import type {
   FastifyRequest,
 } from "fastify";
 
-import {
-  getBatchWebhookSecret,
-  type MemoryBatchProvider,
-} from "@invook/ai";
+import { getBatchWebhookSecret } from "@invook/ai";
 import { enqueueBatchEvent } from "@invook/database";
 import { Webhook, WebhookVerificationError } from "standardwebhooks";
 
@@ -28,16 +25,14 @@ function headerValue(request: FastifyRequest, name: string): string | null {
 async function handleBatchWebhook(
   request: FastifyRequest<{ Body: Buffer | undefined }>,
   reply: FastifyReply,
-  provider: MemoryBatchProvider,
 ) {
-  const providerName = provider === "openai" ? "OpenAI" : "Azure OpenAI";
-  const signingSecret = getBatchWebhookSecret(provider);
+  const signingSecret = getBatchWebhookSecret();
   if (!signingSecret) {
     await sendProblem(
       request,
       reply,
       503,
-      `${providerName} webhook is not configured`,
+      "OpenAI webhook is not configured",
     );
     return;
   }
@@ -50,7 +45,7 @@ async function handleBatchWebhook(
       request,
       reply,
       400,
-      `${providerName} webhook signature is missing`,
+      "OpenAI webhook signature is missing",
     );
     return;
   }
@@ -68,7 +63,7 @@ async function handleBatchWebhook(
         request,
         reply,
         400,
-        `${providerName} webhook signature is invalid`,
+        "OpenAI webhook signature is invalid",
       );
       return;
     }
@@ -80,7 +75,7 @@ async function handleBatchWebhook(
       request,
       reply,
       400,
-      `${providerName} webhook payload is invalid`,
+      "OpenAI webhook payload is invalid",
     );
     return;
   }
@@ -99,13 +94,12 @@ async function handleBatchWebhook(
       request,
       reply,
       400,
-      `${providerName} webhook event is unsupported`,
+      "OpenAI webhook event is unsupported",
     );
     return;
   }
 
   const queued = await enqueueBatchEvent({
-    provider,
     webhookId,
     eventType,
     providerBatchId: data.id,
@@ -115,7 +109,7 @@ async function handleBatchWebhook(
       request,
       reply,
       409,
-      `${providerName} batch submission is not ready`,
+      "OpenAI batch submission is not ready",
     );
     return;
   }
@@ -131,9 +125,6 @@ export const registerBatchWebhookRoutes: FastifyPluginAsync = async (api) => {
   );
 
   api.post<{ Body: Buffer | undefined }>("/openai", async (request, reply) => {
-    await handleBatchWebhook(request, reply, "openai");
-  });
-  api.post<{ Body: Buffer | undefined }>("/azure-openai", async (request, reply) => {
-    await handleBatchWebhook(request, reply, "azure-openai");
+    await handleBatchWebhook(request, reply);
   });
 };

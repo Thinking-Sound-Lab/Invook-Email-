@@ -47,14 +47,12 @@ test(
           userId: firstUserId,
           providerAccountId: `provider-${firstAccountId}`,
           email: `${firstAccountId}@example.test`,
-          memoryAcknowledgedAt: new Date(),
         },
         {
           id: secondAccountId,
           userId: secondUserId,
           providerAccountId: `provider-${secondAccountId}`,
           email: `${secondAccountId}@example.test`,
-          memoryAcknowledgedAt: new Date(),
         },
       ]);
       for (

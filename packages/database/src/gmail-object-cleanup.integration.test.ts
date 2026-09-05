@@ -198,7 +198,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
-        memoryAcknowledgedAt: new Date(),
       });
       await database.insert(threads).values({
         id: threadId,

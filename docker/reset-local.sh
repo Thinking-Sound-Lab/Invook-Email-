@@ -75,7 +75,7 @@ FROM (
     ('connected_accounts'),
     ('messages'),
     ('drafts'),
-    ('memory_entries'),
+    ('labels'),
     ('workflow_steps'),
     ('temporal_commands')
 ) AS required(table_name)
@@ -149,7 +149,7 @@ SELECT 'profiles=' || count(*) FROM profiles
 UNION ALL SELECT 'connected_accounts=' || count(*) FROM connected_accounts
 UNION ALL SELECT 'messages=' || count(*) FROM messages
 UNION ALL SELECT 'drafts=' || count(*) FROM drafts
-UNION ALL SELECT 'memory_entries=' || count(*) FROM memory_entries
+UNION ALL SELECT 'labels=' || count(*) FROM labels
 UNION ALL SELECT 'workflow_steps=' || count(*) FROM workflow_steps
 UNION ALL SELECT 'temporal_commands=' || count(*) FROM temporal_commands;
 SQL

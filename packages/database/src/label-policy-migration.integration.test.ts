@@ -84,7 +84,7 @@ test(
       VALUES (${childStepId}, ${userId}, ${accountId}, 'label.thread.scan', ${client.json(request)}, ${uuidv4()}),
              (${liveStepId}, ${userId}, ${accountId}, 'label.thread.assign', '{}', ${uuidv4()}),
              (${batchStepId}, ${userId}, ${accountId}, 'label.batch.submit', '{}', ${uuidv4()}),
-             (${unrelatedStepId}, ${userId}, ${accountId}, 'memory.extract', '{}', ${uuidv4()})`;
+             (${unrelatedStepId}, ${userId}, ${accountId}, 'gmail.sync.run', '{}', ${uuidv4()})`;
       for (const stepId of [
         childStepId,
         liveStepId,

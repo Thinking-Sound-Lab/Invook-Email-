@@ -38,7 +38,6 @@ import {
   gmailReplicaStates,
   labels,
   mailboxChangeEvents,
-  memoryEntries,
   messageAttachments,
   messages,
   profiles,
@@ -247,7 +246,6 @@ test(
               userId: userA,
               providerAccountId: gmailA,
               email: aaInput.email,
-              memoryAcknowledgedAt: new Date(),
             }),
             (error: unknown) =>
               error instanceof Error &&
@@ -258,7 +256,7 @@ test(
       );
 
       await t.test(
-        "labels, preferences, Memory, replicas, attachment keys and event audiences stay isolated",
+        "labels, preferences, replicas, attachment keys and event audiences stay isolated",
         async () => {
           for (const [userId, accountId] of [
             [userA, aa.id],
@@ -274,14 +272,6 @@ test(
               },
               database,
             );
-            await database.insert(memoryEntries).values({
-              userId,
-              accountId,
-              memoryType: "preference",
-              statement: `Preference ${userId}`,
-              source: "user",
-              fingerprint: "same-fingerprint",
-            });
             const threadId = uuidv4();
             const messageId = uuidv4();
             const attachmentId = uuidv4();
@@ -344,10 +334,6 @@ test(
               userId,
               accountId,
               database,
-            );
-            assert.equal(
-              settings?.memories[0]?.statement,
-              `Preference ${userId}`,
             );
             assert.equal(
               settings?.invookLabels.find((label) => label.name === "Private")

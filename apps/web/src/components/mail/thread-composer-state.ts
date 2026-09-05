@@ -1,4 +1,4 @@
-import type { AiReplyDraft, MailboxThreadMessage } from "@invook/contracts";
+import type { MailboxThreadMessage } from "@invook/contracts";
 import { buildGmailForwardedMessageText } from "@invook/contracts/gmail-forward";
 
 export type ThreadComposeMode = "reply" | "forward";
@@ -24,7 +24,6 @@ export interface ThreadComposeSession {
   subject: string;
   body: string;
   forwardedMessageText: string | null;
-  aiDraft: AiReplyDraft | null;
   hasEdits: boolean;
 }
 
@@ -49,7 +48,6 @@ export function createThreadComposeSession(input: {
   mode: ThreadComposeMode;
   message: ThreadComposeMessage;
   accountEmail: string;
-  aiDraft?: AiReplyDraft | null;
 }): ThreadComposeSession {
   const { mode, message } = input;
   const isReply = mode === "reply";
@@ -73,7 +71,6 @@ export function createThreadComposeSession(input: {
   const hasPrefix = isReply
     ? /^re\s*:/i.test(message.subject)
     : /^(?:fwd?|fw)\s*:/i.test(message.subject);
-  const aiDraft = isReply ? (input.aiDraft ?? null) : null;
   return {
     mode,
     message,
@@ -81,23 +78,10 @@ export function createThreadComposeSession(input: {
     ccRecipients: "",
     bccRecipients: "",
     subject: hasPrefix ? message.subject : `${prefix}: ${message.subject}`,
-    body: isReply ? (aiDraft?.currentText ?? "") : "",
+    body: "",
     forwardedMessageText: isReply
       ? null
       : buildGmailForwardedMessageText(message),
-    aiDraft,
     hasEdits: false,
-  };
-}
-
-export function acceptThreadAiDraft(
-  session: ThreadComposeSession,
-  draft: AiReplyDraft,
-): ThreadComposeSession {
-  return {
-    ...session,
-    body: draft.currentText,
-    aiDraft: draft,
-    hasEdits: true,
   };
 }

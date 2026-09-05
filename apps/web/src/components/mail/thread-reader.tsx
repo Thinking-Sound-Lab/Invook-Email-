@@ -207,7 +207,6 @@ export async function ThreadReader({
 
           <ThreadComposer
             key={thread.id}
-            threadId={thread.id}
             accountId={thread.accountId}
             accountEmail={thread.accountEmail}
             message={
@@ -226,7 +225,6 @@ export async function ThreadReader({
                   }
                 : null
             }
-            initialDraft={thread.aiReplyDraft}
           />
         </div>
       </ScrollArea>

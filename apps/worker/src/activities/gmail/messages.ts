@@ -11,7 +11,6 @@ import {
   extractEmailAddress,
   gmailSystemLabels,
   getGmailAttachment,
-  isMemoryEligible,
   normalizeGmailFullMessage,
   type ParsedGmailMessage,
 } from "@invook/gmail";
@@ -116,13 +115,8 @@ export async function prepareMessage(options: {
     bodyHtml: message.bodyHtml
       ? toPostgresTextProjection(message.bodyHtml)
       : null,
-    isMemoryEligible: direction === "outgoing" && isMemoryEligible(message),
     ingestionMode,
     isLiveDelivery: options.isLiveDelivery,
-    memoryContactEmails: normalizedEmails(
-      [message.from, ...message.to, ...message.cc],
-      accountEmail,
-    ).map(toPostgresTextProjection),
     attachments,
   };
 }

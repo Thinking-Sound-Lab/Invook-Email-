@@ -57,9 +57,12 @@ function assertBefore(source: string, earlier: string, later: string): void {
   assert.ok(earlierIndex < laterIndex, `${earlier} must precede ${later}`);
 }
 
-test("the Drizzle schema has exactly the 30 owned tables without embedding storage", async () => {
+test("the Drizzle schema has exactly the 27 owned tables without embedding or Memory storage", async () => {
   const source = await readFile(schemaUrl, "utf8");
-  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 30);
+  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 27);
+  assert.doesNotMatch(source, /memoryEntries/);
+  assert.doesNotMatch(source, /memoryPendingEvidence/);
+  assert.doesNotMatch(source, /memoryDeletions/);
   assert.doesNotMatch(source, /messageEmbeddings/);
   assert.doesNotMatch(source, /embeddingBatchSubmissions/);
   assert.doesNotMatch(source, /embeddingContentHash/);

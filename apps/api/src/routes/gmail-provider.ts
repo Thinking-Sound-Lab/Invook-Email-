@@ -3,8 +3,6 @@ import type { FastifyPluginAsync } from "fastify";
 import type { SetGmailThreadReadStateRequest } from "@invook/contracts";
 import {
   enqueueGmailHistoryCatchup,
-  GmailDraftWriteConflictError,
-  getAiReplyDraftForGmailSave,
   getGmailDraftResourceForUser,
   getGmailMessageMutationContext,
   getGmailThreadMutationContext,
@@ -22,11 +20,6 @@ import { mutationAccessHooks, requireUuidParameter } from "../access";
 import { sendJson, sendProblem } from "../responses";
 import type { GmailProviderAccess } from "../services/gmail-provider";
 import { setGmailThreadReadState } from "../services/gmail-thread-read-state";
-import { GmailDraftWritePendingError } from "../services/compose-drafts";
-import {
-  GmailReplyComposeError,
-  promoteReplyDraftToGmail,
-} from "../services/promote-reply-draft";
 import {
   getGmailProviderAccessForAccountRequest,
   sendGmailWriteProblem,
@@ -35,7 +28,6 @@ import {
 type GmailMessageParams = { messageId: string };
 type GmailThreadParams = { threadId: string };
 type GmailDraftParams = { gmailDraftId: string };
-type AiDraftParams = { draftId: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -313,67 +305,4 @@ export const registerGmailProviderRoutes: FastifyPluginAsync = async (api) => {
     },
   );
 
-  api.post<{ Params: AiDraftParams }>(
-    "/v1/drafts/:draftId/save-to-gmail",
-    {
-      onRequest: [
-        ...mutationAccessHooks,
-        requireUuidParameter("draftId", "Draft ID must be valid"),
-      ],
-    },
-    async (request, reply) => {
-      const session = request.invookSession;
-      if (!session) return;
-      const draft = await getAiReplyDraftForGmailSave({
-        userId: session.userId,
-        draftId: request.params.draftId,
-      });
-      if (!draft) {
-        await sendProblem(request, reply, 404, "Draft not found");
-        return;
-      }
-      const access = await getGmailProviderAccessForAccountRequest(
-        request,
-        reply,
-        draft.accountId,
-      );
-      if (!access) return;
-      if (!draft.replyTarget) {
-        await sendProblem(request, reply, 409, "Draft has no incoming message to reply to");
-        return;
-      }
-      try {
-        const result = await promoteReplyDraftToGmail({
-          userId: session.userId,
-          access,
-          draftId: draft.id,
-          updatedAt: draft.updatedAt,
-          accountEmail: draft.accountEmail,
-          providerThreadId: draft.providerThreadId,
-          subject: draft.subject,
-          currentText: draft.currentText,
-          replyTarget: draft.replyTarget,
-        });
-        await sendJson(reply, 201, result);
-      } catch (error) {
-        if (error instanceof GmailReplyComposeError) {
-          await sendProblem(request, reply, 409, "Draft has no valid reply recipient");
-          return;
-        }
-        if (error instanceof GmailDraftWriteConflictError) {
-          await sendProblem(request, reply, 409, "Draft version conflicts with another Gmail write");
-          return;
-        }
-        if (error instanceof GmailDraftWritePendingError) {
-          await sendProblem(request, reply, 409, "Previous Gmail draft save is still being resolved");
-          return;
-        }
-        if (error instanceof GmailApiError) {
-          await sendGmailWriteProblem(error, request, reply);
-          return;
-        }
-        throw error;
-      }
-    },
-  );
 };

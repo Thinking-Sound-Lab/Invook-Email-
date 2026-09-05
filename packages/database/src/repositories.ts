@@ -58,9 +58,6 @@ import {
   gmailWatchStates,
   labels,
   mailSyncRuns,
-  memoryDeletions,
-  memoryEntries,
-  memoryPendingEvidence,
   messageAttachments,
   messages,
   messageLabels,
@@ -80,16 +77,10 @@ import {
   enqueueWorkflowStep,
   enqueueWorkflowStepWithExecutor,
   enqueueWorkflowStepsWithExecutor,
-  getWorkflowStepSubmission,
 } from "./workflows";
-import {
-  DRAFT_FEEDBACK_VERSION,
-  MEMORY_SCHEMA_VERSION,
-} from "./versions";
 
 const initialSyncState: AccountSyncState = {
   mailSync: "pending",
-  memory: "pending",
 };
 
 export class InactiveMailSyncRunError extends Error {
@@ -98,9 +89,6 @@ export class InactiveMailSyncRunError extends Error {
     this.name = "InactiveMailSyncRunError";
   }
 }
-
-export type MemoryType = "preference" | "contact" | "scheduling";
-export type MemorySource = "user" | "inferred" | "feedback";
 
 function equalStringArrays(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
@@ -116,29 +104,9 @@ function equalSender(
   return left.raw === right.raw && left.email === right.email;
 }
 
-function normalizeMemoryStatement(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
-}
-
 function normalizeContactEmail(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase() ?? "";
   return normalized || null;
-}
-
-export function createMemoryFingerprint(input: {
-  type: MemoryType;
-  contactEmail?: string | null;
-  statement: string;
-}): string {
-  return createHash("sha256")
-    .update(
-      [
-        input.type,
-        normalizeContactEmail(input.contactEmail) ?? "",
-        normalizeMemoryStatement(input.statement).toLowerCase(),
-      ].join("\n"),
-    )
-    .digest("hex");
 }
 
 export async function checkDatabaseConnection(
@@ -523,7 +491,6 @@ export async function saveNewGmailConnection(
         image: input.image,
         status: "connected",
         scopes: input.scopes,
-        memoryAcknowledgedAt: input.authenticatedAt,
         syncState: initialSyncState,
       })
       .returning({ id: connectedAccounts.id });
@@ -612,7 +579,7 @@ export async function getMailboxSetupSummary(
 
   if (!account) return null;
 
-  const [[threadTotal], [messageTotal], [memoryTotal]] = await Promise.all([
+  const [[threadTotal], [messageTotal]] = await Promise.all([
     database
       .select({ value: count(threads.id) })
       .from(threads)
@@ -622,17 +589,12 @@ export async function getMailboxSetupSummary(
       .from(messages)
       .innerJoin(threads, eq(messages.threadId, threads.id))
       .where(eq(threads.accountId, account.id)),
-    database
-      .select({ value: count(memoryEntries.id) })
-      .from(memoryEntries)
-      .where(eq(memoryEntries.accountId, account.id)),
   ]);
 
   return {
     account,
     threadCount: threadTotal?.value ?? 0,
     messageCount: messageTotal?.value ?? 0,
-    memoryCount: memoryTotal?.value ?? 0,
   };
 }
 
@@ -815,115 +777,6 @@ export async function searchMailbox(
     matches: [...row.matches] as Array<"full_text" | "metadata" | "attachment">,
     score: row.score,
   }));
-}
-
-export async function getMailboxThreadForAgent(
-  userId: string,
-  threadId: string,
-  database: Database = getDatabase(),
-) {
-  const [thread] = await database
-    .select({
-      accountId: threads.accountId,
-      id: threads.id,
-      subject: threads.subject,
-      participants: threads.participants,
-    })
-    .from(threads)
-    .innerJoin(connectedAccounts, eq(connectedAccounts.id, threads.accountId))
-    .where(
-      and(
-        eq(threads.id, threadId),
-        eq(threads.userId, userId),
-        eq(connectedAccounts.userId, userId),
-        not(eq(connectedAccounts.status, "disconnected")),
-        visibleThreadCondition(),
-      ),
-    )
-    .limit(1);
-  if (!thread) return null;
-
-  const threadMessages = await database
-    .select({
-      id: messages.id,
-      direction: messages.direction,
-      sender: messages.sender,
-      recipients: messages.recipients,
-      bodyText: messages.bodyText,
-      sentAt: messages.sentAt,
-    })
-    .from(messages)
-    .where(
-      and(
-        eq(messages.threadId, thread.id),
-        eq(messages.userId, userId),
-        visibleMessageCondition,
-      ),
-    )
-    .orderBy(asc(messages.sentAt));
-  const messageIds = threadMessages.map((message) => message.id);
-  const attachmentRows =
-    messageIds.length > 0
-      ? await database
-          .select({
-            id: messageAttachments.id,
-            messageId: messageAttachments.messageId,
-            filename: messageAttachments.filename,
-            mimeType: messageAttachments.mimeType,
-            size: messageAttachments.size,
-          })
-          .from(messageAttachments)
-          .where(
-            and(
-              eq(messageAttachments.userId, userId),
-              inArray(messageAttachments.messageId, messageIds),
-            ),
-          )
-          .orderBy(asc(messageAttachments.filename))
-      : [];
-
-  return {
-    ...thread,
-    messages: threadMessages.map((message) => ({
-      ...message,
-      attachments: attachmentRows.filter(
-        (attachment) => attachment.messageId === message.id,
-      ),
-    })),
-  };
-}
-
-export async function listMailboxThreadAttachments(
-  userId: string,
-  threadId: string,
-  database: Database = getDatabase(),
-) {
-  return database
-    .select({
-      id: messageAttachments.id,
-      messageId: messageAttachments.messageId,
-      filename: messageAttachments.filename,
-      mimeType: messageAttachments.mimeType,
-      size: messageAttachments.size,
-    })
-    .from(messageAttachments)
-    .innerJoin(messages, eq(messages.id, messageAttachments.messageId))
-    .innerJoin(threads, eq(threads.id, messages.threadId))
-    .innerJoin(connectedAccounts, eq(connectedAccounts.id, messages.accountId))
-    .where(
-      and(
-        eq(messageAttachments.userId, userId),
-        eq(messages.userId, userId),
-        eq(threads.id, threadId),
-        eq(threads.userId, userId),
-        eq(connectedAccounts.userId, userId),
-        eq(messageAttachments.accountId, connectedAccounts.id),
-        eq(threads.accountId, connectedAccounts.id),
-        eq(connectedAccounts.status, "connected"),
-        visibleMessageCondition,
-      ),
-    )
-    .orderBy(asc(messageAttachments.filename));
 }
 
 export type MailboxAttachmentDownload = {
@@ -1188,7 +1041,6 @@ async function upsertMailboxMessageWithTransaction(
         bodyText: messages.bodyText,
         bodyHtml: messages.bodyHtml,
         sentAt: messages.sentAt,
-        isMemoryEligible: messages.isMemoryEligible,
       })
       .from(messages)
       .where(
@@ -1234,8 +1086,7 @@ async function upsertMailboxMessageWithTransaction(
       existingMessage.subject !== input.subject ||
       existingMessage.bodyText !== input.bodyText ||
       existingMessage.bodyHtml !== input.bodyHtml ||
-      existingMessage.sentAt.getTime() !== input.sentAt.getTime() ||
-      existingMessage.isMemoryEligible !== input.isMemoryEligible;
+      existingMessage.sentAt.getTime() !== input.sentAt.getTime();
     const changed =
       storedDataChanged ||
       !equalStringArrays(
@@ -1265,7 +1116,6 @@ async function upsertMailboxMessageWithTransaction(
           bodyText: input.bodyText,
           bodyHtml: input.bodyHtml,
           sentAt: input.sentAt,
-          isMemoryEligible: input.isMemoryEligible,
         })
         .onConflictDoUpdate({
           target: [messages.threadId, messages.providerMessageId],
@@ -1282,8 +1132,7 @@ async function upsertMailboxMessageWithTransaction(
             bodyText: input.bodyText,
             bodyHtml: input.bodyHtml,
             sentAt: input.sentAt,
-            isMemoryEligible: input.isMemoryEligible,
-            updatedAt: new Date(),
+              updatedAt: new Date(),
           },
         })
         .returning({ id: messages.id });
@@ -1363,46 +1212,6 @@ async function upsertMailboxMessageWithTransaction(
             source: "gmail" as const,
           })),
         );
-      }
-
-      if (contentChanged && input.ingestionMode === "incremental") {
-        await transaction
-          .delete(memoryPendingEvidence)
-          .where(eq(memoryPendingEvidence.messageId, messageId));
-        if (input.direction === "outgoing" && input.isMemoryEligible) {
-          const contactEmails = Array.from(
-            new Set(input.memoryContactEmails.map(normalizeContactEmail).filter(Boolean)),
-          ) as string[];
-          await transaction
-            .insert(memoryPendingEvidence)
-            .values([
-              {
-                userId: input.userId,
-                accountId: input.accountId,
-                threadId,
-                messageId,
-                scope: "global" as const,
-                contactEmail: "",
-                schemaVersion: MEMORY_SCHEMA_VERSION,
-              },
-              ...contactEmails.map((contactEmail) => ({
-                userId: input.userId,
-                accountId: input.accountId,
-                threadId,
-                messageId,
-                scope: "contact" as const,
-                contactEmail,
-                schemaVersion: MEMORY_SCHEMA_VERSION,
-              })),
-            ])
-            .onConflictDoNothing({
-              target: [
-                memoryPendingEvidence.messageId,
-                memoryPendingEvidence.scope,
-                memoryPendingEvidence.contactEmail,
-              ],
-            });
-        }
       }
 
       await transaction
@@ -1824,26 +1633,6 @@ export async function replaceGmailMessageLabels(
   });
 }
 
-export async function countMemoryEligibleMessages(
-  accountId: string,
-  database: Database = getDatabase(),
-): Promise<number> {
-  const [total] = await database
-    .select({ value: count(messages.id) })
-    .from(messages)
-    .innerJoin(threads, eq(messages.threadId, threads.id))
-    .where(
-      and(
-        eq(threads.accountId, accountId),
-        eq(messages.direction, "outgoing"),
-        eq(messages.isMemoryEligible, true),
-        eq(messages.excludedFromMemory, false),
-      ),
-    );
-
-  return total?.value ?? 0;
-}
-
 export class LabelConflictError extends Error {
   constructor(message = "A label with this name already exists.") {
     super(message);
@@ -2129,909 +1918,8 @@ export async function setInvookLabelEnabled(
   });
 }
 
-export async function getMemoryAnalysisThreads(
-  accountId: string,
-  evidenceMessageIds?: string[],
-  database: Database = getDatabase(),
-) {
-  if (evidenceMessageIds && evidenceMessageIds.length === 0) return [];
-  const evidenceIdSet = evidenceMessageIds
-    ? new Set(evidenceMessageIds)
-    : null;
-  const eligibleThreadIds = database
-    .select({ id: messages.threadId })
-    .from(messages)
-    .where(
-      and(
-        eq(messages.direction, "outgoing"),
-        eq(messages.isMemoryEligible, true),
-        eq(messages.excludedFromMemory, false),
-        ...(evidenceMessageIds
-          ? [inArray(messages.id, evidenceMessageIds)]
-          : []),
-      ),
-    )
-    .groupBy(messages.threadId);
-
-  const rows = await database
-    .select({
-      threadId: messages.threadId,
-      threadSubject: threads.subject,
-      id: messages.id,
-      direction: messages.direction,
-      sender: messages.sender,
-      recipients: messages.recipients,
-      bodyText: messages.bodyText,
-      sentAt: messages.sentAt,
-      isMemoryEligible: messages.isMemoryEligible,
-    })
-    .from(messages)
-    .innerJoin(threads, eq(messages.threadId, threads.id))
-    .where(
-      and(
-        eq(threads.accountId, accountId),
-        inArray(threads.id, eligibleThreadIds),
-        eq(messages.excludedFromMemory, false),
-        or(
-          eq(messages.direction, "incoming"),
-          and(
-            eq(messages.direction, "outgoing"),
-            eq(messages.isMemoryEligible, true),
-            ...(evidenceMessageIds
-              ? [inArray(messages.id, evidenceMessageIds)]
-              : []),
-          ),
-        ),
-      ),
-    )
-    .orderBy(asc(messages.threadId), asc(messages.sentAt));
-
-  const grouped = new Map<
-    string,
-    {
-      id: string;
-      subject: string;
-      messages: Array<{
-        id: string;
-        direction: "incoming" | "outgoing";
-        sender: { raw: string; email: string };
-        recipients: string[];
-        bodyText: string;
-        sentAt: Date;
-        ownerEvidence: boolean;
-      }>;
-    }
-  >();
-
-  for (const row of rows) {
-    const thread = grouped.get(row.threadId) ?? {
-      id: row.threadId,
-      subject: row.threadSubject,
-      messages: [],
-    };
-    thread.messages.push({
-      id: row.id,
-      direction: row.direction,
-      sender: row.sender,
-      recipients: row.recipients,
-      bodyText: row.bodyText,
-      sentAt: row.sentAt,
-      ownerEvidence:
-        row.direction === "outgoing" &&
-        row.isMemoryEligible &&
-        (!evidenceIdSet || evidenceIdSet.has(row.id)),
-    });
-    grouped.set(row.threadId, thread);
-  }
-
-  return Array.from(grouped.values());
-}
-
-export async function getUserAuthoredMemories(
-  accountId: string,
-  database: Database = getDatabase(),
-) {
-  return database
-    .select({
-      id: memoryEntries.id,
-      type: memoryEntries.memoryType,
-      contactEmail: memoryEntries.contactEmail,
-      statement: memoryEntries.statement,
-    })
-    .from(memoryEntries)
-    .where(
-      and(eq(memoryEntries.accountId, accountId), eq(memoryEntries.source, "user")),
-    )
-    .orderBy(asc(memoryEntries.createdAt));
-}
-
-export async function getMemoriesForUser(
-  input: { userId: string; accountId: string },
-  database: Database = getDatabase(),
-) {
-  const [account] = await database
-    .select({ id: connectedAccounts.id, syncState: connectedAccounts.syncState })
-    .from(connectedAccounts)
-    .where(
-      and(
-        eq(connectedAccounts.userId, input.userId),
-        eq(connectedAccounts.id, input.accountId),
-        not(eq(connectedAccounts.status, "disconnected")),
-      ),
-    )
-    .limit(1);
-  if (!account) return null;
-
-  const entries = await database
-    .select({
-      id: memoryEntries.id,
-      type: memoryEntries.memoryType,
-      contactEmail: memoryEntries.contactEmail,
-      statement: memoryEntries.statement,
-      source: memoryEntries.source,
-      confidence: memoryEntries.confidence,
-      evidenceMessageIds: memoryEntries.evidenceMessageIds,
-      evidenceDraftIds: memoryEntries.evidenceDraftIds,
-      createdAt: memoryEntries.createdAt,
-      updatedAt: memoryEntries.updatedAt,
-    })
-    .from(memoryEntries)
-    .where(
-      and(
-        eq(memoryEntries.userId, input.userId),
-        eq(memoryEntries.accountId, account.id),
-      ),
-    )
-    .orderBy(
-      asc(memoryEntries.memoryType),
-      asc(memoryEntries.contactEmail),
-      asc(memoryEntries.createdAt),
-    );
-
-  return { account, entries };
-}
-
-type MemoryEntryInput = {
-  type: MemoryType;
-  contactEmail?: string | null;
-  statement: string;
-};
-
-function memoryValues(input: MemoryEntryInput) {
-  const statement = normalizeMemoryStatement(input.statement);
-  const contactEmail =
-    input.type === "contact" ? normalizeContactEmail(input.contactEmail) : null;
-  return {
-    type: input.type,
-    contactEmail,
-    statement,
-    fingerprint: createMemoryFingerprint({
-      type: input.type,
-      contactEmail,
-      statement,
-    }),
-  };
-}
-
-export class MemoryConflictError extends Error {
-  constructor() {
-    super("An identical memory already exists.");
-    this.name = "MemoryConflictError";
-  }
-}
-
-export async function createUserMemory(
-  input: { userId: string; accountId: string } & MemoryEntryInput,
-  database: Database = getDatabase(),
-) {
-  const value = memoryValues(input);
-  if (input.type === "contact" && !value.contactEmail) {
-    throw new Error("A contact memory requires an email address.");
-  }
-
-  return database.transaction(async (transaction) => {
-    const [account] = await transaction
-      .select({ id: connectedAccounts.id })
-      .from(connectedAccounts)
-      .where(
-        and(
-          eq(connectedAccounts.userId, input.userId),
-          eq(connectedAccounts.id, input.accountId),
-          not(eq(connectedAccounts.status, "disconnected")),
-        ),
-      )
-      .limit(1);
-    if (!account) return null;
-
-    await transaction
-      .delete(memoryDeletions)
-      .where(
-        and(
-          eq(memoryDeletions.accountId, account.id),
-          eq(memoryDeletions.fingerprint, value.fingerprint),
-        ),
-      );
-
-    const [memory] = await transaction
-      .insert(memoryEntries)
-      .values({
-        userId: input.userId,
-        accountId: account.id,
-        memoryType: value.type,
-        contactEmail: value.contactEmail,
-        statement: value.statement,
-        source: "user",
-        confidence: null,
-        fingerprint: value.fingerprint,
-        schemaVersion: MEMORY_SCHEMA_VERSION,
-      })
-      .onConflictDoUpdate({
-        target: [memoryEntries.accountId, memoryEntries.fingerprint],
-        set: {
-          memoryType: value.type,
-          contactEmail: value.contactEmail,
-          statement: value.statement,
-          source: "user",
-          confidence: null,
-          evidenceMessageIds: [],
-          evidenceDraftIds: [],
-          modelId: null,
-          schemaVersion: MEMORY_SCHEMA_VERSION,
-          updatedAt: new Date(),
-        },
-      })
-      .returning();
-    if (!memory) throw new Error("The memory could not be saved.");
-    return memory;
-  });
-}
-
-export async function updateUserMemory(
-  input: { userId: string; memoryId: string } & MemoryEntryInput,
-  database: Database = getDatabase(),
-) {
-  const value = memoryValues(input);
-  if (input.type === "contact" && !value.contactEmail) {
-    throw new Error("A contact memory requires an email address.");
-  }
-
-  return database.transaction(async (transaction) => {
-    const [existing] = await transaction
-      .select({
-        id: memoryEntries.id,
-        userId: memoryEntries.userId,
-        accountId: memoryEntries.accountId,
-        memoryType: memoryEntries.memoryType,
-        contactEmail: memoryEntries.contactEmail,
-        fingerprint: memoryEntries.fingerprint,
-      })
-      .from(memoryEntries)
-      .where(
-        and(eq(memoryEntries.id, input.memoryId), eq(memoryEntries.userId, input.userId)),
-      )
-      .limit(1);
-    if (!existing) return null;
-
-    const [duplicate] = await transaction
-      .select({ id: memoryEntries.id })
-      .from(memoryEntries)
-      .where(
-        and(
-          eq(memoryEntries.accountId, existing.accountId),
-          eq(memoryEntries.fingerprint, value.fingerprint),
-          ne(memoryEntries.id, existing.id),
-        ),
-      )
-      .limit(1);
-    if (duplicate) throw new MemoryConflictError();
-
-    await transaction
-      .delete(memoryDeletions)
-      .where(
-        and(
-          eq(memoryDeletions.accountId, existing.accountId),
-          eq(memoryDeletions.fingerprint, value.fingerprint),
-        ),
-      );
-
-    if (existing.fingerprint !== value.fingerprint) {
-      await transaction
-        .insert(memoryDeletions)
-        .values({
-          userId: existing.userId,
-          accountId: existing.accountId,
-          memoryType: existing.memoryType,
-          contactEmail: existing.contactEmail,
-          fingerprint: existing.fingerprint,
-        })
-        .onConflictDoUpdate({
-          target: [memoryDeletions.accountId, memoryDeletions.fingerprint],
-          set: {
-            contactEmail: existing.contactEmail,
-            deletedAt: new Date(),
-          },
-        });
-    }
-
-    const [memory] = await transaction
-      .update(memoryEntries)
-      .set({
-        memoryType: value.type,
-        contactEmail: value.contactEmail,
-        statement: value.statement,
-        source: "user",
-        confidence: null,
-        evidenceMessageIds: [],
-        evidenceDraftIds: [],
-        modelId: null,
-        schemaVersion: MEMORY_SCHEMA_VERSION,
-        fingerprint: value.fingerprint,
-        updatedAt: new Date(),
-      })
-      .where(eq(memoryEntries.id, existing.id))
-      .returning();
-    if (!memory) return null;
-    return memory;
-  });
-}
-
-export async function deleteUserMemory(
-  input: { userId: string; memoryId: string },
-  database: Database = getDatabase(),
-) {
-  return database.transaction(async (transaction) => {
-    const [memory] = await transaction
-      .select()
-      .from(memoryEntries)
-      .where(
-        and(eq(memoryEntries.id, input.memoryId), eq(memoryEntries.userId, input.userId)),
-      )
-      .limit(1);
-    if (!memory) return false;
-
-    await transaction
-      .insert(memoryDeletions)
-      .values({
-        userId: memory.userId,
-        accountId: memory.accountId,
-        memoryType: memory.memoryType,
-        contactEmail: memory.contactEmail,
-        fingerprint: memory.fingerprint,
-      })
-      .onConflictDoUpdate({
-        target: [memoryDeletions.accountId, memoryDeletions.fingerprint],
-        set: {
-          contactEmail: memory.contactEmail,
-          deletedAt: new Date(),
-        },
-      });
-    await transaction.delete(memoryEntries).where(eq(memoryEntries.id, memory.id));
-    return true;
-  });
-}
-
-export async function saveExtractedMemories(
-  input: {
-    userId: string;
-    accountId: string;
-    source: Exclude<MemorySource, "user">;
-    modelId: string | null;
-    replaceExisting?: boolean;
-    markComplete?: boolean;
-    memories: Array<
-      MemoryEntryInput & {
-        confidence: number;
-        evidenceMessageIds?: string[];
-        evidenceDraftIds?: string[];
-      }
-    >;
-  },
-  database: Database = getDatabase(),
-) {
-  return database.transaction(async (transaction) => {
-    const deletedRows = await transaction
-      .select({ fingerprint: memoryDeletions.fingerprint })
-      .from(memoryDeletions)
-      .where(eq(memoryDeletions.accountId, input.accountId));
-    const deletedFingerprints = new Set(deletedRows.map((row) => row.fingerprint));
-
-    if (input.replaceExisting !== false) {
-      await transaction
-        .delete(memoryEntries)
-        .where(
-          and(
-            eq(memoryEntries.accountId, input.accountId),
-            eq(memoryEntries.source, input.source),
-          ),
-        );
-    }
-
-    let savedCount = 0;
-    for (const candidate of input.memories) {
-      const value = memoryValues(candidate);
-      if (
-        (candidate.type === "contact" && !value.contactEmail) ||
-        deletedFingerprints.has(value.fingerprint)
-      ) {
-        continue;
-      }
-
-      const [existing] = await transaction
-        .select({
-          id: memoryEntries.id,
-          source: memoryEntries.source,
-          confidence: memoryEntries.confidence,
-          evidenceMessageIds: memoryEntries.evidenceMessageIds,
-          evidenceDraftIds: memoryEntries.evidenceDraftIds,
-        })
-        .from(memoryEntries)
-        .where(
-          and(
-            eq(memoryEntries.accountId, input.accountId),
-            eq(memoryEntries.fingerprint, value.fingerprint),
-          ),
-        )
-        .limit(1);
-      if (existing) {
-        if (existing.source === input.source) {
-          await transaction
-            .update(memoryEntries)
-            .set({
-              confidence: Math.max(
-                Number(existing.confidence ?? 0),
-                candidate.confidence,
-              ).toFixed(2),
-              evidenceMessageIds: Array.from(
-                new Set([
-                  ...existing.evidenceMessageIds,
-                  ...(candidate.evidenceMessageIds ?? []),
-                ]),
-              ),
-              evidenceDraftIds: Array.from(
-                new Set([
-                  ...existing.evidenceDraftIds,
-                  ...(candidate.evidenceDraftIds ?? []),
-                ]),
-              ),
-              modelId: input.modelId,
-              schemaVersion: MEMORY_SCHEMA_VERSION,
-              updatedAt: new Date(),
-            })
-            .where(eq(memoryEntries.id, existing.id));
-          savedCount += 1;
-        }
-        continue;
-      }
-
-      const inserted = await transaction
-        .insert(memoryEntries)
-        .values({
-          userId: input.userId,
-          accountId: input.accountId,
-          memoryType: value.type,
-          contactEmail: value.contactEmail,
-          statement: value.statement,
-          source: input.source,
-          confidence: candidate.confidence.toFixed(2),
-          evidenceMessageIds: Array.from(new Set(candidate.evidenceMessageIds ?? [])),
-          evidenceDraftIds: Array.from(new Set(candidate.evidenceDraftIds ?? [])),
-          modelId: input.modelId,
-          schemaVersion: MEMORY_SCHEMA_VERSION,
-          fingerprint: value.fingerprint,
-        })
-        .onConflictDoNothing({
-          target: [memoryEntries.accountId, memoryEntries.fingerprint],
-        })
-        .returning({ id: memoryEntries.id });
-      savedCount += inserted.length;
-    }
-
-    if (input.source === "inferred" && input.markComplete !== false) {
-      await transaction
-        .update(connectedAccounts)
-        .set({
-          syncState: sql`jsonb_set(${connectedAccounts.syncState}, '{memory}', to_jsonb(${"complete"}::text), true)`,
-          updatedAt: new Date(),
-        })
-        .where(eq(connectedAccounts.id, input.accountId));
-    }
-
-    return savedCount;
-  });
-}
-
-export async function setMemorySyncStage(
-  accountId: string,
-  stage: AccountSyncState["memory"],
-  database: Database = getDatabase(),
-) {
-  await database.transaction(async (transaction) => {
-    await transaction
-      .update(connectedAccounts)
-      .set({
-        syncState: sql`jsonb_set(${connectedAccounts.syncState}, '{memory}', to_jsonb(${stage}::text), true)`,
-        updatedAt: new Date(),
-      })
-      .where(eq(connectedAccounts.id, accountId));
-    await transaction.execute(
-      sql`select pg_notify('invook_account_sync', ${JSON.stringify({ accountId })})`,
-    );
-  });
-}
-
-export async function getReplyDraftContext(
-  userId: string,
-  threadId: string,
-  database: Database = getDatabase(),
-) {
-  const [thread] = await database
-    .select({
-      id: threads.id,
-      accountId: threads.accountId,
-      subject: threads.subject,
-      participants: threads.participants,
-      accountEmail: connectedAccounts.email,
-    })
-    .from(threads)
-    .innerJoin(connectedAccounts, eq(connectedAccounts.id, threads.accountId))
-    .where(
-      and(
-        eq(threads.id, threadId),
-        eq(threads.userId, userId),
-        eq(connectedAccounts.userId, userId),
-        eq(connectedAccounts.status, "connected"),
-        visibleThreadCondition(),
-      ),
-    )
-    .limit(1);
-  if (!thread) return null;
-
-  const [threadMessages, memories] = await Promise.all([
-    database
-      .select({
-        id: messages.id,
-        direction: messages.direction,
-        sender: messages.sender,
-        recipients: messages.recipients,
-        bodyText: messages.bodyText,
-        sentAt: messages.sentAt,
-      })
-      .from(messages)
-      .where(
-        and(
-          eq(messages.userId, userId),
-          eq(messages.threadId, thread.id),
-          visibleMessageCondition,
-        ),
-      )
-      .orderBy(asc(messages.sentAt)),
-    database
-      .select({
-        id: memoryEntries.id,
-        type: memoryEntries.memoryType,
-        contactEmail: memoryEntries.contactEmail,
-        statement: memoryEntries.statement,
-        source: memoryEntries.source,
-      })
-      .from(memoryEntries)
-      .where(
-        and(
-          eq(memoryEntries.userId, userId),
-          eq(memoryEntries.accountId, thread.accountId),
-        ),
-      )
-      .orderBy(asc(memoryEntries.createdAt)),
-  ]);
-
-  return { ...thread, messages: threadMessages, memories };
-}
-
-export async function saveGeneratedDraft(
-  input: {
-    userId: string;
-    accountId: string;
-    threadId: string;
-    text: string;
-    usedMemoryIds: string[];
-    modelId: string;
-    schedulingRelevant: boolean;
-  },
-  database: Database = getDatabase(),
-) {
-  return database.transaction(async (transaction) => {
-    const [thread] = await transaction
-      .select({ id: threads.id })
-      .from(threads)
-      .where(
-        and(
-          eq(threads.id, input.threadId),
-          eq(threads.userId, input.userId),
-          eq(threads.accountId, input.accountId),
-        ),
-      )
-      .limit(1);
-    if (!thread) return null;
-
-    await transaction
-      .update(drafts)
-      .set({ status: "discarded", updatedAt: new Date() })
-      .where(
-        and(
-          eq(drafts.userId, input.userId),
-          eq(drafts.kind, "invook"),
-          eq(drafts.threadId, input.threadId),
-          eq(drafts.status, "editing"),
-        ),
-      );
-
-    const [draft] = await transaction
-      .insert(drafts)
-      .values({
-        userId: input.userId,
-        accountId: input.accountId,
-        kind: "invook",
-        threadId: input.threadId,
-        status: "editing",
-        generatedText: input.text,
-        currentText: input.text,
-        usedMemoryIds: Array.from(new Set(input.usedMemoryIds)),
-        generationMetadata: {
-          modelId: input.modelId,
-          schedulingRelevant: input.schedulingRelevant,
-        },
-        generatedAt: new Date(),
-      })
-      .returning();
-    return draft ?? null;
-  });
-}
-
-export async function saveDraftEdit(
-  input: { userId: string; draftId: string; currentText: string },
-  database: Database = getDatabase(),
-) {
-  return database.transaction(async (transaction) => {
-    const [existing] = await transaction
-      .select({
-        id: drafts.id,
-        accountId: drafts.accountId,
-        threadId: drafts.threadId,
-        generatedText: drafts.generatedText,
-      })
-      .from(drafts)
-      .where(
-        and(
-          eq(drafts.id, input.draftId),
-          eq(drafts.userId, input.userId),
-          eq(drafts.kind, "invook"),
-          eq(drafts.status, "editing"),
-        ),
-      )
-      .limit(1);
-    if (!existing?.generatedText) return null;
-
-    const [draft] = await transaction
-      .update(drafts)
-      .set({
-        currentText: input.currentText,
-        feedbackVersion: 0,
-        lastFeedbackAt: null,
-        editSignals: [],
-        updatedAt: new Date(),
-      })
-      .where(eq(drafts.id, existing.id))
-      .returning();
-    if (!draft) return null;
-
-    if (normalizeMemoryStatement(existing.generatedText) !== normalizeMemoryStatement(input.currentText)) {
-      const contentHash = createHash("sha256").update(input.currentText).digest("hex");
-      await enqueueWorkflowStep(
-        {
-          userId: input.userId,
-          accountId: existing.accountId,
-          stepType: "memory.feedback",
-          payload: { draftId: existing.id, feedbackVersion: DRAFT_FEEDBACK_VERSION },
-          idempotencyKey: `memory.feedback:${existing.accountId}:${existing.id}:${contentHash}`,
-        },
-        transaction as unknown as Database,
-      );
-    }
-    return draft;
-  });
-}
-
-export async function getDraftFeedbackSamples(
-  accountId: string,
-  _feedbackVersion = DRAFT_FEEDBACK_VERSION,
-  limit = 60,
-  database: Database = getDatabase(),
-) {
-  return database
-    .select({
-      id: drafts.id,
-      threadId: drafts.threadId,
-      subject: threads.subject,
-      participants: threads.participants,
-      generatedText: drafts.generatedText,
-      editedText: drafts.currentText,
-      updatedAt: drafts.updatedAt,
-    })
-    .from(drafts)
-    .innerJoin(threads, eq(threads.id, drafts.threadId))
-    .where(
-      and(
-        eq(drafts.accountId, accountId),
-        isNotNull(drafts.generatedText),
-        ne(drafts.currentText, sql`coalesce(${drafts.generatedText}, '')`),
-      ),
-    )
-    .orderBy(desc(drafts.updatedAt))
-    .limit(limit);
-}
-
-export async function markDraftFeedbackAnalyzed(
-  input: {
-    draftIds: string[];
-    signalsByDraft: Map<string, Array<{ type: MemoryType; statement: string }>>;
-    feedbackVersion?: number;
-  },
-  database: Database = getDatabase(),
-) {
-  const feedbackVersion = input.feedbackVersion ?? DRAFT_FEEDBACK_VERSION;
-  await database.transaction(async (transaction) => {
-    for (const draftId of input.draftIds) {
-      await transaction
-        .update(drafts)
-        .set({
-          feedbackVersion,
-          lastFeedbackAt: new Date(),
-          editSignals: input.signalsByDraft.get(draftId) ?? [],
-          updatedAt: new Date(),
-        })
-        .where(eq(drafts.id, draftId));
-    }
-  });
-}
-
-type PendingMemoryEvidence = {
-  messageId: string;
-  scope: "global" | "contact";
-  contactEmail: string;
-};
-
-function incrementalMemoryJobs(input: {
-  userId: string;
-  accountId: string;
-  pendingEvidence: PendingMemoryEvidence[];
-}) {
-  const evidenceByScope = new Map<string, PendingMemoryEvidence[]>();
-  for (const evidence of input.pendingEvidence) {
-    const key = `${evidence.scope}:${evidence.contactEmail}`;
-    const grouped = evidenceByScope.get(key) ?? [];
-    grouped.push(evidence);
-    evidenceByScope.set(key, grouped);
-  }
-
-  return Array.from(evidenceByScope.values()).flatMap((evidence) => {
-    if (evidence.length < 3) return [];
-    const first = evidence[0];
-    if (!first) return [];
-    const evidenceMessageIds = evidence.map((entry) => entry.messageId);
-    const digest = createHash("sha256")
-      .update(
-        JSON.stringify({
-          scope: first.scope,
-          contactEmail: first.contactEmail,
-          evidenceMessageIds,
-        }),
-      )
-      .digest("hex");
-    return [{
-      userId: input.userId,
-      accountId: input.accountId,
-      stepType: "memory.incremental",
-      payload: {
-        schemaVersion: MEMORY_SCHEMA_VERSION,
-        mode: first.scope,
-        contactEmail: first.scope === "contact" ? first.contactEmail : null,
-        evidenceMessageIds,
-      },
-      idempotencyKey: `memory.incremental:${input.accountId}:${digest}`,
-    }];
-  });
-}
-
-export async function clearPendingMemoryEvidence(
-  input: {
-    accountId: string;
-    mode: "global" | "contact";
-    contactEmail: string | null;
-    messageIds: string[];
-  },
-  database: Database = getDatabase(),
-) {
-  if (input.messageIds.length === 0) return;
-  await database
-    .delete(memoryPendingEvidence)
-    .where(
-      and(
-        eq(memoryPendingEvidence.accountId, input.accountId),
-        eq(memoryPendingEvidence.scope, input.mode),
-        eq(memoryPendingEvidence.contactEmail, input.contactEmail ?? ""),
-        inArray(memoryPendingEvidence.messageId, input.messageIds),
-      ),
-    );
-}
-
-export async function enqueuePendingAnalysisWorkflowSteps(
-  database: Database = getDatabase(),
-): Promise<number> {
-  const indexedAccounts = await database
-    .select({
-      id: connectedAccounts.id,
-      userId: connectedAccounts.userId,
-      syncState: connectedAccounts.syncState,
-    })
-    .from(connectedAccounts)
-    .innerJoin(
-      gmailReplicaStates,
-      eq(gmailReplicaStates.accountId, connectedAccounts.id),
-    )
-    .where(eq(connectedAccounts.status, "connected"));
-
-  const memoryReadyAccountIds = indexedAccounts
-    .filter((account) => account.syncState.memory === "complete")
-    .map((account) => account.id);
-  const pendingEvidence =
-    memoryReadyAccountIds.length > 0
-      ? await database
-          .select({
-            accountId: memoryPendingEvidence.accountId,
-            messageId: memoryPendingEvidence.messageId,
-            scope: memoryPendingEvidence.scope,
-            contactEmail: memoryPendingEvidence.contactEmail,
-          })
-          .from(memoryPendingEvidence)
-          .where(
-            and(
-              inArray(memoryPendingEvidence.accountId, memoryReadyAccountIds),
-              eq(memoryPendingEvidence.schemaVersion, MEMORY_SCHEMA_VERSION),
-            ),
-          )
-          .orderBy(
-            asc(memoryPendingEvidence.accountId),
-            asc(memoryPendingEvidence.createdAt),
-            asc(memoryPendingEvidence.id),
-          )
-      : [];
-  const pendingEvidenceByAccount = new Map<
-    string,
-    PendingMemoryEvidence[]
-  >();
-  for (const evidence of pendingEvidence) {
-    const grouped = pendingEvidenceByAccount.get(evidence.accountId) ?? [];
-    grouped.push(evidence);
-    pendingEvidenceByAccount.set(evidence.accountId, grouped);
-  }
-  const incrementalJobs = indexedAccounts.flatMap((account) =>
-    account.syncState.memory === "complete"
-      ? incrementalMemoryJobs({
-          userId: account.userId,
-          accountId: account.id,
-          pendingEvidence: pendingEvidenceByAccount.get(account.id) ?? [],
-        })
-      : [],
-  );
-  const values = incrementalJobs;
-  if (values.length === 0) return 0;
-
-  const inserted = await enqueueWorkflowStepsWithExecutor(values, database);
-  return inserted.length;
-}
-
 export async function enqueueBatchEvent(
   input: {
-    provider: "openai" | "azure-openai";
     webhookId: string;
     eventType: string;
     providerBatchId: string;
@@ -3039,85 +1927,48 @@ export async function enqueueBatchEvent(
   database: Database = getDatabase(),
 ): Promise<{ submissionJobId: string } | null> {
   return database.transaction(async (transaction) => {
-    const [threadLabelSubmission] =
-      input.provider === "openai"
-        ? await transaction
-            .select({
-              id: threadLabelBatchSubmissions.id,
-              userId: threadLabelBatchSubmissions.userId,
-              accountId: threadLabelBatchSubmissions.accountId,
-              historicalScanId: threadLabelBatchSubmissions.historicalScanId,
-            })
-            .from(threadLabelBatchSubmissions)
-            .where(
-              and(
-                eq(threadLabelBatchSubmissions.provider, "openai"),
-                eq(
-                  threadLabelBatchSubmissions.providerBatchId,
-                  input.providerBatchId,
-                ),
-                inArray(threadLabelBatchSubmissions.status, [
-                  "submitted",
-                  "complete",
-                  "failed",
-                ]),
-              ),
-            )
-            .limit(1)
-        : [];
-    const [derivationSubmission] = threadLabelSubmission
-      ? []
-      : await transaction
-          .select({
-            id: workflowSteps.id,
-            userId: workflowSteps.userId,
-            accountId: workflowSteps.accountId,
-            historicalScanId: sql<string | null>`null`,
-          })
-          .from(workflowSteps)
-          .where(
-            and(
-              eq(workflowSteps.status, "complete"),
-              inArray(workflowSteps.stepType, [
-                "memory.extract",
-                "memory.incremental",
-                "memory.batch.retry",
-              ]),
-              sql`${workflowSteps.result}->>'provider' = ${input.provider}`,
-              sql`${workflowSteps.result}->>'providerBatchId' = ${input.providerBatchId}`,
-            ),
-          )
-          .orderBy(desc(workflowSteps.updatedAt))
-          .limit(1);
-    const submission = threadLabelSubmission ?? derivationSubmission;
-    if (!submission) return null;
+    const [submission] = await transaction
+      .select({
+        id: threadLabelBatchSubmissions.id,
+        userId: threadLabelBatchSubmissions.userId,
+        accountId: threadLabelBatchSubmissions.accountId,
+        historicalScanId: threadLabelBatchSubmissions.historicalScanId,
+      })
+      .from(threadLabelBatchSubmissions)
+      .where(
+        and(
+          eq(
+            threadLabelBatchSubmissions.providerBatchId,
+            input.providerBatchId,
+          ),
+          isNotNull(threadLabelBatchSubmissions.historicalScanId),
+          inArray(threadLabelBatchSubmissions.status, [
+            "submitted",
+            "complete",
+            "failed",
+          ]),
+        ),
+      )
+      .limit(1);
+    if (!submission?.historicalScanId) return null;
 
-    const payload = {
-      submissionJobId: submission.id,
-      webhookId: input.webhookId,
-      eventType: input.eventType,
-      provider: input.provider,
-      providerBatchId: input.providerBatchId,
-      // The scan owns the Workflow the completion releases, so dispatch can
-      // address the signal without reading the submission again.
-      ...(submission.historicalScanId
-        ? { historicalScanId: submission.historicalScanId }
-        : {}),
-    };
-    const idempotencyKey = createBatchEventIdempotencyKey({
-      provider: input.provider,
-      webhookId: input.webhookId,
-    });
-    const eventJobType = submission.historicalScanId
-      ? "label.batch.event"
-      : "memory.batch.event";
     await enqueueWorkflowStep(
       {
         userId: submission.userId,
         accountId: submission.accountId,
-        stepType: eventJobType,
-        payload,
-        idempotencyKey,
+        stepType: "label.batch.event",
+        payload: {
+          submissionJobId: submission.id,
+          webhookId: input.webhookId,
+          eventType: input.eventType,
+          providerBatchId: input.providerBatchId,
+          // The scan owns the Workflow the completion releases, so dispatch can
+          // address the signal without reading the submission again.
+          historicalScanId: submission.historicalScanId,
+        },
+        idempotencyKey: createBatchEventIdempotencyKey({
+          webhookId: input.webhookId,
+        }),
       },
       transaction as unknown as Database,
     );
@@ -3126,57 +1977,3 @@ export async function enqueueBatchEvent(
   });
 }
 
-export async function getBatchSubmission(
-  jobId: string,
-  database: Database = getDatabase(),
-) {
-  return getWorkflowStepSubmission(jobId, database);
-}
-
-export async function enqueueMemoryBatchRetry(
-  input: {
-    userId: string;
-    accountId: string;
-    parentSubmissionJobId: string;
-    rootSubmissionJobId: string;
-    batchAttempt: number;
-    replaceExisting: boolean;
-    manifest: Array<{
-      key: string;
-      mode: "global" | "contact";
-      contactEmail: string | null;
-      messageIds: string[];
-    }>;
-  },
-  database: Database = getDatabase(),
-) {
-  const manifestHash = createHash("sha256")
-    .update(
-      JSON.stringify(
-        input.manifest.map((entry) => ({
-          key: entry.key,
-          messageIds: entry.messageIds,
-        })),
-      ),
-    )
-    .digest("hex");
-
-  const idempotencyKey = `memory.batch.retry:${input.parentSubmissionJobId}:${manifestHash}`;
-  const payload = {
-    parentSubmissionJobId: input.parentSubmissionJobId,
-    rootSubmissionJobId: input.rootSubmissionJobId,
-    batchAttempt: input.batchAttempt,
-    replaceExisting: input.replaceExisting,
-    manifest: input.manifest,
-  };
-  return enqueueWorkflowStep(
-    {
-      userId: input.userId,
-      accountId: input.accountId,
-      stepType: "memory.batch.retry",
-      payload,
-      idempotencyKey,
-    },
-    database,
-  );
-}

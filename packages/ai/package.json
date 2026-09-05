@@ -16,7 +16,7 @@
     "typescript": "^5.9.0"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.27",
+    "@ai-sdk/openai": "^4.0.59",
     "@invook/contracts": "workspace:*",
     "ai": "^7.0.58",
     "js-tiktoken": "^1.0.21",

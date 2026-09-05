@@ -50,7 +50,6 @@ export const profiles = pgTable(
     email: text("email").notNull(),
     emailVerified: boolean("email_verified").notNull().default(false),
     image: text("image"),
-    memoryAcknowledgedAt: timestampWithTimezone("memory_acknowledged_at"),
     createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
     updatedAt: timestampWithTimezone("updated_at")
       .notNull()
@@ -147,11 +146,10 @@ export const connectedAccounts = pgTable(
       .notNull()
       .default("connected"),
     scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
-    memoryAcknowledgedAt: timestampWithTimezone("memory_acknowledged_at").notNull(),
     syncState: jsonb("sync_state")
       .$type<AccountSyncState>()
       .notNull()
-      .default({ mailSync: "pending", memory: "pending" }),
+      .default({ mailSync: "pending" }),
     lastSyncedAt: timestampWithTimezone("last_synced_at"),
     createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
     updatedAt: timestampWithTimezone("updated_at")
@@ -539,8 +537,6 @@ export const messages = pgTable(
     bodyText: text("body_text").notNull().default(""),
     bodyHtml: text("body_html"),
     sentAt: timestampWithTimezone("sent_at").notNull(),
-    isMemoryEligible: boolean("is_memory_eligible").notNull().default(false),
-    excludedFromMemory: boolean("excluded_from_memory").notNull().default(false),
     searchDocument: searchVector("search_document").generatedAlwaysAs(
       sql`to_tsvector('simple', coalesce(${sql.raw("subject")}, '') || ' ' || coalesce(${sql.raw("body_text")}, ''))`,
     ),
@@ -567,11 +563,6 @@ export const messages = pgTable(
       "gin",
       table.metadataSearchDocument,
     ),
-    index("messages_memory_eligible_idx")
-      .on(table.userId, table.sentAt)
-      .where(
-        sql`${table.direction} = 'outgoing' and ${table.isMemoryEligible} and not ${table.excludedFromMemory}`,
-      ),
     check("messages_direction_check", sql`${table.direction} in ('incoming', 'outgoing')`),
     check(
       "messages_size_estimate_check",
@@ -613,55 +604,6 @@ export const messageLabels = pgTable(
       table.labelId,
     ),
     check("message_labels_source_check", sql`${table.source} = 'gmail'`),
-  ],
-);
-
-export const memoryPendingEvidence = pgTable(
-  "memory_pending_evidence",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => profiles.id, { onDelete: "cascade" }),
-    accountId: uuid("account_id")
-      .notNull()
-      .references(() => connectedAccounts.id, { onDelete: "cascade" }),
-    threadId: uuid("thread_id")
-      .notNull()
-      .references(() => threads.id, { onDelete: "cascade" }),
-    messageId: uuid("message_id")
-      .notNull()
-      .references(() => messages.id, { onDelete: "cascade" }),
-    scope: text("scope").$type<"global" | "contact">().notNull(),
-    contactEmail: text("contact_email").notNull().default(""),
-    schemaVersion: integer("schema_version").notNull(),
-    createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
-  },
-  (table) => [
-    uniqueIndex("memory_pending_evidence_message_scope_idx").on(
-      table.messageId,
-      table.scope,
-      table.contactEmail,
-    ),
-    index("memory_pending_evidence_account_scope_idx").on(
-      table.accountId,
-      table.schemaVersion,
-      table.scope,
-      table.contactEmail,
-      table.createdAt,
-    ),
-    check(
-      "memory_pending_evidence_scope_check",
-      sql`${table.scope} in ('global', 'contact')`,
-    ),
-    check(
-      "memory_pending_evidence_contact_check",
-      sql`(${table.scope} = 'global' and ${table.contactEmail} = '') or (${table.scope} = 'contact' and char_length(btrim(${table.contactEmail})) > 0)`,
-    ),
-    check(
-      "memory_pending_evidence_schema_version_check",
-      sql`${table.schemaVersion} > 0`,
-    ),
   ],
 );
 
@@ -721,105 +663,6 @@ export const messageAttachments = pgTable(
   ],
 );
 
-export const memoryEntries = pgTable(
-  "memory_entries",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => profiles.id, { onDelete: "cascade" }),
-    accountId: uuid("account_id")
-      .notNull()
-      .references(() => connectedAccounts.id, { onDelete: "cascade" }),
-    memoryType: text("memory_type")
-      .$type<"preference" | "contact" | "scheduling">()
-      .notNull(),
-    contactEmail: text("contact_email"),
-    statement: text("statement").notNull(),
-    source: text("source")
-      .$type<"user" | "inferred" | "feedback">()
-      .notNull(),
-    confidence: numeric("confidence", { precision: 5, scale: 2 }),
-    evidenceMessageIds: uuid("evidence_message_ids")
-      .array()
-      .notNull()
-      .default(sql`ARRAY[]::uuid[]`),
-    evidenceDraftIds: uuid("evidence_draft_ids")
-      .array()
-      .notNull()
-      .default(sql`ARRAY[]::uuid[]`),
-    modelId: text("model_id"),
-    schemaVersion: integer("schema_version").notNull().default(1),
-    fingerprint: text("fingerprint").notNull(),
-    createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
-    updatedAt: timestampWithTimezone("updated_at")
-      .notNull()
-      .defaultNow()
-      .$onUpdate(() => new Date()),
-  },
-  (table) => [
-    uniqueIndex("memory_entries_account_fingerprint_idx").on(
-      table.accountId,
-      table.fingerprint,
-    ),
-    index("memory_entries_account_type_contact_idx").on(
-      table.accountId,
-      table.memoryType,
-      table.contactEmail,
-    ),
-    check(
-      "memory_entries_type_check",
-      sql`${table.memoryType} in ('preference', 'contact', 'scheduling')`,
-    ),
-    check(
-      "memory_entries_source_check",
-      sql`${table.source} in ('user', 'inferred', 'feedback')`,
-    ),
-    check(
-      "memory_entries_contact_check",
-      sql`(${table.memoryType} = 'contact' and ${table.contactEmail} is not null) or (${table.memoryType} <> 'contact' and ${table.contactEmail} is null)`,
-    ),
-    check(
-      "memory_entries_statement_check",
-      sql`char_length(${table.statement}) between 3 and 500`,
-    ),
-    check(
-      "memory_entries_confidence_check",
-      sql`${table.confidence} is null or ${table.confidence} between 0 and 100`,
-    ),
-  ],
-);
-
-export const memoryDeletions = pgTable(
-  "memory_deletions",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => profiles.id, { onDelete: "cascade" }),
-    accountId: uuid("account_id")
-      .notNull()
-      .references(() => connectedAccounts.id, { onDelete: "cascade" }),
-    memoryType: text("memory_type")
-      .$type<"preference" | "contact" | "scheduling">()
-      .notNull(),
-    contactEmail: text("contact_email"),
-    fingerprint: text("fingerprint").notNull(),
-    deletedAt: timestampWithTimezone("deleted_at").notNull().defaultNow(),
-  },
-  (table) => [
-    uniqueIndex("memory_deletions_account_fingerprint_idx").on(
-      table.accountId,
-      table.fingerprint,
-    ),
-    index("memory_deletions_user_deleted_idx").on(table.userId, table.deletedAt),
-    check(
-      "memory_deletions_type_check",
-      sql`${table.memoryType} in ('preference', 'contact', 'scheduling')`,
-    ),
-  ],
-);
-
 export const drafts = pgTable(
   "drafts",
   {
@@ -830,7 +673,7 @@ export const drafts = pgTable(
     accountId: uuid("account_id")
       .notNull()
       .references(() => connectedAccounts.id, { onDelete: "cascade" }),
-    kind: text("kind").$type<"gmail" | "invook">().notNull().default("invook"),
+    kind: text("kind").$type<"gmail">().notNull().default("gmail"),
     threadId: uuid("thread_id")
       .references(() => threads.id, { onDelete: "cascade" }),
     providerDraftId: text("provider_draft_id"),
@@ -845,21 +688,7 @@ export const drafts = pgTable(
       .$type<"editing" | "sent" | "discarded" | "failed">()
       .notNull()
       .default("editing"),
-    generatedText: text("generated_text"),
     currentText: text("current_text").notNull().default(""),
-    finalSentText: text("final_sent_text"),
-    usedMemoryIds: uuid("used_memory_ids")
-      .array()
-      .notNull()
-      .default(sql`ARRAY[]::uuid[]`),
-    generationMetadata: jsonb("generation_metadata")
-      .$type<JsonObject>()
-      .notNull()
-      .default({}),
-    editSignals: jsonb("edit_signals").$type<JsonValue[]>().notNull().default([]),
-    feedbackVersion: integer("feedback_version").notNull().default(0),
-    lastFeedbackAt: timestampWithTimezone("last_feedback_at"),
-    generatedAt: timestampWithTimezone("generated_at"),
     sentAt: timestampWithTimezone("sent_at"),
     createdAt: timestampWithTimezone("created_at").notNull().defaultNow(),
     updatedAt: timestampWithTimezone("updated_at")
@@ -876,10 +705,10 @@ export const drafts = pgTable(
       table.accountId,
       table.providerThreadId,
     ),
-    check("drafts_kind_check", sql`${table.kind} in ('gmail', 'invook')`),
+    check("drafts_kind_check", sql`${table.kind} = 'gmail'`),
     check(
       "drafts_kind_contract_check",
-      sql`(${table.kind} = 'gmail' and ${table.providerDraftId} is not null and ${table.providerThreadId} is not null) or (${table.kind} = 'invook' and ${table.threadId} is not null and ${table.providerDraftId} is null and ${table.providerMessageId} is null and ${table.providerThreadId} is null and ${table.providerHistoryId} is null)`,
+      sql`${table.providerDraftId} is not null and ${table.providerThreadId} is not null`,
     ),
     check(
       "drafts_status_check",
@@ -1100,7 +929,6 @@ export const threadLabelBatchSubmissions = pgTable(
     accountId: uuid("account_id")
       .notNull()
       .references(() => connectedAccounts.id, { onDelete: "cascade" }),
-    provider: text("provider").$type<"openai">().notNull().default("openai"),
     providerBatchId: text("provider_batch_id"),
     inputFileId: text("input_file_id"),
     outputFileId: text("output_file_id"),
@@ -1143,7 +971,7 @@ export const threadLabelBatchSubmissions = pgTable(
   },
   (table) => [
     uniqueIndex("thread_label_batch_submissions_provider_batch_idx")
-      .on(table.provider, table.providerBatchId)
+      .on(table.providerBatchId)
       .where(sql`${table.providerBatchId} is not null`),
     uniqueIndex("thread_label_batch_submissions_scan_active_idx")
       .on(table.historicalScanId)
@@ -1160,10 +988,6 @@ export const threadLabelBatchSubmissions = pgTable(
       table.accountId,
       table.status,
       table.createdAt,
-    ),
-    check(
-      "thread_label_batch_submissions_provider_check",
-      sql`${table.provider} = 'openai'`,
     ),
     check(
       "thread_label_batch_submissions_status_check",
