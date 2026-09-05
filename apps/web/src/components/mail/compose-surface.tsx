@@ -3,8 +3,6 @@
 import {
   Attachment01Icon,
   Cancel01Icon,
-  CheckmarkCircle02Icon,
-  MailSend02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -93,7 +91,7 @@ function ComposeRecipientRow({
         required={isRequired}
         autoFocus={autoFocus}
         autoComplete="off"
-        className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
+        className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0 disabled:bg-transparent md:text-sm dark:bg-transparent dark:disabled:bg-transparent"
       />
       {trailing}
     </div>
@@ -349,7 +347,7 @@ export function ComposeSurface() {
                   maxLength={GMAIL_COMPOSE_MAX_SUBJECT_LENGTH}
                   disabled={isLocked}
                   placeholder="Add a subject"
-                  className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus-visible:ring-0 md:text-sm dark:bg-transparent"
+                  className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus-visible:ring-0 disabled:bg-transparent md:text-sm dark:bg-transparent dark:disabled:bg-transparent"
                 />
               </div>
             </div>
@@ -365,7 +363,7 @@ export function ComposeSurface() {
               maxLength={GMAIL_COMPOSE_MAX_BODY_LENGTH}
               disabled={isLocked}
               required
-              className="min-h-48 resize-none border-0 bg-transparent px-4 py-5 text-[15px] leading-7 shadow-none focus-visible:ring-0 sm:px-5 md:text-[15px] dark:bg-transparent"
+              className="min-h-48 resize-none border-0 bg-transparent px-4 py-5 text-[15px] leading-7 shadow-none focus-visible:ring-0 disabled:bg-transparent sm:px-5 md:text-[15px] dark:bg-transparent dark:disabled:bg-transparent"
             />
 
             {state.message || isReconnectRequired ? (
@@ -373,20 +371,8 @@ export function ComposeSurface() {
                 <div className="max-w-2xl text-xs leading-5 text-muted-foreground">
                   {state.message ? (
                     <p
-                      className={
-                        ["error", "send_error", "reconnect_required"].includes(
-                          state.status,
-                        )
-                          ? "text-destructive"
-                          : "text-success"
-                      }
-                      role={
-                        ["error", "send_error", "reconnect_required"].includes(
-                          state.status,
-                        )
-                          ? "alert"
-                          : "status"
-                      }
+                      className="text-destructive"
+                      role="alert"
                       aria-live="polite"
                     >
                       {state.message}
@@ -418,10 +404,6 @@ export function ComposeSurface() {
                 disabled={isSending || isSent || isReconnectRequired}
                 className="h-8 rounded-lg bg-compose-accent px-3.5 text-sm font-normal text-compose-accent-foreground hover:bg-compose-accent-hover"
               >
-                <HugeiconsIcon
-                  icon={isSent ? CheckmarkCircle02Icon : MailSend02Icon}
-                  size={14}
-                />
                 {isSending
                   ? "Sending with Gmail…"
                   : isSent

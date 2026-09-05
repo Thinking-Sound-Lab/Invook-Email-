@@ -119,14 +119,13 @@ test("changing the sender discards an attempt bound to the previous account", ()
   assert.equal(changed.status, "editing");
 });
 
-test("a successful send is terminal and states its convergence honestly", () => {
+test("a successful send is terminal without adding a success notice", () => {
   const sent = composeDraftReducer(sendingState(), { type: "sent" });
 
   assert.equal(sent.status, "sent");
   assert.equal(sent.attempt, null);
   assert.equal(isComposeDraftLocked(sent), true);
-  assert.match(sent.message ?? "", /Sent with Gmail/);
-  assert.match(sent.message ?? "", /Gmail history catches up/);
+  assert.equal(sent.message, null);
 });
 
 test("a permanent auth failure requests reconnect and locks the message", () => {

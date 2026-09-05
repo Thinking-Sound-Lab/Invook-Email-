@@ -169,6 +169,7 @@ test("the sidebar compose route renders the reference workspace controls", async
   assert.equal(button("Send later").disabled, true);
   assert.equal(button("Remind me").disabled, true);
   assert.equal(button("Attachments unavailable").disabled, true);
+  assert.equal(button("Send").querySelector("svg"), null);
   assert.deepEqual(
     [
       ...(document
@@ -279,6 +280,25 @@ test("sending the redesigned composer saves and sends one Gmail draft", async ()
   assert.notEqual(sendPayload.idempotencyKey, payload.idempotencyKey);
   assert.equal(sendPayload.accountId, "account-1");
   assert.equal(button("Sent with Gmail").disabled, true);
+  assert.equal(button("Sent with Gmail").querySelector("svg"), null);
+  assert.equal(document.querySelector('[role="status"]'), null);
+  assert.equal(document.querySelector(".text-success"), null);
+
+  for (const selector of [
+    "#compose-recipients",
+    "#compose-cc-recipients",
+    "#compose-bcc-recipients",
+    "#compose-subject",
+    "#compose-body",
+  ]) {
+    const field = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      selector,
+    );
+    assert.ok(field);
+    assert.equal(field.disabled, true);
+    assert.match(field.className, /\bdisabled:bg-transparent\b/);
+    assert.match(field.className, /\bdark:disabled:bg-transparent\b/);
+  }
 });
 
 test("an unresolved send retries the same draft and idempotency keys", async () => {

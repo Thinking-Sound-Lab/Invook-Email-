@@ -91,8 +91,7 @@ export function composeDraftReducer(
         ...state,
         attempt: null,
         status: "sent",
-        message:
-          "Sent with Gmail. Invook will reflect it here after Gmail history catches up.",
+        message: null,
       };
     case "error":
       return { ...state, status: "error", message: action.message };
