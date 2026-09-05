@@ -196,7 +196,7 @@ export function AgentPanel({
           handleSubmit(input);
         }}
       >
-        <div className="rounded-xl bg-background/72 p-2 shadow-xl shadow-black/15">
+        <div className="rounded-xl bg-background/72 p-2 shadow-xl shadow-overlay/15">
           <Textarea
             disabled={!aiConfigured || busy}
             aria-label="Message Invook agent"
