@@ -1,3 +1,4 @@
+import type { EmailHtmlPresentation } from "@invook/contracts";
 import sanitizeHtml from "sanitize-html";
 import valueParser from "postcss-value-parser";
 
@@ -291,11 +292,6 @@ const EMAIL_CONTENT_STYLES = `
   }
 `;
 
-export interface EmailHtmlPresentation {
-  sanitizedHtml: string;
-  hasQuotedContent: boolean;
-}
-
 export function buildEmailHtmlPresentation(
   bodyHtml: string,
 ): EmailHtmlPresentation {
@@ -307,8 +303,4 @@ export function buildEmailHtmlPresentation(
         sanitizedBodyHtml,
       ),
   };
-}
-
-export function buildEmailHtmlContent(bodyHtml: string): string {
-  return buildEmailHtmlPresentation(bodyHtml).sanitizedHtml;
 }

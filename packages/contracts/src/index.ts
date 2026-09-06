@@ -274,9 +274,20 @@ export type MailboxThreadMessage = {
   isDraft: boolean;
   subject: string;
   bodyText: string;
-  bodyHtml: string | null;
+  bodyPresentation: EmailHtmlPresentation | null;
   sentAt: string;
   attachments: MailboxAttachment[];
+};
+
+/**
+ * Server-sanitized email HTML ready for the browser to mount.
+ *
+ * Sanitizing is a pure function of an immutable message body, so it runs once
+ * on the server and untrusted provider HTML never crosses the wire.
+ */
+export type EmailHtmlPresentation = {
+  sanitizedHtml: string;
+  hasQuotedContent: boolean;
 };
 
 export type MailboxAttachment = {
@@ -390,6 +401,21 @@ export type MailboxThreadDetail = {
   thread: MailboxSelectedThread;
   invookLabels: InvookLabel[];
 };
+
+/**
+ * Refreshed state for threads named by a mailbox change event.
+ *
+ * `missingThreadIds` reports requested threads that no longer match the view,
+ * so a client cache can distinguish an updated row from a removed one without
+ * refetching the surrounding page.
+ */
+export type MailboxThreadUpdates = {
+  threads: MailboxThreadSummary[];
+  missingThreadIds: string[];
+};
+
+/** Maximum thread identities one thread-update request may name. */
+export const MAILBOX_THREAD_UPDATE_LIMIT = 100;
 
 export type MailboxSettings = {
   accountId: string;

@@ -8,11 +8,17 @@ import type {
   SignedInUser,
 } from "@invook/contracts";
 import axios from "axios";
-import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  getMailboxThreadDetail,
+  getMailboxThreadPage,
+} from "@/lib/api/mailbox-threads";
+import { createMailboxPageKey } from "@/stores/mailbox/mailbox-cache";
+import { useMailboxStore } from "@/stores/mailbox/store";
 import { cn } from "@/lib/utils";
 
 import { createMailDateSections } from "./mail-date-sections";
@@ -20,14 +26,9 @@ import { MailAccountAvatar } from "./mail-account-avatar";
 import { formatMailText, threadPeople } from "./mail-format";
 import { mailLabelColorClassName } from "./mail-label-colors";
 import { LocalMailDate } from "./local-mail-date";
-import { MailNavigationPending } from "./mail-navigation-pending";
+import { MailboxLink } from "./mailbox-link";
 import { useMailShell } from "./mail-shell-provider";
 import { listMailRowLabels, type MailRowLabel } from "./mail-row-labels";
-import {
-  mergeMailboxThreads,
-  resolveMailThreadPaginationState,
-  type MailThreadPaginationState,
-} from "./mail-thread-pages";
 import type {
   MailboxView,
   MailThreadSummary,
@@ -52,6 +53,39 @@ function mailboxHref(
   const query = new URLSearchParams({ account: accountSelection, view: currentView });
   if (threadId) query.set("thread", threadId);
   return `/mail?${query.toString()}`;
+}
+
+/**
+ * Reads a thread into the cache before it is opened. Pointing at a row is a
+ * strong signal it is about to be read, and a thread already in the cache
+ * renders without a request.
+ */
+function usePrefetchThreadDetail(
+  accountSelection: string,
+): (threadId: string) => void {
+  const hydrateThreadDetail = useMailboxStore(
+    (state) => state.hydrateThreadDetail,
+  );
+  const requestedThreadIdsRef = useRef(new Set<string>());
+
+  return useCallback(
+    (threadId: string) => {
+      if (
+        requestedThreadIdsRef.current.has(threadId) ||
+        useMailboxStore.getState().detailsById[threadId]
+      ) {
+        return;
+      }
+      requestedThreadIdsRef.current.add(threadId);
+      void getMailboxThreadDetail({ accountSelection, threadId })
+        .then((detail) => hydrateThreadDetail({ threadId, detail }))
+        .catch(() => {
+          // A prefetch is an optimization; the reader reports its own failure.
+          requestedThreadIdsRef.current.delete(threadId);
+        });
+    },
+    [accountSelection, hydrateThreadDetail],
+  );
 }
 
 interface MailRowProps {
@@ -82,7 +116,7 @@ function MailLabelChip({ label }: MailLabelChipProps) {
   );
 }
 
-function MailRow({
+const MailRow = memo(function MailRow({
   thread,
   account,
   accounts,
@@ -93,18 +127,19 @@ function MailRow({
   const people = threadPeople(thread.participants, account.email);
   const { isUnread, isStarred } = thread;
   const labels = listMailRowLabels(thread);
+  const prefetchThread = usePrefetchThreadDetail(accountSelection);
 
   return (
-    <Link
+    <MailboxLink
       href={mailboxHref(accountSelection, currentView, thread.id)}
-      scroll={false}
+      onPointerEnter={() => prefetchThread(thread.id)}
+      onFocus={() => prefetchThread(thread.id)}
       className={cn(
         "group relative grid min-h-12 grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_6.5rem] items-center gap-3 border-b border-border/40 px-4 py-2 transition-colors [contain-intrinsic-size:48px] [content-visibility:auto] lg:grid-cols-[minmax(112px,0.3fr)_minmax(0,1fr)_6.5rem_1rem_7rem] lg:gap-2.5",
         "hover:bg-accent/55 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         isUnread && "bg-card/45",
       )}
     >
-      <MailNavigationPending variant="edge" />
       <div className="flex min-w-0 items-center gap-2">
         <span
           aria-hidden="true"
@@ -187,12 +222,13 @@ function MailRow({
           className="size-4.5"
         />
       </div>
-    </Link>
+    </MailboxLink>
   );
-}
+});
 
 interface MailRowsProps {
   threads: MailThreadSummary[];
+  accountsById: Map<string, MailboxAccount>;
   accounts: MailboxAccount[];
   accountSelection: string;
   currentView: MailboxView;
@@ -201,6 +237,7 @@ interface MailRowsProps {
 
 function MailRows({
   threads,
+  accountsById,
   accounts,
   accountSelection,
   currentView,
@@ -220,7 +257,7 @@ function MailRows({
         </h2>
       ) : null}
       {section.threads.flatMap((thread) => {
-        const account = accounts.find((candidate) => candidate.id === thread.accountId);
+        const account = accountsById.get(thread.accountId);
         return account
           ? [
               <MailRow
@@ -241,19 +278,19 @@ function MailRows({
 
 export interface MailListProps {
   accountSelection: string;
-  canonicalPageVersion: string;
   currentView: MailboxView;
-  initialOlderCursor: string | null;
-  threads: MailThreadSummary[];
+  /**
+   * The server render for this view, present only on the request that produced
+   * it. A view reached by client navigation reads its first page itself.
+   */
+  initialPage: MailboxThreadPage | null;
   query?: string;
 }
 
 export function MailList({
   accountSelection,
-  canonicalPageVersion,
   currentView,
-  initialOlderCursor,
-  threads,
+  initialPage,
   query,
 }: MailListProps) {
   const { accountLabels, accounts, user } = useMailShell();
@@ -261,29 +298,75 @@ export function MailList({
   const title = currentView.startsWith("label:")
     ? invookLabels.find((label) => label.id === currentView.slice(6))?.name
     : undefined;
-  const [storedPaginationState, setStoredPaginationState] =
-    useState<MailThreadPaginationState>(
-      {
-        canonicalPageVersion,
-        continuationThreads: [],
-        loadState: "idle",
-        olderCursor: initialOlderCursor,
-      },
-    );
-  const paginationState = resolveMailThreadPaginationState({
-    canonicalPageVersion,
-    initialOlderCursor,
-    state: storedPaginationState,
+  const pageKey = createMailboxPageKey({
+    accountSelection,
+    view: currentView,
   });
-  const { loadState, olderCursor } = paginationState;
-  const loadedThreads = mergeMailboxThreads(
-    threads,
-    paginationState.continuationThreads,
+  const hydratePage = useMailboxStore((state) => state.hydratePage);
+  const appendPage = useMailboxStore((state) => state.appendPage);
+  const setPageLoadState = useMailboxStore((state) => state.setPageLoadState);
+  const page = useMailboxStore((state) => state.pagesByKey[pageKey]);
+  const [firstPageFailure, setFirstPageFailure] = useState<{
+    key: string;
+  } | null>(null);
+  const [firstPageAttempt, setFirstPageAttempt] = useState(0);
+  const hasFirstPageFailed = firstPageFailure?.key === pageKey;
+  const isCached = page !== undefined;
+
+  useEffect(() => {
+    if (initialPage) hydratePage({ key: pageKey, page: initialPage });
+  }, [hydratePage, initialPage, pageKey]);
+
+  useEffect(() => {
+    if (isCached || initialPage) return;
+    const requestController = new AbortController();
+    void (async () => {
+      try {
+        const firstPage = await getMailboxThreadPage({
+          accountSelection,
+          view: currentView,
+          signal: requestController.signal,
+        });
+        if (requestController.signal.aborted) return;
+        hydratePage({ key: pageKey, page: firstPage });
+      } catch (error: unknown) {
+        if (axios.isCancel(error) || requestController.signal.aborted) return;
+        setFirstPageFailure({ key: pageKey });
+      }
+    })();
+    return () => requestController.abort();
+  }, [
+    accountSelection,
+    currentView,
+    firstPageAttempt,
+    hydratePage,
+    initialPage,
+    isCached,
+    pageKey,
+  ]);
+
+  const cachedThreadIds = page?.threadIds;
+  const cachedThreads = useMailboxStore(
+    useShallow((state) =>
+      cachedThreadIds
+        ? cachedThreadIds.flatMap((threadId) => {
+            const thread = state.threadsById[threadId];
+            return thread ? [thread] : [];
+          })
+        : null,
+    ),
   );
+  // The server page renders until the cache holds this view, so first paint
+  // never waits on hydration.
+  const loadedThreads = cachedThreads ?? initialPage?.threads ?? [];
+  const isReadingFirstPage = !isCached && !initialPage && !hasFirstPageFailed;
+  const olderCursor = page?.olderCursor ?? null;
+  const loadState = page?.loadState ?? "idle";
   const isLoadingRef = useRef(false);
   const requestControllerRef = useRef<AbortController | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const noMail = loadedThreads.length === 0;
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
   const scopedAccounts =
     accountSelection === "all"
       ? accounts
@@ -301,60 +384,41 @@ export function MailList({
     [],
   );
 
-  useEffect(() => {
-    requestControllerRef.current?.abort();
-    requestControllerRef.current = null;
-    isLoadingRef.current = false;
-  }, [canonicalPageVersion]);
-
   const loadMoreMail = useCallback(async (): Promise<void> => {
     if (!olderCursor || isLoadingRef.current) return;
 
-    const requestedCursor = olderCursor;
     const requestController = new AbortController();
     requestControllerRef.current?.abort();
     requestControllerRef.current = requestController;
     isLoadingRef.current = true;
-    setStoredPaginationState({
-      ...paginationState,
-      loadState: "loading",
-    });
+    setPageLoadState({ key: pageKey, loadState: "loading" });
 
     try {
-      const response = await axios.get<MailboxThreadPage>("/v1/mailbox/threads", {
-        params: {
-          account: accountSelection,
-          view: currentView,
-          cursor: requestedCursor,
-        },
+      const nextPage = await getMailboxThreadPage({
+        accountSelection,
+        cursor: olderCursor,
+        view: currentView,
         signal: requestController.signal,
       });
       if (requestController.signal.aborted) return;
-
-      setStoredPaginationState((currentState) => ({
-        canonicalPageVersion,
-        continuationThreads: mergeMailboxThreads(
-          currentState.canonicalPageVersion === canonicalPageVersion
-            ? currentState.continuationThreads
-            : [],
-          response.data.threads,
-        ),
-        loadState: "idle",
-        olderCursor: response.data.pagination.olderCursor,
-      }));
+      appendPage({ key: pageKey, page: nextPage });
     } catch (error: unknown) {
       if (axios.isCancel(error) || requestController.signal.aborted) return;
-      setStoredPaginationState({
-        ...paginationState,
-        loadState: "error",
-      });
+      setPageLoadState({ key: pageKey, loadState: "error" });
     } finally {
       if (requestControllerRef.current === requestController) {
         requestControllerRef.current = null;
         isLoadingRef.current = false;
       }
     }
-  }, [accountSelection, canonicalPageVersion, currentView, olderCursor, paginationState]);
+  }, [
+    accountSelection,
+    appendPage,
+    currentView,
+    olderCursor,
+    pageKey,
+    setPageLoadState,
+  ]);
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -398,13 +462,44 @@ export function MailList({
       >
         <MailRows
           threads={loadedThreads}
+          accountsById={accountsById}
           accounts={accounts}
           accountSelection={accountSelection}
           currentView={currentView}
           user={user}
         />
 
-        {noMail ? (
+        {noMail && isReadingFirstPage ? (
+          <div className="mx-auto max-w-sm px-6 py-20 text-center" role="status">
+            <p className="text-sm font-medium">Loading mail</p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              Invook is reading this view.
+            </p>
+          </div>
+        ) : null}
+
+        {noMail && hasFirstPageFailed ? (
+          <div className="mx-auto max-w-sm px-6 py-20 text-center" role="alert">
+            <p className="text-sm font-medium">This view could not be read</p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              Invook could not read the mail in this view.
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-3"
+              onClick={() => {
+                setFirstPageFailure(null);
+                setFirstPageAttempt((current) => current + 1);
+              }}
+            >
+              Try again
+            </Button>
+          </div>
+        ) : null}
+
+        {noMail && !isReadingFirstPage && !hasFirstPageFailed ? (
           <div className="mx-auto max-w-sm px-6 py-20 text-center">
             <p className="text-sm font-medium">
               {syncing ? "Syncing Gmail" : "No mail in this view"}

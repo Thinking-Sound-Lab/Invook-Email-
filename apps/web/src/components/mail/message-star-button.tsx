@@ -2,38 +2,64 @@
 
 import { StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { apiErrorMessage } from "@/lib/http-error";
 import { setGmailMessageStar } from "@/lib/api/gmail-message-actions";
+import { useMailboxStore } from "@/stores/mailbox/store";
 import { cn } from "@/lib/utils";
 
 export interface MessageStarButtonProps {
   messageId: string;
+  threadId: string;
+  isStarred: boolean;
+}
+
+/**
+ * A predicted star and the stored value it was predicted against. Holding both
+ * lets the prediction expire by derivation once the server render catches up,
+ * so stored state stays authoritative without an effect resetting local state.
+ */
+interface StarPrediction {
+  storedIsStarred: boolean;
   isStarred: boolean;
 }
 
 export function MessageStarButton({
   messageId,
+  threadId,
   isStarred,
 }: MessageStarButtonProps) {
-  const router = useRouter();
-  const [isPending, setIsPending] = useState(false);
+  const patchThread = useMailboxStore((state) => state.patchThread);
+  const [prediction, setPrediction] = useState<StarPrediction | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const label = isStarred ? "Remove star from message" : "Star message";
+  const currentIsStarred =
+    prediction && prediction.storedIsStarred === isStarred
+      ? prediction.isStarred
+      : isStarred;
+  const label = currentIsStarred
+    ? "Remove star from message"
+    : "Star message";
 
   async function handleStar(): Promise<void> {
-    setIsPending(true);
+    if (isSubmitting) return;
+    const nextIsStarred = !currentIsStarred;
+    setIsSubmitting(true);
     setError(null);
+    setPrediction({ storedIsStarred: isStarred, isStarred: nextIsStarred });
+    // The cached row reflects the change immediately; the mailbox change event
+    // that follows the Gmail write reconciles it against stored state.
+    patchThread({ threadId, patch: { isStarred: nextIsStarred } });
     try {
-      await setGmailMessageStar({ messageId, isStarred: !isStarred });
-      router.refresh();
+      await setGmailMessageStar({ messageId, isStarred: nextIsStarred });
     } catch (cause) {
+      setPrediction(null);
+      patchThread({ threadId, patch: { isStarred: currentIsStarred } });
       setError(apiErrorMessage(cause, "Invook could not update this star."));
     } finally {
-      setIsPending(false);
+      setIsSubmitting(false);
     }
   }
 
@@ -44,19 +70,18 @@ export function MessageStarButton({
         variant="ghost"
         size="icon-sm"
         aria-label={label}
-        aria-pressed={isStarred}
-        aria-busy={isPending}
-        disabled={isPending}
+        aria-pressed={currentIsStarred}
+        aria-busy={isSubmitting}
         onClick={() => void handleStar()}
         className={cn(
           "text-muted-foreground",
-          isStarred && "text-warning hover:text-warning",
+          currentIsStarred && "text-warning hover:text-warning",
         )}
       >
         <HugeiconsIcon
           icon={StarIcon}
           size={16}
-          fill={isStarred ? "currentColor" : "none"}
+          fill={currentIsStarred ? "currentColor" : "none"}
         />
       </Button>
       {error ? (

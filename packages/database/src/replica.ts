@@ -2,6 +2,7 @@ import { and, desc, DrizzleQueryError, eq, inArray, isNotNull, not, sql } from "
 import postgres from "postgres";
 import { v4 as uuidv4 } from "uuid";
 
+import { buildEmailPlainText } from "@invook/contracts/email-plain-text";
 import type { GmailForwardMessage } from "@invook/contracts/gmail-forward";
 
 import { getDatabase, type Database, type DatabaseExecutor } from "./client";
@@ -214,8 +215,11 @@ export async function getGmailForwardContext(
   return {
     sender: message.sender,
     subject: message.subject,
-    bodyText: message.bodyText,
-    bodyHtml: message.bodyHtml,
+    // An HTML-only message still needs a readable quote, so the stored HTML is
+    // projected to text here rather than travelling to a caller as raw markup.
+    bodyText:
+      message.bodyText ||
+      (message.bodyHtml ? buildEmailPlainText(message.bodyHtml) : ""),
     sentAt: message.sentAt.toISOString(),
     headers: message.headerLines.map((header) => {
       const separator = header.line.indexOf(":");

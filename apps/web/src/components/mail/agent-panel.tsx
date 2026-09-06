@@ -16,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+import { useMailboxStore } from "@/stores/mailbox/store";
+
 import { formatMailText } from "./mail-format";
 import { useMailShell } from "./mail-shell-provider";
 type MailAgentUIMessage = UIMessage;
@@ -23,15 +25,16 @@ type MailAgentUIMessage = UIMessage;
 export interface AgentPanelProps {
   accountSelection: string;
   openThreadId?: string;
-  openThreadSubject?: string;
 }
 
 export function AgentPanel({
   accountSelection,
   openThreadId,
-  openThreadSubject,
 }: AgentPanelProps) {
   const { aiConfigured } = useMailShell();
+  const openThreadSubject = useMailboxStore((state) =>
+    openThreadId ? state.threadsById[openThreadId]?.subject : undefined,
+  );
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
