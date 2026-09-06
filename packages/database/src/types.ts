@@ -2,7 +2,6 @@ export type AccountSyncStage = "pending" | "running" | "complete" | "failed";
 
 export type AccountSyncState = {
   mailSync: AccountSyncStage;
-  memory: AccountSyncStage;
 };
 
 export type WorkflowStepJob = {
@@ -45,10 +44,8 @@ export type MailboxMessage = {
   recipients: string[];
   bodyText: string;
   bodyHtml: string | null;
-  isMemoryEligible: boolean;
   ingestionMode: "initial" | "incremental";
   isLiveDelivery?: boolean;
-  memoryContactEmails: string[];
   attachments: Array<{
     providerAttachmentId: string | null;
     mimePartPath: string | null;

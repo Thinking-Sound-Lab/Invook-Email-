@@ -15,41 +15,19 @@ const completeMailSync = {
 } as const;
 
 test("account progress events are validated before entering client state", () => {
-  const serialized = JSON.stringify({
-    mailSync: completeMailSync,
-    memory: "pending",
-  });
+  const serialized = JSON.stringify({ mailSync: completeMailSync });
 
   assert.deepEqual(parseAccountSyncStatusEvent(serialized), JSON.parse(serialized));
   assert.equal(parseAccountSyncStatusEvent("{"), null);
   assert.equal(
-    parseAccountSyncStatusEvent(JSON.stringify({ ...JSON.parse(serialized), memory: "unknown" })),
+    parseAccountSyncStatusEvent(JSON.stringify({ mailSync: { state: "unknown" } })),
     null,
   );
 });
 
-test("the progress stripe presents Memory after mail synchronization", () => {
-  assert.deepEqual(
-    getAccountPipelinePresentation({
-      mailSync: completeMailSync,
-      memory: "running",
-    }),
-    {
-      phase: "memory",
-      title: "Creating Memory",
-      detail: "Analyzing sent mail for reusable reply rules",
-      percentage: null,
-      isFailed: false,
-    },
-  );
-});
-
-test("a completed account pipeline removes the progress stripe", () => {
+test("a completed mail synchronization removes the progress stripe", () => {
   assert.equal(
-    getAccountPipelinePresentation({
-      mailSync: completeMailSync,
-      memory: "complete",
-    }),
+    getAccountPipelinePresentation({ mailSync: completeMailSync }),
     null,
   );
 });

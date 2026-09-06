@@ -42,9 +42,9 @@ These principles apply to every change:
 apps/
   api/                 Fastify HTTP API, sessions, OAuth, webhooks, SSE, and product routes
   web/                 Next.js App Router UI and same-origin API/SSE proxies
-  worker/              Durable Gmail, indexing, labeling, Memory, and feedback work
+  worker/              Durable Gmail synchronization, indexing, and labeling work
 packages/
-  ai/                  Model, embedding, Memory, label, draft, and mail-agent logic
+  ai/                  Model configuration and thread-label classification logic
   auth/                Better Auth Google identity and database-backed sessions
   contracts/           Shared browser/server product and wire contracts
   database/            Schema, migrations, repositories, replica operations, and Temporal command admission

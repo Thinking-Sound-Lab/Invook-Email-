@@ -25,7 +25,6 @@ import {
   getMailboxThreadDetail,
   listMailboxThreads,
 } from "./mailbox-resources";
-import { queryInvookMailbox } from "./mailbox-query";
 import {
   createInvookLabel,
   replaceGmailMessageLabels,
@@ -95,7 +94,6 @@ async function withContext(
       userId,
       providerAccountId: accountId,
       email: `${accountId}@example.test`,
-      memoryAcknowledgedAt: referenceAt,
     });
     await database.insert(gmailReplicaStates).values({
       accountId,
@@ -437,9 +435,7 @@ test(
               recipients: [],
               bodyText: "Please review",
               bodyHtml: null,
-              isMemoryEligible: false,
               ingestionMode: "initial",
-              memoryContactEmails: [],
             },
           ],
         },
@@ -630,17 +626,6 @@ test(
         enqueuedCount: 0,
         continuationStepId: null,
       });
-      const query = await queryInvookMailbox(
-        { userId, accountId, inboxState: "inbox" },
-        database,
-      );
-      assert.equal(query.status, "available");
-      assert.equal("availableGmailLabels" in query, false);
-      if (query.status === "available") {
-        const [message] = query.messages;
-        assert.ok(message);
-        assert.equal("gmailLabels" in message, false);
-      }
       const detail = await getMailboxThreadDetail(
         userId,
         old.threadId,

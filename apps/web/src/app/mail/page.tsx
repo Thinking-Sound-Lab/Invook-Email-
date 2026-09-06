@@ -3,7 +3,6 @@ import { v4 as uuidv4, validate as validateUuid } from "uuid";
 
 import { mailboxViews } from "@invook/contracts";
 
-import { AgentPanel } from "@/components/mail/agent-panel";
 import { ComposeSurface } from "@/components/mail/compose-surface";
 import { MailList } from "@/components/mail/mail-list";
 import { ThreadReader } from "@/components/mail/thread-reader";
@@ -138,19 +137,11 @@ export default async function MailPage({ searchParams }: MailPageProps) {
   }
 
   return (
-    <>
-      <div
-        data-slot="mail-workspace-content"
-        className="min-h-0 min-w-0 overflow-hidden [&>*]:h-full"
-      >
-        {centerPane}
-      </div>
-      <AgentPanel
-        key={`${accountSelection}:${selectedThread?.id ?? "mailbox"}`}
-        accountSelection={accountSelection}
-        openThreadId={selectedThread?.id}
-        openThreadSubject={selectedThread?.subject || undefined}
-      />
-    </>
+    <div
+      data-slot="mail-workspace-content"
+      className="min-h-0 min-w-0 overflow-hidden [&>*]:h-full"
+    >
+      {centerPane}
+    </div>
   );
 }

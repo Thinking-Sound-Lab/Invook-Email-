@@ -11,7 +11,6 @@ import {
   completeGmailSynchronizationRecovery,
   deleteIndexedMessage,
   enqueueDailyGmailWatchRenewal,
-  enqueuePendingAnalysisWorkflowSteps,
   failMailSyncThread,
   getIndexedMessageIds,
   getGmailReplicaContext,
@@ -83,7 +82,7 @@ import {
   ensureGmailWatch,
   renewGmailWatch,
 } from "./watch";
-import { requiredString } from "../memory/candidates";
+import { requiredString } from "../workflow-step-payload";
 
 /**
  * Discovers one page of the mailbox and reports the threads still owed
@@ -504,7 +503,6 @@ export async function catchUpGmailHistoryActivity(
             accountId: input.accountId,
             historyCursor: result.historyCursor,
           });
-          await enqueuePendingAnalysisWorkflowSteps();
         }
         return {
           status: "applied",
@@ -546,7 +544,6 @@ export async function runGmailWatchRenewal(job: WorkflowStepJob) {
       accountId: account.id,
       historyCursor: catchup.historyCursor,
     });
-    await enqueuePendingAnalysisWorkflowSteps();
   }
   return {
     ...catchup,

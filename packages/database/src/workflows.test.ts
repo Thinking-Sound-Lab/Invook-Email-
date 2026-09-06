@@ -8,7 +8,6 @@ import {
 } from "./gmail-watch";
 import {
   createGmailSyncRunStep,
-  createPostSyncDerivationSteps,
   TEMPORAL_COMMAND_DISPATCH_BATCH_SIZE,
   temporalCommandJobFromRow,
   temporalCommandPriority,
@@ -66,9 +65,9 @@ test("new mail control work is isolated from live enrichment and bulk history", 
   assert.equal(taskQueueLaneForStepType("gmail.history.catchup"), "control");
   assert.equal(taskQueueLaneForStepType("gmail.message.refresh"), "control");
   assert.equal(taskQueueLaneForStepType("gmail.watch.renew"), "control");
-  assert.equal(taskQueueLaneForStepType("memory.incremental"), "live");
+  assert.equal(taskQueueLaneForStepType("label.thread.assign"), "live");
   assert.equal(taskQueueLaneForStepType("gmail.sync.run"), "bulk");
-  assert.equal(taskQueueLaneForStepType("memory.extract"), "bulk");
+  assert.equal(taskQueueLaneForStepType("label.recent.scan"), "bulk");
 });
 
 test("Temporal command routing requires stable tenant ownership", () => {
@@ -191,31 +190,3 @@ test("terminal initial synchronization failure creates an immediate repair trigg
   assert.equal(taskQueueLaneForStepType(step.stepType), "control");
 });
 
-test("ready replicas enqueue only the post-sync Memory derivation", () => {
-  const steps = createPostSyncDerivationSteps({
-    userId: "11111111-1111-4111-8111-111111111111",
-    accountId: "22222222-2222-4222-8222-222222222222",
-    historyCursor: "987654321",
-  });
-
-  assert.deepEqual(
-    steps.map((step) => step.stepType),
-    ["memory.extract"],
-  );
-  assert.deepEqual(
-    new Set(steps.map((step) => taskQueueLaneForStepType(step.stepType))),
-    new Set(["bulk"]),
-  );
-  assert.equal(
-    taskQueueLaneForStepType("memory.incremental"),
-    "live",
-  );
-  assert.equal(
-    taskQueueLaneForStepType("label.thread.assign"),
-    "live",
-  );
-  assert.equal(
-    taskQueueLaneForStepType("label.recent.scan"),
-    "bulk",
-  );
-});

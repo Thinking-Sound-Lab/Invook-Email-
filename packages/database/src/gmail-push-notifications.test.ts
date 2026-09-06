@@ -86,7 +86,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: emailAddress,
-        memoryAcknowledgedAt: new Date(),
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -189,7 +188,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: emailAddress,
-        memoryAcknowledgedAt: new Date(),
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -305,7 +303,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: emailAddress,
-        memoryAcknowledgedAt: new Date(),
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -410,7 +407,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: emailAddress,
-        memoryAcknowledgedAt: new Date(),
       });
       await database.insert(gmailReplicaStates).values({
         accountId,

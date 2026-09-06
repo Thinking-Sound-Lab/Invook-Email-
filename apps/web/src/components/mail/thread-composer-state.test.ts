@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  acceptThreadAiDraft,
   createThreadComposeSession,
   type ThreadComposeMessage,
 } from "./thread-composer-state";
@@ -38,7 +37,6 @@ test("manual Reply starts blank, honors Reply-To, and captures the selected mess
   assert.equal(session.body, "");
   assert.equal(session.subject, "Re: Question");
   assert.equal(session.message.id, message.id);
-  assert.equal(session.aiDraft, null);
 });
 
 test("Reply uses the sender when no Reply-To exists and never addresses outgoing mail to yourself", () => {
@@ -97,33 +95,6 @@ test("Forward requires a new recipient and includes only the original message an
     session.forwardedMessageText ?? "",
     /private@example.com/,
   );
-});
-
-test("accepting an AI draft retains recipients, message identity, and feedback provenance", () => {
-  const session = createThreadComposeSession({
-    mode: "reply",
-    message,
-    accountEmail: "owner@example.com",
-  });
-  const draft = {
-    id: "draft-1",
-    threadId: "thread-1",
-    status: "editing" as const,
-    currentText: "AI reply",
-    generatedText: "AI reply",
-    usedMemoryIds: ["memory-1"],
-    updatedAt: "2026-08-28T12:00:00.000Z",
-  };
-  const accepted = acceptThreadAiDraft(
-    { ...session, ccRecipients: "copy@example.com", hasEdits: true },
-    draft,
-  );
-  assert.equal(accepted.body, draft.currentText);
-  assert.equal(accepted.aiDraft, draft);
-  assert.equal(accepted.recipients, session.recipients);
-  assert.equal(accepted.ccRecipients, "copy@example.com");
-  assert.equal(accepted.message, message);
-  assert.equal(accepted.hasEdits, true);
 });
 
 const initialAttempt: GmailComposeSendAttempt = {

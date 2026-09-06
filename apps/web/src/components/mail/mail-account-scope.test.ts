@@ -15,7 +15,7 @@ const accounts = ["first", "second"].map((id) => ({
   email: `${id}@example.test`,
   image: null,
   status: "connected",
-  syncState: { mailSync: "complete", memory: "complete" },
+  syncState: { mailSync: "complete" },
   lastSyncedAt: null,
   replica: { state: "ready", readyAt: null },
 })) satisfies MailboxAccount[];

@@ -2,7 +2,6 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 
 import type { AccountSyncStatusEvent } from "@invook/contracts";
 import {
-  getAccountSyncStateForAccount,
   getGmailConnectionForUser,
   getMailSyncProgressForAccount,
   listenForAccountSyncNotifications,
@@ -32,13 +31,8 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
   const getDurableProgress = async (
     accountId: string,
   ): Promise<AccountSyncStatusEvent | null> => {
-    const [mailSync, syncState] = await Promise.all([
-      getMailSyncProgressForAccount({ accountId }),
-      getAccountSyncStateForAccount({ accountId }),
-    ]);
-    return mailSync && syncState
-      ? { mailSync, memory: syncState.memory }
-      : null;
+    const mailSync = await getMailSyncProgressForAccount({ accountId });
+    return mailSync ? { mailSync } : null;
   };
   const broadcastDurableProgress = async (accountId: string) => {
     const progress = await getDurableProgress(accountId);
@@ -88,11 +82,8 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
         return;
       }
-      const [mailSync, syncState] = await Promise.all([
-        getMailSyncProgressForAccount({ accountId }),
-        getAccountSyncStateForAccount({ accountId }),
-      ]);
-      if (!mailSync || !syncState) {
+      const mailSync = await getMailSyncProgressForAccount({ accountId });
+      if (!mailSync) {
         await sendProblem(request, reply, 404, "Connected Gmail account not found");
         return;
       }
@@ -116,10 +107,7 @@ export const registerAccountSyncEventRoutes: FastifyPluginAsync = async (api) =>
       };
       request.raw.once("close", removeStream);
       reply.raw.once("close", removeStream);
-      writeEvent(reply.raw, {
-        mailSync,
-        memory: syncState.memory,
-      });
+      writeEvent(reply.raw, { mailSync });
     },
   );
 };

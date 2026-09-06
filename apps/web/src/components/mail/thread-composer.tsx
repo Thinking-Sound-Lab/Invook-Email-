@@ -6,13 +6,11 @@ import {
   Cancel01Icon,
   Delete02Icon,
   MailReply01Icon,
-  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   GMAIL_COMPOSE_MAX_BODY_LENGTH,
   GMAIL_COMPOSE_MAX_SUBJECT_LENGTH,
-  type AiReplyDraft,
 } from "@invook/contracts";
 import { type ReactNode, useId, useRef, useState } from "react";
 
@@ -21,7 +19,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useThreadComposer } from "@/hooks/use-thread-composer";
 
-import { useMailShell } from "./mail-shell-provider";
 import { QuotedTextToggle } from "./quoted-text-toggle";
 import type {
   ThreadComposeMessage,
@@ -29,11 +26,9 @@ import type {
 } from "./thread-composer-state";
 
 export interface ThreadComposerProps {
-  threadId: string;
   accountId: string;
   accountEmail: string;
   message: ThreadComposeMessage | null;
-  initialDraft: AiReplyDraft | null;
 }
 
 interface RecipientRowProps {
@@ -93,25 +88,18 @@ function RecipientRow({
 }
 
 export function ThreadComposer({
-  threadId,
   accountId,
   accountEmail,
   message,
-  initialDraft,
 }: ThreadComposerProps) {
-  const { aiConfigured } = useMailShell();
   const formId = useId();
   const bodyRef = useRef<HTMLTextAreaElement>(null);
-  const [isAiOpen, setIsAiOpen] = useState(false);
   const [isCcOpen, setIsCcOpen] = useState(false);
   const [isForwardQuoteExpanded, setIsForwardQuoteExpanded] = useState(false);
-  const [instruction, setInstruction] = useState("");
   const composer = useThreadComposer({
-    threadId,
     accountId,
     accountEmail,
     message,
-    initialDraft,
   });
   const {
     session,
@@ -123,21 +111,13 @@ export function ThreadComposer({
     notice,
   } = composer;
 
-  function handleOpen(
-    mode: ThreadComposeMode,
-    options: { withAi?: boolean } = {},
-  ): void {
-    if (!composer.open(mode, options)) return;
+  function handleOpen(mode: ThreadComposeMode): void {
+    if (!composer.open(mode)) return;
     if (session?.mode !== mode) {
       setIsCcOpen(false);
       setIsForwardQuoteExpanded(false);
     }
-    setIsAiOpen(Boolean(options.withAi));
     bodyRef.current?.focus();
-  }
-
-  async function handleGenerateDraft(): Promise<void> {
-    if (await composer.generateDraft(instruction)) setIsAiOpen(false);
   }
 
   return (
@@ -164,22 +144,6 @@ export function ThreadComposer({
           aria-controls={formId}
         >
           <HugeiconsIcon icon={ArrowTurnForwardIcon} size={14} /> Forward
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          className="h-8 gap-2 rounded-full bg-transparent px-3.5 font-normal"
-          onClick={() => handleOpen("reply", { withAi: true })}
-          disabled={!message || isLocked || !aiConfigured}
-          title={
-            aiConfigured
-              ? undefined
-              : "Add an AI model in Settings to draft replies"
-          }
-          aria-expanded={isAiOpen && session?.mode === "reply"}
-          aria-controls={formId}
-        >
-          <HugeiconsIcon icon={SparklesIcon} size={14} /> Draft with AI
         </Button>
       </div>
 
@@ -261,27 +225,6 @@ export function ThreadComposer({
               </div>
             ) : null}
           </div>
-          {isAiOpen && session.mode === "reply" ? (
-            <div className="m-4 flex flex-wrap items-center gap-2 rounded-lg bg-background/60 p-2 sm:mx-5">
-              <Input
-                value={instruction}
-                onChange={(event) => setInstruction(event.target.value)}
-                aria-label="Instruction for this reply"
-                placeholder="Optional instruction for this reply"
-                maxLength={1000}
-                disabled={isLocked}
-                className="min-w-40 flex-1 border-0 shadow-none dark:bg-transparent"
-              />
-              <Button
-                type="button"
-                className="rounded-md"
-                onClick={() => void handleGenerateDraft()}
-                disabled={isLocked || !aiConfigured}
-              >
-                {pending === "generate" ? "Drafting…" : "Generate draft"}
-              </Button>
-            </div>
-          ) : null}
           <Textarea
             ref={bodyRef}
             aria-label={
@@ -354,32 +297,6 @@ export function ThreadComposer({
               </Button>
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
-              {session.aiDraft &&
-              session.body !== session.aiDraft.currentText ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="rounded-md"
-                  onClick={() => void composer.saveAiEdits()}
-                  disabled={isLocked || !session.body.trim()}
-                >
-                  Save changes
-                </Button>
-              ) : null}
-              {session.mode === "reply" ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="rounded-md"
-                  aria-label="Draft with AI"
-                  onClick={() => setIsAiOpen(!isAiOpen)}
-                  disabled={isLocked || !aiConfigured}
-                >
-                  <HugeiconsIcon icon={SparklesIcon} size={16} />
-                </Button>
-              ) : null}
               <Button
                 type="button"
                 variant="ghost"

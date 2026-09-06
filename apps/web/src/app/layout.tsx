@@ -12,7 +12,7 @@ const jakarta = Plus_Jakarta_Sans({
 
 export const metadata: Metadata = {
   title: "Invook — AI-native Gmail",
-  description: "Connect Gmail and build an email assistant that drafts with your Memory.",
+  description: "Connect Gmail and let Invook label your mail automatically.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -54,8 +54,7 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: "owner@example.com",
-        memoryAcknowledgedAt: new Date(),
-        syncState: { mailSync: "complete", memory: "complete" },
+        syncState: { mailSync: "complete" },
       });
       await database.insert(accountSecrets).values({
         accountId,

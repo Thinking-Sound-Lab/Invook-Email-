@@ -39,7 +39,7 @@ const shell: MailboxShell = {
       email: "owner@example.com",
       image: null,
       status: "connected",
-      syncState: { mailSync: "complete", memory: "complete" },
+      syncState: { mailSync: "complete" },
       lastSyncedAt: "2026-09-01T00:00:00.000Z",
       replica: { state: "ready", readyAt: "2026-09-01T00:00:00.000Z" },
     },
