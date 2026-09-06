@@ -80,6 +80,5 @@ export function createMailboxHref(
   setOrDelete("surface", updates.surface);
   setOrDelete("thread", updates.thread);
   setOrDelete("view", updates.view);
-  query.delete("cursor");
   return `/mail?${query.toString()}`;
 }

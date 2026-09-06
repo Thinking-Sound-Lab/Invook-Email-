@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  buildEmailHtmlContent,
-  buildEmailHtmlPresentation,
-} from "./email-html-sanitizer";
+import { buildEmailHtmlPresentation } from "./email-html-presentation";
 
 test("email HTML preserves sender presentation while removing active content", () => {
-  const content = buildEmailHtmlContent(`
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(`
     <html>
       <head>
         <title>Duplicated subject</title>
@@ -43,7 +40,7 @@ test("email HTML preserves sender presentation while removing active content", (
 });
 
 test("email HTML loads remote images while blocking active capabilities", () => {
-  const content = buildEmailHtmlContent(
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(
     '<a href="javascript:alert(1)">Unsafe</a><img src="https://example.com/banner.jpg">',
   );
 
@@ -56,7 +53,7 @@ test("email HTML loads remote images while blocking active capabilities", () => 
 });
 
 test("email HTML preserves one-pixel and visible remote images", () => {
-  const content = buildEmailHtmlContent(
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(
     `
       <img src="https://example.com/tracker.gif" width="1" height="1">
       <img src="https://example.com/banner.jpg" width="600" height="240">
@@ -68,7 +65,7 @@ test("email HTML preserves one-pixel and visible remote images", () => {
 });
 
 test("email HTML preserves self-contained images", () => {
-  const content = buildEmailHtmlContent(
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(
     '<p>Hello</p><img src="data:image/png;base64,iVBORw0KGgo=">',
   );
 
@@ -76,7 +73,7 @@ test("email HTML preserves self-contained images", () => {
 });
 
 test("email HTML preserves remote CSS images without changing data images", () => {
-  const content = buildEmailHtmlContent(
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(
     `
       <style class="mail-theme">.hero { background-image: url("https://example.com/hero.png"); }</style>
       <div style="background: url(data:image/png;base64,iVBORw0KGgo=), url('//example.com/tile.png'); content: image-set('https://example.com/retina.png' 2x)"></div>
@@ -92,7 +89,7 @@ test("email HTML preserves remote CSS images without changing data images", () =
 });
 
 test("email HTML rejects credentialed and non-default-port image URLs", () => {
-  const content = buildEmailHtmlContent(
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(
     `
       <img src="https://user@example.com/private.png">
       <img src="http://example.com:8080/private.png">
@@ -104,7 +101,7 @@ test("email HTML rejects credentialed and non-default-port image URLs", () => {
 });
 
 test("email HTML loads remote images directly without an API capability", () => {
-  const content = buildEmailHtmlContent(
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(
     '<img src="https://example.com/banner.png"><div style="background:url(https://example.com/tile.png)"></div>',
   );
 
@@ -113,7 +110,7 @@ test("email HTML loads remote images directly without an API capability", () => 
 });
 
 test("email HTML preserves sender color rules and legacy color attributes", () => {
-  const content = buildEmailHtmlContent(
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation(
     `
       <style>
         p { color: #222222; }
@@ -132,7 +129,7 @@ test("email HTML preserves sender color rules and legacy color attributes", () =
 });
 
 test("email HTML includes the isolated viewer root without a document wrapper", () => {
-  const content = buildEmailHtmlContent("<p>Hello</p>");
+  const { sanitizedHtml: content } = buildEmailHtmlPresentation("<p>Hello</p>");
 
   assert.match(content, /:host \{/);
   assert.match(content, /color-scheme: inherit/);

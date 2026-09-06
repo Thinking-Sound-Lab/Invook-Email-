@@ -26,6 +26,7 @@ import type {
 } from "./thread-composer-state";
 
 export interface ThreadComposerProps {
+  threadId: string;
   accountId: string;
   accountEmail: string;
   message: ThreadComposeMessage | null;
@@ -88,6 +89,7 @@ function RecipientRow({
 }
 
 export function ThreadComposer({
+  threadId,
   accountId,
   accountEmail,
   message,
@@ -97,6 +99,7 @@ export function ThreadComposer({
   const [isCcOpen, setIsCcOpen] = useState(false);
   const [isForwardQuoteExpanded, setIsForwardQuoteExpanded] = useState(false);
   const composer = useThreadComposer({
+    threadId,
     accountId,
     accountEmail,
     message,

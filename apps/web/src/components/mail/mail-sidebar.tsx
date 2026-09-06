@@ -16,8 +16,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { MailboxSidebarCounts } from "@invook/contracts";
-import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useEffect } from "react";
 
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
@@ -26,9 +26,11 @@ import {
   AvatarFallback,
   AvatarImage,
 } from "@/components/ui/avatar";
+import { useMailboxStore } from "@/stores/mailbox/store";
 import { cn } from "@/lib/utils";
 
 import { MailAccountAvatar } from "./mail-account-avatar";
+import { MailboxLink } from "./mailbox-link";
 import {
   accountLabels,
   createMailboxHref,
@@ -36,7 +38,6 @@ import {
   selectedSidebarCounts,
 } from "./mail-account-scope";
 import { initials } from "./mail-format";
-import { MailNavigationPending } from "./mail-navigation-pending";
 import { useMailShell } from "./mail-shell-provider";
 import { listSidebarLabels } from "./mail-sidebar-labels";
 import type { MailboxView, MailSurface } from "./types";
@@ -86,7 +87,7 @@ function NavLink({
   count,
 }: NavLinkProps) {
   return (
-    <Link
+    <MailboxLink
       href={href}
       aria-current={active ? "page" : undefined}
       className={cn(navItemClassName(active), !icon && "hidden lg:flex")}
@@ -105,8 +106,7 @@ function NavLink({
           {sidebarCountFormatter.format(count)}
         </span>
       )}
-      <MailNavigationPending />
-    </Link>
+    </MailboxLink>
   );
 }
 
@@ -120,12 +120,22 @@ export function MailSidebar({
   const shell = useMailShell();
   const { accounts, aiConfigured, user } = shell;
   const searchParams = useSearchParams();
+  const setSidebarCounts = useMailboxStore((state) => state.setSidebarCounts);
+  const cachedSidebarCounts = useMailboxStore((state) => state.sidebarCounts);
   const accountSelection = resolveMailboxAccountSelection(
     searchParams.get("account"),
     accounts,
   );
+
+  useEffect(() => {
+    setSidebarCounts(sidebarCounts);
+  }, [setSidebarCounts, sidebarCounts]);
+
+  // Counts are recomputed by mailbox change events, so the cache leads and the
+  // server render seeds it.
+  const currentSidebarCounts = cachedSidebarCounts ?? sidebarCounts;
   const currentCounts = selectedSidebarCounts(
-    sidebarCounts,
+    currentSidebarCounts,
     accountSelection,
   );
   const requestedSurface = searchParams.get("surface");
@@ -267,7 +277,7 @@ export function MailSidebar({
           ))}
         </nav>
 
-        {!sidebarCounts ? (
+        {!currentSidebarCounts ? (
           <p className="mt-3 hidden px-2.5 text-[11px] text-sidebar-foreground/45 lg:block" role="status">
             Mailbox counts are unavailable.
           </p>
@@ -277,7 +287,7 @@ export function MailSidebar({
           Inboxes
         </p>
         <nav className="space-y-0.5" aria-label="Connected inboxes">
-          <Link
+          <MailboxLink
             href={handleAccountHref("all")}
             aria-current={accountSelection === "all" ? "true" : undefined}
             className={cn(navItemClassName(accountSelection === "all"), "h-8 gap-2 px-2")}
@@ -294,12 +304,11 @@ export function MailSidebar({
                 className="hidden shrink-0 text-sidebar-foreground/65 lg:block"
               />
             ) : null}
-            <MailNavigationPending />
-          </Link>
+          </MailboxLink>
           {accounts.map((account) => {
             const isActive = accountSelection === account.id;
             return (
-              <Link
+              <MailboxLink
                 key={account.id}
                 href={handleAccountHref(account.id)}
                 aria-current={isActive ? "true" : undefined}
@@ -322,8 +331,7 @@ export function MailSidebar({
                     className="hidden shrink-0 text-sidebar-foreground/65 lg:block"
                   />
                 ) : null}
-                <MailNavigationPending />
-              </Link>
+              </MailboxLink>
             );
           })}
           <form action="/v1/connections/gmail/start" method="get">

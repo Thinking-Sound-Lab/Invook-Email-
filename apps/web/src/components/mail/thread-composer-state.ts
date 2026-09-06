@@ -13,7 +13,7 @@ export type ThreadComposeMessage = Pick<
   | "subject"
   | "bodyText"
   | "sentAt"
-> & { attachmentCount: number; bodyHtml?: string | null };
+> & { attachmentCount: number };
 
 export interface ThreadComposeSession {
   mode: ThreadComposeMode;

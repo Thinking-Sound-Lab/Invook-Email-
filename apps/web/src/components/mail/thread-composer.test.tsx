@@ -50,6 +50,7 @@ const shell: MailboxShell = {
   accountLabels: [],
 };
 const props: ThreadComposerProps = {
+  threadId: "thread-1",
   accountId: "account-1",
   accountEmail: "owner@example.com",
   message: {
@@ -66,6 +67,25 @@ const props: ThreadComposerProps = {
 };
 let root: Root | null = null;
 const originalAdapter = axios.defaults.adapter;
+
+/**
+ * Composing re-reads the open thread so the reader shows the sent message.
+ * That read is asserted on its own; the protocol assertions below stay focused
+ * on the compose mutations.
+ */
+function isThreadRead(config: { method?: string; url?: string }): boolean {
+  return (
+    (config.method ?? "get").toLowerCase() === "get" &&
+    Boolean(config.url?.startsWith("/v1/mailbox/threads/"))
+  );
+}
+
+const threadReadNotFound = {
+  status: 404,
+  statusText: "Not Found",
+  headers: {},
+  data: null,
+};
 
 async function renderComposer(
   input: ThreadComposerProps = props,
@@ -214,6 +234,7 @@ test("only the two action chips appear until Reply or Forward is selected", asyn
 test("manual edits survive server refreshes and Send submits the current text once", async () => {
   const requests: Array<{ url: string | undefined; data: unknown }> = [];
   axios.defaults.adapter = async (config) => {
+    if (isThreadRead(config)) throw { ...threadReadNotFound, config };
     requests.push({
       url: config.url,
       data:
@@ -280,6 +301,7 @@ test("send failure retains the editor and retry resolves the same provider draft
   let creates = 0;
   const sendRequests: unknown[] = [];
   axios.defaults.adapter = async (config) => {
+    if (isThreadRead(config)) throw { ...threadReadNotFound, config };
     if (config.url?.endsWith("/send")) {
       sendRequests.push(config.data);
       if (sendRequests.length === 1) throw new Error("connection lost");
@@ -330,6 +352,7 @@ test("send failure retains the editor and retry resolves the same provider draft
 test("Forward cannot send without a recipient and sends without reply threading", async () => {
   const requests: unknown[] = [];
   axios.defaults.adapter = async (config) => {
+    if (isThreadRead(config)) throw { ...threadReadNotFound, config };
     requests.push(
       typeof config.data === "string" ? JSON.parse(config.data) : config.data,
     );
@@ -388,6 +411,7 @@ test("a long collapsed forward sends only its source ID and authored text", asyn
   const originalText = "Original message line\n".repeat(5_000);
   const requests: unknown[] = [];
   axios.defaults.adapter = async (config) => {
+    if (isThreadRead(config)) throw { ...threadReadNotFound, config };
     requests.push(
       typeof config.data === "string" ? JSON.parse(config.data) : config.data,
     );
@@ -444,6 +468,7 @@ test("two immediate submit events admit only one send attempt", async () => {
   let sends = 0;
   let creates = 0;
   axios.defaults.adapter = async (config) => {
+    if (isThreadRead(config)) throw { ...threadReadNotFound, config };
     if (config.url?.endsWith("/send")) sends += 1;
     else creates += 1;
     return {
@@ -484,4 +509,41 @@ test("two immediate submit events admit only one send attempt", async () => {
   });
   assert.equal(creates, 1);
   assert.equal(sends, 1);
+});
+
+test("a sent reply re-reads the open thread instead of refreshing the route", async () => {
+  const threadReads: string[] = [];
+  axios.defaults.adapter = async (config) => {
+    if (isThreadRead(config)) {
+      threadReads.push(config.url ?? "");
+      throw { ...threadReadNotFound, config };
+    }
+    return {
+      config,
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      data: config.url?.endsWith("/send")
+        ? {
+            message: {
+              providerMessageId: "sent",
+              providerThreadId: "thread-1",
+            },
+            stepId: "send-step",
+          }
+        : {
+            draft: {
+              providerDraftId: "draft-1",
+              providerMessageId: "draft-message",
+              providerThreadId: "thread-1",
+            },
+            stepId: "save-step",
+          },
+    };
+  };
+  await renderComposer();
+  await click("Reply");
+  await enter("textarea", "Reply text");
+  await click("Send");
+  assert.deepEqual(threadReads, ["/v1/mailbox/threads/thread-1"]);
 });

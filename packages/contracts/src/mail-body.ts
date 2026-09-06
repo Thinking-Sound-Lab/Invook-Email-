@@ -1,5 +1,3 @@
-import sanitizeHtml from "sanitize-html";
-
 function decodeCharacterReference(reference: string, value: string): string {
   if (reference === "amp") return "&";
   if (reference === "lt") return "<";
@@ -44,18 +42,4 @@ export function formatMailBody(value: string): string {
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-export function buildEmailPlainText(bodyHtml: string): string {
-  const separatedHtml = bodyHtml.replace(
-    /<\/?(?:br|p|div|li|tr|h[1-6]|blockquote)\b[^>]*>/gi,
-    "\n$&",
-  );
-  return formatMailBody(
-    sanitizeHtml(separatedHtml, {
-      allowedTags: [],
-      allowedAttributes: {},
-      nonTextTags: ["script", "style", "textarea", "option", "title", "head"],
-    }),
-  );
 }

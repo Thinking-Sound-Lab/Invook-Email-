@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 
 import {
+  MAILBOX_THREAD_UPDATE_LIMIT,
   mailboxViews,
   type AcceptedMailboxSyncResponse,
   type MailboxView,
@@ -12,6 +13,7 @@ import {
   getMailboxSidebarCounts,
   getMailboxThreadDetail,
   listMailboxThreads,
+  listMailboxThreadsByIds,
   markGmailReplicaDeleting,
   parseMailboxCursor,
 } from "@invook/database";
@@ -23,12 +25,32 @@ import {
   parseRequiredMailboxAccountId,
 } from "../mailbox-account-scope";
 import { sendJson, sendProblem } from "../responses";
-import { serializeMailboxShell } from "../serializers";
+import {
+  serializeMailboxShell,
+  serializeMailboxThreadDetail,
+} from "../serializers";
 
 type MailboxQuery = MailboxAccountQuery & {
   cursor?: unknown;
   view?: unknown;
 };
+
+type MailboxThreadUpdatesQuery = MailboxAccountQuery & {
+  ids?: unknown;
+  view?: unknown;
+};
+
+function parseThreadUpdateIds(value: unknown): string[] | null {
+  if (typeof value !== "string") return null;
+  const threadIds = value
+    .split(",")
+    .map((threadId) => threadId.trim())
+    .filter((threadId) => threadId.length > 0);
+  if (threadIds.length === 0 || threadIds.length > MAILBOX_THREAD_UPDATE_LIMIT) {
+    return null;
+  }
+  return threadIds.every(isUuid) ? threadIds : null;
+}
 
 const mailboxViewSet = new Set<string>(mailboxViews);
 
@@ -113,6 +135,45 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
     },
   );
 
+  api.get<{ Querystring: MailboxThreadUpdatesQuery }>(
+    "/v1/mailbox/thread-updates",
+    { onRequest: requireSession },
+    async (request, reply) => {
+      const session = request.invookSession;
+      if (!session) return;
+      const accountScope = parseMailboxAccountScope(request.query.account);
+      if (!accountScope.valid) {
+        await sendProblem(request, reply, 400, "Invalid mailbox account");
+        return;
+      }
+      const view = parseMailboxView(request.query.view);
+      if (!view) {
+        await sendProblem(request, reply, 400, "Invalid mailbox view");
+        return;
+      }
+      const threadIds = parseThreadUpdateIds(request.query.ids);
+      if (!threadIds) {
+        await sendProblem(request, reply, 400, "Invalid mailbox thread selection");
+        return;
+      }
+      const updates = await listMailboxThreadsByIds(session.userId, {
+        accountId: accountScope.accountId,
+        threadIds,
+        view,
+      });
+      if (!updates) {
+        await sendProblem(
+          request,
+          reply,
+          404,
+          "Connected Gmail account not found",
+        );
+        return;
+      }
+      await sendJson(reply, 200, updates);
+    },
+  );
+
   api.get<{
     Params: { threadId: string };
     Querystring: MailboxAccountQuery;
@@ -140,7 +201,7 @@ export const registerMailboxRoutes: FastifyPluginAsync = async (api) => {
         await sendProblem(request, reply, 404, "Mailbox thread not found");
         return;
       }
-      await sendJson(reply, 200, thread);
+      await sendJson(reply, 200, serializeMailboxThreadDetail(thread));
     },
   );
 

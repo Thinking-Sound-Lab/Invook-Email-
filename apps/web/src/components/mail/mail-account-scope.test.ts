@@ -26,9 +26,9 @@ test("mailbox account selection defaults invalid and omitted values to All", () 
   assert.equal(resolveMailboxAccountSelection("second", accounts), "second");
 });
 
-test("account switching preserves a static view and clears thread pagination", () => {
+test("account switching preserves a static view and closes the open thread", () => {
   const href = createMailboxHref(
-    new URLSearchParams("account=first&view=starred&thread=thread&cursor=cursor"),
+    new URLSearchParams("account=first&view=starred&thread=thread"),
     { account: "second", thread: null },
   );
   assert.equal(href, "/mail?account=second&view=starred");

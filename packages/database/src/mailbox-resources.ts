@@ -7,10 +7,11 @@ import type {
   MailboxSelectedThread,
   MailboxSettings,
   MailboxScopeSidebarCounts,
+  MailboxThreadMessage,
   MailboxSidebarCounts,
-  MailboxThreadDetail,
   MailboxThreadPage,
   MailboxThreadSummary,
+  MailboxThreadUpdates,
   MailboxView,
   StaticMailboxView,
 } from "@invook/contracts";
@@ -67,6 +68,30 @@ type MailboxAccountRow = {
   lastSyncedAt: Date | null;
   replicaState: MailboxAccount["replica"]["state"];
   replicaReadyAt: Date | null;
+};
+
+/**
+ * The stored thread detail, before the API turns each message body into its
+ * sanitized presentation. Persistence owns the raw provider HTML; deciding how
+ * it is safe to render belongs to the layer that serializes the response.
+ */
+export type StoredMailboxThreadMessage = Omit<
+  MailboxThreadMessage,
+  "bodyPresentation"
+> & {
+  bodyHtml: string | null;
+};
+
+export type StoredMailboxSelectedThread = Omit<
+  MailboxSelectedThread,
+  "messages"
+> & {
+  messages: StoredMailboxThreadMessage[];
+};
+
+export type StoredMailboxThreadDetail = {
+  thread: StoredMailboxSelectedThread;
+  invookLabels: InvookLabel[];
 };
 
 type ThreadBaseRow = Omit<
@@ -565,12 +590,77 @@ export async function listMailboxThreads(
   return { pagination, threads: pageThreads };
 }
 
+/**
+ * Refreshes the threads named by a mailbox change event.
+ *
+ * Mailbox pages are addressable only by cursor position, and a cursor points
+ * into an ordering keyed on `latestMessageAt` that a new message reorders. An
+ * event names thread identities instead, so reconciliation reads them directly
+ * rather than refetching a page whose boundaries have already moved.
+ */
+export async function listMailboxThreadsByIds(
+  userId: string,
+  input: {
+    accountId?: string | null;
+    threadIds: string[];
+    view?: MailboxView;
+  },
+  database: Database = getDatabase(),
+): Promise<MailboxThreadUpdates | null> {
+  const { accountId = null, threadIds, view = "all" } = input;
+  const accounts = await resolveMailboxAccountContexts(
+    { userId, accountId },
+    database,
+  );
+  if (!accounts) return null;
+  const requestedThreadIds = Array.from(new Set(threadIds));
+  if (requestedThreadIds.length === 0) {
+    return { threads: [], missingThreadIds: [] };
+  }
+  const accountIds = accounts.map((account) => account.id);
+  const mailboxSortTime = sql<Date>`coalesce(${threads.latestMessageAt}, to_timestamp(0))`;
+  const threadRows = await database
+    .select({
+      accountId: threads.accountId,
+      accountEmail: connectedAccounts.email,
+      id: threads.id,
+      subject: threads.subject,
+      snippet: threads.snippet,
+      participants: threads.participants,
+      latestMessageAt: threads.latestMessageAt,
+      messageCount: threads.messageCount,
+    })
+    .from(threads)
+    .innerJoin(connectedAccounts, eq(connectedAccounts.id, threads.accountId))
+    .where(
+      and(
+        eq(threads.userId, userId),
+        inArray(threads.accountId, accountIds),
+        inArray(threads.id, requestedThreadIds),
+        visibleThreadCondition(),
+        mailboxViewCondition(view),
+      ),
+    )
+    .orderBy(desc(mailboxSortTime), desc(threads.id));
+  const updatedThreads = await attachThreadLabels(
+    { userId, accountIds, threadRows },
+    database,
+  );
+  const presentThreadIds = new Set(updatedThreads.map((thread) => thread.id));
+  return {
+    threads: updatedThreads,
+    missingThreadIds: requestedThreadIds.filter(
+      (threadId) => !presentThreadIds.has(threadId),
+    ),
+  };
+}
+
 export async function getMailboxThreadDetail(
   userId: string,
   threadId: string,
   accountId: string | null = null,
   database: Database = getDatabase(),
-): Promise<MailboxThreadDetail | null> {
+): Promise<StoredMailboxThreadDetail | null> {
   const accounts = await resolveMailboxAccountContexts(
     { userId, accountId },
     database,
@@ -722,7 +812,7 @@ export async function getMailboxThreadDetail(
     state.add(label.providerLabelId);
     stateByMessageId.set(label.messageId, state);
   }
-  const thread: MailboxSelectedThread = {
+  const thread: StoredMailboxSelectedThread = {
     ...baseThread,
     messages: threadMessages.map((message) => ({
       id: message.id,

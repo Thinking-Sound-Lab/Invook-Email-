@@ -1,11 +1,18 @@
+"use client";
+
 import { ArrowLeft02Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { InvookLabel } from "@invook/contracts";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  useThreadDetail,
+  type ThreadDetailLoadState,
+} from "@/hooks/use-thread-detail";
 
 import {
   displayName,
@@ -14,8 +21,8 @@ import {
 } from "./mail-format";
 import { ThreadComposer } from "./thread-composer";
 import { EmailHtmlContent } from "./email-html-content";
-import { buildEmailHtmlPresentation } from "./email-html-sanitizer";
 import { LocalMailDate } from "./local-mail-date";
+import { MailboxLink } from "./mailbox-link";
 import { MessageRecipientDetails } from "./message-recipient-details";
 import { MessageStarButton } from "./message-star-button";
 import { PlainTextMailContent } from "./plain-text-mail-content";
@@ -24,26 +31,130 @@ import { ThreadReadTracker } from "./thread-read-tracker";
 import { getThreadReadTrackerKey } from "./thread-read-state";
 import type { MailboxView, SelectedThread } from "./types";
 
-export interface ThreadReaderProps {
-  accountSelection: string;
-  thread: SelectedThread;
-  currentView: MailboxView;
-  mailboxCursor?: string;
-  availableLabels: InvookLabel[];
-}
-
-export async function ThreadReader({
-  accountSelection,
-  thread,
-  currentView,
-  mailboxCursor,
-  availableLabels,
-}: ThreadReaderProps) {
+function createMailboxHref(
+  accountSelection: string,
+  currentView: MailboxView,
+): string {
   const mailboxQuery = new URLSearchParams({
     account: accountSelection,
     view: currentView,
   });
-  if (mailboxCursor) mailboxQuery.set("cursor", mailboxCursor);
+  return `/mail?${mailboxQuery.toString()}`;
+}
+
+export interface ThreadReaderProps {
+  accountSelection: string;
+  threadId: string;
+  currentView: MailboxView;
+}
+
+export function ThreadReader({
+  accountSelection,
+  threadId,
+  currentView,
+}: ThreadReaderProps) {
+  const router = useRouter();
+  const { detail, loadState, reload } = useThreadDetail({
+    accountSelection,
+    threadId,
+  });
+  const mailboxHref = createMailboxHref(accountSelection, currentView);
+
+  // A thread that is gone from stored state has no reader to show, so the
+  // mailbox takes over the surface exactly as the server render used to.
+  useEffect(() => {
+    if (loadState === "missing") router.replace(mailboxHref);
+  }, [loadState, mailboxHref, router]);
+
+  if (!detail) {
+    return (
+      <ThreadReaderPlaceholder
+        loadState={loadState}
+        mailboxHref={mailboxHref}
+        onRetry={reload}
+      />
+    );
+  }
+
+  return (
+    <ThreadReaderContent
+      mailboxHref={mailboxHref}
+      thread={detail.thread}
+      availableLabels={detail.invookLabels}
+    />
+  );
+}
+
+interface ThreadReaderPlaceholderProps {
+  loadState: ThreadDetailLoadState;
+  mailboxHref: string;
+  onRetry: () => void;
+}
+
+function ThreadReaderPlaceholder({
+  loadState,
+  mailboxHref,
+  onRetry,
+}: ThreadReaderPlaceholderProps) {
+  return (
+    <section
+      className="flex min-h-0 flex-col bg-background"
+      aria-label="Open email thread"
+    >
+      <header className="relative z-30 flex min-h-15 shrink-0 items-center gap-3 border-b border-border/35 px-3 sm:px-4">
+        <Button
+          asChild
+          variant="ghost"
+          size="sm"
+          className="text-sm text-muted-foreground"
+        >
+          <MailboxLink href={mailboxHref}>
+            <HugeiconsIcon icon={ArrowLeft02Icon} size={16} />
+            Back
+          </MailboxLink>
+        </Button>
+      </header>
+      <div
+        className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-6 text-center"
+        role={loadState === "error" ? "alert" : "status"}
+      >
+        <p className="text-sm font-medium">
+          {loadState === "error" ? "This thread is unavailable" : "Loading thread"}
+        </p>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          {loadState === "error"
+            ? "Invook could not read this thread."
+            : "Invook is reading this conversation."}
+        </p>
+        {loadState === "error" ? (
+          <div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-3"
+              onClick={onRetry}
+            >
+              Try again
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+interface ThreadReaderContentProps {
+  mailboxHref: string;
+  thread: SelectedThread;
+  availableLabels: InvookLabel[];
+}
+
+function ThreadReaderContent({
+  mailboxHref,
+  thread,
+  availableLabels,
+}: ThreadReaderContentProps) {
   const isUnread = thread.isUnread;
   const latestMessage = thread.messages.at(-1);
   const composeMessage = [...thread.messages]
@@ -63,10 +174,10 @@ export async function ThreadReader({
           size="sm"
           className="text-sm text-muted-foreground"
         >
-          <Link href={`/mail?${mailboxQuery.toString()}`} scroll={false}>
+          <MailboxLink href={mailboxHref}>
             <HugeiconsIcon icon={ArrowLeft02Icon} size={16} />
             Back
-          </Link>
+          </MailboxLink>
         </Button>
         <div className="flex min-w-0 items-center justify-end gap-1">
           <SmartLabelControls
@@ -78,6 +189,7 @@ export async function ThreadReader({
           {latestMessage ? (
             <MessageStarButton
               messageId={latestMessage.id}
+              threadId={thread.id}
               isStarred={isLatestMessageStarred}
             />
           ) : null}
@@ -112,9 +224,7 @@ export async function ThreadReader({
               );
               const senderLabel =
                 message.direction === "outgoing" ? "You" : senderName;
-              const emailPresentation = message.bodyHtml
-                ? buildEmailHtmlPresentation(message.bodyHtml)
-                : null;
+              const emailPresentation = message.bodyPresentation;
               return (
                 <article
                   key={message.id}
@@ -207,6 +317,7 @@ export async function ThreadReader({
 
           <ThreadComposer
             key={thread.id}
+            threadId={thread.id}
             accountId={thread.accountId}
             accountEmail={thread.accountEmail}
             message={
@@ -219,7 +330,6 @@ export async function ThreadReader({
                     headers: composeMessage.headers,
                     subject: composeMessage.subject,
                     bodyText: composeMessage.bodyText,
-                    bodyHtml: composeMessage.bodyHtml,
                     sentAt: composeMessage.sentAt,
                     attachmentCount: composeMessage.attachments.length,
                   }

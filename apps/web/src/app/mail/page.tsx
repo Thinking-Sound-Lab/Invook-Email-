@@ -1,28 +1,12 @@
 import { redirect } from "next/navigation";
-import { v4 as uuidv4, validate as validateUuid } from "uuid";
 
-import { mailboxViews } from "@invook/contracts";
-
-import { ComposeSurface } from "@/components/mail/compose-surface";
-import { MailList } from "@/components/mail/mail-list";
-import { ThreadReader } from "@/components/mail/thread-reader";
-import type {
-  MailboxView,
-  MailSurface,
-  MailThreadSummary,
-  SelectedThread,
-  StaticMailboxView,
-} from "@/components/mail/types";
+import { MailWorkspace } from "@/components/mail/mail-workspace";
 import {
-  PendingSurface,
-  SearchResultsSurface,
-  SearchSurface,
-} from "@/components/mail/workspace-surface";
-import {
-  getMailboxThreadDetail,
-  getMailboxThreadPage,
-  searchMailbox,
-} from "@/lib/api";
+  normalizeMailSurface,
+  normalizeMailboxAccount,
+  normalizeMailboxView,
+} from "@/components/mail/mailbox-location";
+import { getMailboxThreadPage } from "@/lib/api";
 
 interface MailPageProps {
   searchParams: Promise<{
@@ -30,118 +14,45 @@ interface MailPageProps {
     surface?: string | string[];
     thread?: string | string[];
     q?: string | string[];
-    cursor?: string | string[];
     account?: string | string[];
   }>;
 }
-
-const mailboxViewSet = new Set<string>(mailboxViews);
-
-const mailSurfaces = new Set<MailSurface>([
-  "mail",
-  "compose",
-  "search",
-  "automations",
-]);
 
 function firstValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function normalizeView(value: string | undefined): MailboxView {
-  if (value && mailboxViewSet.has(value)) return value as StaticMailboxView;
-  if (value?.startsWith("label:")) {
-    const labelId = value.slice("label:".length);
-    if (validateUuid(labelId)) return `label:${labelId}`;
-  }
-  return "all";
-}
-
-function normalizeSurface(value: string | undefined): MailSurface {
-  return value && mailSurfaces.has(value as MailSurface) ? (value as MailSurface) : "mail";
-}
-
-function normalizeAccount(value: string | undefined): string {
-  return value === "all" || (value && validateUuid(value)) ? value : "all";
-}
-
+/**
+ * Seeds the mailbox for the requested address and hands the surfaces over.
+ *
+ * Only the opening list is read here. Threads, search, and every later address
+ * are read by the browser from its own cache, so moving around the mailbox does
+ * not return to the server.
+ */
 export default async function MailPage({ searchParams }: MailPageProps) {
   const params = await searchParams;
 
   const requestedThreadId = firstValue(params.thread);
-  const requestedSurface = normalizeSurface(firstValue(params.surface));
-  const currentSurface = requestedThreadId ? "mail" : requestedSurface;
-  const query = firstValue(params.q)?.trim();
-  const mailboxCursor = firstValue(params.cursor)?.trim() || undefined;
-  const currentView = normalizeView(firstValue(params.view));
-  const accountSelection = normalizeAccount(firstValue(params.account));
+  const currentSurface = requestedThreadId
+    ? "mail"
+    : normalizeMailSurface(firstValue(params.surface));
+  const currentView = normalizeMailboxView(firstValue(params.view));
+  const accountSelection = normalizeMailboxAccount(firstValue(params.account));
+  const isMailboxList = currentSurface === "mail" && !requestedThreadId;
 
-  const [threadDetail, threadPage, searchResults] = await Promise.all([
-    requestedThreadId
-      ? getMailboxThreadDetail(requestedThreadId, accountSelection)
-      : null,
-    currentSurface === "mail" && !requestedThreadId
-      ? getMailboxThreadPage({
-          account: accountSelection,
-          cursor: mailboxCursor,
-          view: currentView,
-        })
-      : null,
-    currentSurface === "search" && query
-      ? searchMailbox(query, accountSelection)
-      : [],
-  ]);
-  if (requestedThreadId && !threadDetail) {
-    redirect(`/mail?account=${accountSelection}&view=${currentView}`);
-  }
-  if (currentSurface === "mail" && !requestedThreadId && !threadPage) redirect("/");
-  const selectedThread = threadDetail?.thread as SelectedThread | undefined;
-
-  let centerPane: React.ReactNode;
-  if (selectedThread) {
-    centerPane = (
-      <ThreadReader
-        accountSelection={accountSelection}
-        thread={selectedThread}
-        currentView={currentView}
-        mailboxCursor={mailboxCursor}
-        availableLabels={threadDetail?.invookLabels ?? []}
-      />
-    );
-  } else if (currentSurface === "compose") {
-    centerPane = <ComposeSurface />;
-  } else if (currentSurface === "search" && !query) {
-    centerPane = <SearchSurface accountSelection={accountSelection} />;
-  } else if (currentSurface === "search" && query) {
-    centerPane = (
-      <SearchResultsSurface
-        accountSelection={accountSelection}
-        query={query}
-        results={searchResults}
-      />
-    );
-  } else if (currentSurface === "automations") {
-    centerPane = <PendingSurface />;
-  } else {
-    centerPane = (
-      <MailList
-        key={`${accountSelection}:${currentView}`}
-        accountSelection={accountSelection}
-        canonicalPageVersion={uuidv4()}
-        currentView={currentView}
-        initialOlderCursor={threadPage?.pagination.olderCursor ?? null}
-        threads={(threadPage?.threads ?? []) as MailThreadSummary[]}
-        query={currentSurface === "search" ? query : undefined}
-      />
-    );
-  }
+  const threadPage = isMailboxList
+    ? await getMailboxThreadPage({
+        account: accountSelection,
+        view: currentView,
+      })
+    : null;
+  if (isMailboxList && !threadPage) redirect("/");
 
   return (
-    <div
-      data-slot="mail-workspace-content"
-      className="min-h-0 min-w-0 overflow-hidden [&>*]:h-full"
-    >
-      {centerPane}
-    </div>
+    <MailWorkspace
+      initialAccountSelection={accountSelection}
+      initialView={currentView}
+      initialPage={threadPage}
+    />
   );
 }

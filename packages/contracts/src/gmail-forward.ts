@@ -1,12 +1,9 @@
-import { buildEmailPlainText } from "./mail-body";
-
 export interface GmailForwardMessage {
   sender: { raw: string; email: string };
   headers: { name: string; value: string }[];
   subject: string;
   sentAt: string;
   bodyText: string;
-  bodyHtml?: string | null;
 }
 
 export function buildGmailForwardedMessageText(
@@ -25,7 +22,6 @@ export function buildGmailForwardedMessageText(
     `Subject: ${message.subject}`,
     ...visibleHeaders,
     "",
-    message.bodyText ||
-      (message.bodyHtml ? buildEmailPlainText(message.bodyHtml) : ""),
+    message.bodyText,
   ].join("\n");
 }

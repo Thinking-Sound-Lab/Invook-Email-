@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./email-plain-text": "./src/email-plain-text.ts",
     "./gmail-forward": "./src/gmail-forward.ts",
     "./mail-body": "./src/mail-body.ts"
   },

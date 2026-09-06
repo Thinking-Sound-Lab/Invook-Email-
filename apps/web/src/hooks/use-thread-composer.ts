@@ -5,8 +5,7 @@ import {
   validateGmailComposeDraftFields,
   type GmailComposeDraftSource,
 } from "@invook/contracts";
-import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 import { useMailShell } from "@/components/mail/mail-shell-provider";
@@ -16,6 +15,8 @@ import {
   type ThreadComposeMode,
   type ThreadComposeSession,
 } from "@/components/mail/thread-composer-state";
+import { getMailboxThreadDetail } from "@/lib/api/mailbox-threads";
+import { useMailboxStore } from "@/stores/mailbox/store";
 import {
   sendGmailComposeAttempt,
   type GmailComposeSendAttempt,
@@ -23,6 +24,7 @@ import {
 import { apiErrorMessage } from "@/lib/http-error";
 
 export interface UseThreadComposerProps {
+  threadId: string;
   accountId: string;
   accountEmail: string;
   message: ThreadComposeMessage | null;
@@ -46,12 +48,15 @@ export interface UseThreadComposerResult {
 }
 
 export function useThreadComposer({
+  threadId,
   accountId,
   accountEmail,
   message,
 }: UseThreadComposerProps): UseThreadComposerResult {
   const { accounts } = useMailShell();
-  const router = useRouter();
+  const hydrateThreadDetail = useMailboxStore(
+    (state) => state.hydrateThreadDetail,
+  );
   const busyRef = useRef(false);
   const [session, setSession] = useState<ThreadComposeSession | null>(null);
   const [attempt, setAttempt] = useState<GmailComposeSendAttempt | null>(null);
@@ -62,6 +67,20 @@ export function useThreadComposer({
     (account) => account.id === accountId && account.status === "connected",
   );
   const isLocked = pending !== null || attempt !== null;
+
+  // Composing writes to the thread the reader is showing, so the cached thread
+  // is re-read directly instead of re-rendering the whole route.
+  const reloadThreadDetail = useCallback(async (): Promise<void> => {
+    try {
+      const detail = await getMailboxThreadDetail({
+        accountSelection: accountId,
+        threadId,
+      });
+      hydrateThreadDetail({ threadId, detail });
+    } catch {
+      // The mailbox change event that follows this write reconciles the thread.
+    }
+  }, [accountId, hydrateThreadDetail, threadId]);
 
   useEffect(() => {
     if (!session?.hasEdits && !attempt) return;
@@ -141,7 +160,7 @@ export function useThreadComposer({
       setAttempt(null);
       setSession(null);
       setNotice("Sent with Gmail.");
-      router.refresh();
+      await reloadThreadDetail();
     } catch (cause) {
       setError(
         apiErrorMessage(
@@ -149,7 +168,7 @@ export function useThreadComposer({
           "Invook could not confirm the send. Retry to safely resolve this attempt.",
         ),
       );
-      router.refresh();
+      await reloadThreadDetail();
     } finally {
       busyRef.current = false;
       setPending(null);
