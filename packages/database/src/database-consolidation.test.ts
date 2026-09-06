@@ -76,12 +76,18 @@ test("the Drizzle schema has exactly the 27 owned tables without embedding or Me
 test("the label-only migration retires Memory rows before the reduced schema rejects them", async () => {
   const migration = await readFile(labelOnlyMigrationUrl, "utf8");
 
-  // Durable Memory commands outlive their handlers, so the migration retires
-  // them rather than leaving the dispatcher to retry a step type that no
-  // longer resolves to a Workflow.
+  // A dispatched Memory Workflow outlives this migration, so its step is left
+  // in a terminal state for markWorkflowStepRunning to report as inactive.
+  // Deleting the row instead would make that Activity throw on every attempt.
   assert.match(
     migration,
-    /DELETE FROM "workflow_steps" WHERE "step_type" LIKE 'memory\.%'/,
+    /UPDATE "workflow_steps" SET "status" = 'failed'[^;]*"step_type" LIKE 'memory\.%'/,
+  );
+  // An undispatched command would otherwise be admitted for a step type the
+  // worker no longer maps to a Workflow.
+  assert.match(
+    migration,
+    /DELETE FROM "temporal_commands" WHERE "workflow_step_id" IN[^;]*'memory\.%'/,
   );
   assertBefore(
     migration,

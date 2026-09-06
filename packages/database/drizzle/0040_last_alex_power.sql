@@ -5,7 +5,8 @@ DROP TABLE "memory_deletions" CASCADE;--> statement-breakpoint
 DROP TABLE "memory_entries" CASCADE;--> statement-breakpoint
 DROP TABLE "memory_pending_evidence" CASCADE;--> statement-breakpoint
 DELETE FROM "drafts" WHERE "kind" <> 'gmail';--> statement-breakpoint
-DELETE FROM "workflow_steps" WHERE "step_type" LIKE 'memory.%';--> statement-breakpoint
+UPDATE "workflow_steps" SET "status" = 'failed', "last_error" = 'Retired by the label-only migration.', "completed_at" = now(), "updated_at" = now() WHERE "step_type" LIKE 'memory.%' AND "status" IN ('queued', 'running');--> statement-breakpoint
+DELETE FROM "temporal_commands" WHERE "workflow_step_id" IN (SELECT "id" FROM "workflow_steps" WHERE "step_type" LIKE 'memory.%');--> statement-breakpoint
 ALTER TABLE "drafts" DROP CONSTRAINT "drafts_kind_check";--> statement-breakpoint
 ALTER TABLE "drafts" DROP CONSTRAINT "drafts_kind_contract_check";--> statement-breakpoint
 ALTER TABLE "thread_label_batch_submissions" DROP CONSTRAINT "thread_label_batch_submissions_provider_check";--> statement-breakpoint
