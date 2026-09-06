@@ -42,7 +42,7 @@ const shell: MailboxShell = {
       email: "owner@example.com",
       image: null,
       status: "connected",
-      syncState: { mailSync: "complete", memory: "complete" },
+      syncState: { mailSync: "complete" },
       lastSyncedAt: "2026-08-28T00:00:00.000Z",
       replica: { state: "ready", readyAt: "2026-08-28T00:00:00.000Z" },
     },
@@ -53,7 +53,6 @@ const props: ThreadComposerProps = {
   threadId: "thread-1",
   accountId: "account-1",
   accountEmail: "owner@example.com",
-  initialDraft: null,
   message: {
     id: "message-1",
     direction: "incoming",
@@ -171,13 +170,13 @@ afterEach(async () => {
 });
 after(() => browserWindow.close());
 
-test("only the three action chips appear until Reply or Forward is selected", async () => {
+test("only the two action chips appear until Reply or Forward is selected", async () => {
   await renderComposer();
   assert.deepEqual(
     [...document.querySelectorAll("button")].map((node) =>
       node.textContent?.trim(),
     ),
-    ["Reply", "Forward", "Draft with AI"],
+    ["Reply", "Forward"],
   );
   assert.equal(document.querySelector("form"), null);
   await click("Reply");
@@ -269,18 +268,6 @@ test("manual edits survive server refreshes and Send submits the current text on
   await enter("textarea", "My manual reply");
   await click("Cc/Bcc");
   await enter('input[id$="-ccRecipients"]', "copy@example.com");
-  await renderComposer({
-    ...props,
-    initialDraft: {
-      id: "ai-1",
-      threadId: "thread-1",
-      status: "editing",
-      currentText: "Server draft",
-      generatedText: "Server draft",
-      usedMemoryIds: [],
-      updatedAt: "2026-08-28T12:01:00.000Z",
-    },
-  });
   assert.equal(document.querySelector("textarea")?.value, "My manual reply");
   await click("Send");
   assert.equal(requests.length, 2);
@@ -360,67 +347,6 @@ test("send failure retains the editor and retry resolves the same provider draft
   assert.equal(sendRequests.length, 2);
   assert.equal(sendRequests[0], sendRequests[1]);
   assert.equal(document.querySelector("form"), null);
-});
-
-test("AI generation stays in the inline composer and sending preserves edited feedback", async () => {
-  const calls: string[] = [];
-  const draft = {
-    id: "ai-1",
-    threadId: "thread-1",
-    status: "editing",
-    currentText: "Generated reply",
-    generatedText: "Generated reply",
-    usedMemoryIds: ["memory-1"],
-    updatedAt: "2026-08-28T12:00:00.000Z",
-  };
-  axios.defaults.adapter = async (config) => {
-    if (isThreadRead(config)) throw { ...threadReadNotFound, config };
-    calls.push(`${config.method} ${config.url}`);
-    const data: unknown =
-      typeof config.data === "string" ? JSON.parse(config.data) : config.data;
-    let response: unknown;
-    if (config.url === "/v1/threads/thread-1/drafts") {
-      assert.deepEqual(data, { instruction: "Keep it brief" });
-      response = { draft };
-    } else if (config.url === "/v1/drafts/ai-1") {
-      assert.deepEqual(data, { currentText: "Edited reply" });
-      response = { draft: { ...draft, currentText: "Edited reply" } };
-    } else if (config.url?.endsWith("/send")) {
-      response = {
-        message: { providerMessageId: "sent", providerThreadId: "thread-1" },
-        stepId: "send-step",
-      };
-    } else {
-      response = {
-        draft: {
-          providerDraftId: "provider-draft",
-          providerMessageId: "provider-message",
-          providerThreadId: "thread-1",
-        },
-        stepId: "save-step",
-      };
-    }
-    return {
-      config,
-      status: 200,
-      statusText: "OK",
-      headers: {},
-      data: response,
-    };
-  };
-  await renderComposer();
-  await click("Draft with AI");
-  await enter('[aria-label="Instruction for this reply"]', "Keep it brief");
-  await click("Generate draft");
-  assert.equal(document.querySelector("textarea")?.value, "Generated reply");
-  await enter("textarea", "Edited reply");
-  await click("Send");
-  assert.deepEqual(calls, [
-    "post /v1/threads/thread-1/drafts",
-    "patch /v1/drafts/ai-1",
-    "post /v1/gmail/compose-drafts",
-    "post /v1/gmail/compose-drafts/provider-draft/send",
-  ]);
 });
 
 test("Forward cannot send without a recipient and sends without reply threading", async () => {

@@ -212,7 +212,7 @@ test("admission refuses a step it cannot address a Workflow with", () => {
     /provider Batch ID is missing/,
   );
   assert.throws(
-    () => admittedWorkflowCommand(admissionCommand("memory.extract")),
+    () => admittedWorkflowCommand(admissionCommand("gmail.unsupported.step")),
     /Unsupported Temporal admission step/,
   );
 });

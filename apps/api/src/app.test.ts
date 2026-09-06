@@ -807,13 +807,46 @@ test("Gmail provider writes require an authenticated session", async () => {
       method: "POST",
       url: "/v1/gmail/compose-drafts/provider-draft/send",
     },
-    { method: "POST", url: "/v1/drafts/not-a-uuid/save-to-gmail" },
   ] as const;
 
   for (const request of requests) {
     const response = await api.inject(request);
     assert.equal(response.statusCode, 401, `${request.method} ${request.url}`);
     assert.equal(response.json().title, "Authentication required");
+  }
+});
+
+test("retired Memory, agent, and AI reply-draft routes are absent", async () => {
+  const requests = [
+    { method: "GET", url: "/v1/memories" },
+    { method: "POST", url: "/v1/memories" },
+    {
+      method: "PATCH",
+      url: "/v1/memories/00000000-0000-4000-8000-000000000000",
+    },
+    {
+      method: "DELETE",
+      url: "/v1/memories/00000000-0000-4000-8000-000000000000",
+    },
+    { method: "POST", url: "/v1/agent" },
+    {
+      method: "POST",
+      url: "/v1/threads/00000000-0000-4000-8000-000000000000/drafts",
+    },
+    {
+      method: "PATCH",
+      url: "/v1/drafts/00000000-0000-4000-8000-000000000000",
+    },
+    {
+      method: "POST",
+      url: "/v1/drafts/00000000-0000-4000-8000-000000000000/save-to-gmail",
+    },
+    { method: "POST", url: "/v1/webhooks/azure-openai" },
+  ] as const;
+
+  for (const request of requests) {
+    const response = await api.inject(request);
+    assert.equal(response.statusCode, 404, `${request.method} ${request.url}`);
   }
 });
 

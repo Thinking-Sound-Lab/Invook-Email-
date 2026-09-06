@@ -1,59 +1,63 @@
-import type { GmailComposeDraft } from "@invook/contracts";
+import type { GmailComposeSendAttempt } from "@/lib/api/gmail-compose-send";
 
 type ComposeDraftStatus =
   | "editing"
-  | "saving"
-  | "saved"
-  | "confirming_send"
   | "sending"
   | "sent"
   | "error"
   | "send_error"
   | "reconnect_required";
 
+export type ComposeDraftEditableField =
+  | "recipients"
+  | "ccRecipients"
+  | "bccRecipients"
+  | "subject"
+  | "body";
+
 export interface ComposeDraftState {
   recipients: string;
+  ccRecipients: string;
+  bccRecipients: string;
   subject: string;
   body: string;
-  idempotencyKey: string;
-  sendIdempotencyKey: string | null;
-  providerDraft: GmailComposeDraft | null;
+  attempt: GmailComposeSendAttempt | null;
   status: ComposeDraftStatus;
   message: string | null;
 }
 
 export type ComposeDraftAction =
+  | { type: "edit"; field: ComposeDraftEditableField; value: string }
+  | { type: "change_sender" }
+  | { type: "sending"; attempt: GmailComposeSendAttempt }
   | {
-      type: "edit";
-      field: "recipients" | "subject" | "body";
-      value: string;
-      idempotencyKey: string;
+      type: "attempt_saved";
+      attempt: Extract<GmailComposeSendAttempt, { phase: "send" }>;
     }
-  | { type: "change_sender"; idempotencyKey: string }
-  | { type: "saving" }
-  | {
-      type: "saved";
-      draft: GmailComposeDraft;
-      sendIdempotencyKey: string;
-    }
-  | { type: "error"; message: string; isReconnectRequired?: boolean }
-  | { type: "confirm_send" }
-  | { type: "cancel_send" }
-  | { type: "sending" }
   | { type: "sent" }
+  | { type: "error"; message: string }
   | { type: "send_error"; message: string; isReconnectRequired: boolean };
 
-export function createComposeDraftState(idempotencyKey: string): ComposeDraftState {
+export function createComposeDraftState(): ComposeDraftState {
   return {
     recipients: "",
+    ccRecipients: "",
+    bccRecipients: "",
     subject: "",
     body: "",
-    idempotencyKey,
-    sendIdempotencyKey: null,
-    providerDraft: null,
+    attempt: null,
     status: "editing",
     message: null,
   };
+}
+
+// A send whose Gmail draft already exists has an unresolved provider outcome:
+// only an identical retry may resolve it, so the message must stay frozen.
+export function isComposeDraftLocked(state: ComposeDraftState): boolean {
+  return (
+    state.attempt?.phase === "send" ||
+    ["sending", "sent", "reconnect_required"].includes(state.status)
+  );
 }
 
 export function composeDraftReducer(
@@ -62,51 +66,35 @@ export function composeDraftReducer(
 ): ComposeDraftState {
   switch (action.type) {
     case "edit":
+      if (isComposeDraftLocked(state)) return state;
       return {
         ...state,
         [action.field]: action.value,
-        idempotencyKey: action.idempotencyKey,
-        sendIdempotencyKey: null,
+        attempt: null,
         status: "editing",
         message: null,
       };
     case "change_sender":
+      if (isComposeDraftLocked(state)) return state;
+      return { ...state, attempt: null, status: "editing", message: null };
+    case "sending":
       return {
         ...state,
-        idempotencyKey: action.idempotencyKey,
-        sendIdempotencyKey: null,
-        status: "editing",
+        attempt: action.attempt,
+        status: "sending",
         message: null,
       };
-    case "saving":
-      return { ...state, status: "saving", message: null };
-    case "saved":
-      return {
-        ...state,
-        providerDraft: action.draft,
-        sendIdempotencyKey: action.sendIdempotencyKey,
-        status: "saved",
-        message:
-          "Saved to Gmail drafts. Invook will reflect it here after Gmail history catches up.",
-      };
-    case "error":
-      return {
-        ...state,
-        status: action.isReconnectRequired ? "reconnect_required" : "error",
-        message: action.message,
-      };
-    case "confirm_send":
-      return { ...state, status: "confirming_send", message: null };
-    case "cancel_send":
-      return { ...state, status: "saved", message: null };
-    case "sending":
-      return { ...state, status: "sending", message: null };
+    case "attempt_saved":
+      return { ...state, attempt: action.attempt };
     case "sent":
       return {
         ...state,
+        attempt: null,
         status: "sent",
-        message: "Sent with Gmail. Invook will reflect it here after Gmail history catches up.",
+        message: null,
       };
+    case "error":
+      return { ...state, status: "error", message: action.message };
     case "send_error":
       return {
         ...state,

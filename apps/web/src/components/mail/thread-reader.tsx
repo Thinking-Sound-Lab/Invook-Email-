@@ -335,7 +335,6 @@ function ThreadReaderContent({
                   }
                 : null
             }
-            initialDraft={thread.aiReplyDraft}
           />
         </div>
       </ScrollArea>

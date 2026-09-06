@@ -32,15 +32,6 @@ import {
   runGmailObjectDelete,
   runGmailWatchRenewal,
 } from "./gmail/sync";
-import {
-  runMemoryBatchEvent,
-  runMemoryBatchRetry,
-} from "./memory/batch";
-import {
-  runIncrementalMemoryExtraction,
-  runMemoryExtraction,
-} from "./memory/extraction";
-import { runMemoryFeedback } from "./memory/feedback";
 
 async function persistWorkflowFailure(
   job: WorkflowStepJob,
@@ -70,16 +61,6 @@ async function runWorkflowStepHandler(
         return runGmailObjectDelete(job);
       case "gmail.account.cleanup":
         return runGmailAccountCleanup(job);
-      case "memory.extract":
-        return runMemoryExtraction(job);
-      case "memory.incremental":
-        return runIncrementalMemoryExtraction(job);
-      case "memory.batch.retry":
-        return runMemoryBatchRetry(job);
-      case "memory.batch.event":
-        return runMemoryBatchEvent(job);
-      case "memory.feedback":
-        return runMemoryFeedback(job);
       case "label.thread.assign":
         return runLabelSubmission(job);
       default:

@@ -15,7 +15,7 @@ const accounts = ["first", "second"].map((id) => ({
   email: `${id}@example.test`,
   image: null,
   status: "connected",
-  syncState: { mailSync: "complete", memory: "complete" },
+  syncState: { mailSync: "complete" },
   lastSyncedAt: null,
   replica: { state: "ready", readyAt: null },
 })) satisfies MailboxAccount[];
@@ -47,8 +47,14 @@ test("sidebar counts follow the selected Inbox scope", () => {
 });
 
 test("connected accounts retain distinct stable avatar ring colors", () => {
-  assert.equal(accountRingClassName("first", accounts), "ring-blue-500");
-  assert.equal(accountRingClassName("second", accounts), "ring-emerald-500");
+  assert.equal(
+    accountRingClassName("first", accounts),
+    "ring-pill-blue-foreground",
+  );
+  assert.equal(
+    accountRingClassName("second", accounts),
+    "ring-pill-green-foreground",
+  );
   assert.notEqual(
     accountRingClassName("first", accounts),
     accountRingClassName("second", accounts),

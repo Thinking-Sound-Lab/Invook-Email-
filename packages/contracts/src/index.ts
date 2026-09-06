@@ -5,7 +5,6 @@ export type AccountSyncStage = "pending" | "running" | "complete" | "failed";
 
 export type AccountSyncState = {
   mailSync: AccountSyncStage;
-  memory: AccountSyncStage;
 };
 
 export type MailSyncProgress = {
@@ -18,7 +17,6 @@ export type MailSyncProgress = {
 
 export type AccountSyncStatusEvent = {
   mailSync: MailSyncProgress;
-  memory: AccountSyncStage;
 };
 
 export const mailboxViews = [
@@ -137,56 +135,6 @@ export type SetInvookLabelEnabledResponse = InvookLabelResponse & {
     windowDays: LabelHistoryWindowDays;
     status: "queued";
   } | null;
-};
-
-export const memoryTypes = ["preference", "contact", "scheduling"] as const;
-
-export type MemoryType = (typeof memoryTypes)[number];
-export type MemorySource = "user" | "inferred" | "feedback";
-
-export type MemoryEntry = {
-  id: string;
-  type: MemoryType;
-  contactEmail: string | null;
-  statement: string;
-  source: MemorySource;
-  confidence: number | null;
-  evidenceMessageIds: string[];
-  evidenceDraftIds: string[];
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type SaveMemoryRequest = {
-  type: MemoryType;
-  contactEmail: string | null;
-  statement: string;
-};
-
-export type MemoryEntryResponse = {
-  memory: MemoryEntry;
-};
-
-export type AiReplyDraft = {
-  id: string;
-  threadId: string;
-  status: "editing" | "sent" | "discarded" | "failed";
-  generatedText: string;
-  currentText: string;
-  usedMemoryIds: string[];
-  updatedAt: string;
-};
-
-export type CreateAiReplyDraftRequest = {
-  instruction?: string;
-};
-
-export type UpdateAiReplyDraftRequest = {
-  currentText: string;
-};
-
-export type AiReplyDraftResponse = {
-  draft: AiReplyDraft;
 };
 
 export type AcceptedMailboxSyncResponse = {
@@ -352,7 +300,6 @@ export type MailboxQueryResult =
 
 export type MailboxSelectedThread = Omit<MailboxThreadSummary, "snippet"> & {
   messages: MailboxThreadMessage[];
-  aiReplyDraft: AiReplyDraft | null;
   gmailDrafts: GmailDraftResource[];
 };
 
@@ -419,7 +366,6 @@ export const MAILBOX_THREAD_UPDATE_LIMIT = 100;
 
 export type MailboxSettings = {
   accountId: string;
-  memories: MemoryEntry[];
   invookLabels: InvookLabel[];
 };
 

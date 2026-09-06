@@ -1,0 +1,9 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+# .env.local reaches a new workspace through Conductor's default `.env*`
+# copy rule, which copies from the repository root directory. Keep the
+# canonical file there; this file deliberately does not set
+# file_include_globs, because setting it would replace that default.
+
+[scripts]
+setup = "pnpm install"

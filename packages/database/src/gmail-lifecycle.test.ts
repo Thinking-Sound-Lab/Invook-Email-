@@ -52,7 +52,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
-        memoryAcknowledgedAt: new Date(),
       });
       await database.insert(threads).values({
         id: threadId,
@@ -144,8 +143,7 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
-        memoryAcknowledgedAt: new Date(),
-        syncState: { mailSync: "running", memory: "complete" },
+        syncState: { mailSync: "running" },
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -276,7 +274,6 @@ test(
       assert.deepEqual(steps.map((step) => step.status), ["failed", "failed"]);
       assert.equal(account?.status, "connected");
       assert.equal(account?.syncState.mailSync, "failed");
-      assert.equal(account?.syncState.memory, "complete");
       assert.equal(replica?.state, "failed");
       assert.equal(replica?.pendingHistoryCursor, "250");
       assert.equal(repairRecovery?.status, "queued");
@@ -319,8 +316,7 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
-        memoryAcknowledgedAt: new Date(),
-        syncState: { mailSync: "failed", memory: "pending" },
+        syncState: { mailSync: "failed" },
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -404,8 +400,7 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
-        memoryAcknowledgedAt: new Date(),
-        syncState: { mailSync: "complete", memory: "pending" },
+        syncState: { mailSync: "complete" },
       });
       await database.insert(gmailReplicaStates).values({
         accountId,

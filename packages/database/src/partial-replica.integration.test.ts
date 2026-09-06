@@ -7,7 +7,6 @@ import postgres from "postgres";
 import { v4 as uuidv4 } from "uuid";
 
 import type { Database } from "./client";
-import { queryInvookMailbox } from "./mailbox-query";
 import {
   getMailboxShellData,
   getMailboxSidebarCounts,
@@ -17,7 +16,6 @@ import {
 import {
   applyGmailHistoryBatch,
   enqueueGmailHistoryCatchup,
-  getAiReplyDraftForGmailSave,
   getGmailMessageMutationContext,
   getGmailForwardContext,
   getGmailReplyContext,
@@ -26,15 +24,11 @@ import {
   getGmailThreadMutationContext,
 } from "./replica";
 import {
-  getMailboxThreadForAgent,
-  getReplyDraftContext,
-  listMailboxThreadAttachments,
   searchMailbox,
 } from "./repositories";
 import {
   accountSecrets,
   connectedAccounts,
-  drafts,
   gmailReplicaStates,
   labels,
   mailboxChangeEvents,
@@ -59,7 +53,6 @@ interface PartialReplicaFixture {
   accountId: string;
   threadId: string;
   messageId: string;
-  draftId: string;
   gmailLabelId: string;
   invookLabelId: string;
   initialRunId: string;
@@ -76,7 +69,6 @@ async function withPartialReplicaFixture(
   const accountId = uuidv4();
   const threadId = uuidv4();
   const messageId = uuidv4();
-  const draftId = uuidv4();
   const gmailLabelId = uuidv4();
   const gmailDraftLabelId = uuidv4();
   const invookLabelId = uuidv4();
@@ -101,10 +93,8 @@ async function withPartialReplicaFixture(
       userId,
       providerAccountId: `provider-${accountId}`,
       email: "owner@example.com",
-      memoryAcknowledgedAt: new Date(),
       syncState: {
         mailSync: "running",
-        memory: "pending",
       },
     });
     await database.insert(accountSecrets).values({
@@ -221,16 +211,6 @@ async function withPartialReplicaFixture(
       mimeType: "application/pdf",
       size: 128,
     });
-    await database.insert(drafts).values({
-      id: draftId,
-      userId,
-      accountId,
-      kind: "invook",
-      threadId,
-      status: "editing",
-      generatedText: "Stored draft",
-      currentText: "Stored draft",
-    });
     const initialRunId = await createInitialMailSyncRun(
       { userId, accountId, startingHistoryCursor: "100" },
       database,
@@ -243,7 +223,6 @@ async function withPartialReplicaFixture(
       accountId,
       threadId,
       messageId,
-      draftId,
       gmailLabelId,
       invookLabelId,
       initialRunId,
@@ -268,7 +247,6 @@ test(
         accountId,
         threadId,
         messageId,
-        draftId,
         gmailLabelId,
         invookLabelId,
       } = fixture;
@@ -322,69 +300,6 @@ test(
           database,
         ),
         [],
-      );
-
-      const structured = await queryInvookMailbox(
-        { userId, inboxState: "inbox" },
-        database,
-      );
-      assert.equal(structured.status, "available");
-      if (structured.status === "available") {
-        assert.deepEqual(
-          structured.messages.map((message) => message.messageId),
-          [messageId],
-        );
-        assert.equal(structured.messages[0]?.accountId, accountId);
-      }
-      const unavailable = await queryInvookMailbox(
-        { userId: otherUserId },
-        database,
-      );
-      assert.deepEqual(unavailable, {
-        status: "unavailable",
-        reason: "mailbox_not_connected",
-      });
-
-      assert.equal(
-        (await getMailboxThreadForAgent(userId, threadId, database))?.id,
-        threadId,
-      );
-      assert.equal(
-        await getMailboxThreadForAgent(otherUserId, threadId, database),
-        null,
-      );
-      assert.equal(
-        await getMailboxThreadForAgent(userId, missingThreadId, database),
-        null,
-      );
-      assert.equal(
-        (await listMailboxThreadAttachments(userId, threadId, database))[0]?.filename,
-        "roadmap-attachment.pdf",
-      );
-      assert.deepEqual(
-        await listMailboxThreadAttachments(otherUserId, threadId, database),
-        [],
-      );
-
-      assert.equal(
-        (await getReplyDraftContext(userId, threadId, database))?.id,
-        threadId,
-      );
-      assert.equal(
-        await getReplyDraftContext(otherUserId, threadId, database),
-        null,
-      );
-      assert.equal(
-        await getReplyDraftContext(userId, missingThreadId, database),
-        null,
-      );
-      assert.equal(
-        (await getAiReplyDraftForGmailSave({ userId, draftId }, database))?.id,
-        draftId,
-      );
-      assert.equal(
-        await getAiReplyDraftForGmailSave({ userId: otherUserId, draftId }, database),
-        null,
       );
     });
   },
@@ -483,10 +398,8 @@ test(
         userId,
         providerAccountId: `provider-${secondAccountId}`,
         email: "second@example.com",
-        memoryAcknowledgedAt: new Date(),
         syncState: {
           mailSync: "complete",
-          memory: "complete",
         },
       });
       await database.insert(gmailReplicaStates).values({

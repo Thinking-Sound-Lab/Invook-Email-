@@ -9,14 +9,12 @@ import {
   type AuthService,
 } from "./auth/auth-service";
 import { registerAuthRoutes } from "./routes/auth";
-import { registerAgentRoutes } from "./routes/agent";
 import {
   registerAttachmentRoutes,
   type AttachmentRouteDependencies,
 } from "./routes/attachments";
 import { registerBatchWebhookRoutes } from "./routes/batch-webhook";
 import { registerComposeDraftRoutes } from "./routes/compose-drafts";
-import { registerDraftRoutes } from "./routes/drafts";
 import { registerGmailProviderRoutes } from "./routes/gmail-provider";
 import { registerGmailConnectionRoutes } from "./routes/gmail-connections";
 import { registerHealthRoutes } from "./routes/health";
@@ -27,8 +25,8 @@ import {
 } from "./routes/labels";
 import { registerGooglePubSubRoutes } from "./routes/google-pubsub";
 import { registerMailboxEventRoutes } from "./routes/mailbox-events";
+import { registerMailSearchRoutes } from "./routes/mail-search";
 import { registerMailboxRoutes } from "./routes/mailbox";
-import { registerMemoryRoutes } from "./routes/memories";
 import { registerSessionRoutes } from "./routes/session";
 import { registerThreadLabelRoutes } from "./routes/thread-labels";
 import { InvalidJsonBodyError, sendProblem } from "./responses";
@@ -99,17 +97,15 @@ export async function buildApi(options: {
   await api.register(registerSessionRoutes);
   await api.register(registerGmailConnectionRoutes);
   await api.register(registerAttachmentRoutes(options.attachmentRoutes));
-  await api.register(registerAgentRoutes);
   await api.register(registerAccountSyncEventRoutes);
   await api.register(registerMailboxEventRoutes);
   await api.register(registerMailboxRoutes);
-  await api.register(registerMemoryRoutes, { prefix: "/v1/memories" });
+  await api.register(registerMailSearchRoutes);
   await api.register(registerLabelRoutes, {
     prefix: "/v1/labels",
     ...options.labelRoutes,
   });
   await api.register(registerThreadLabelRoutes, { prefix: "/v1/threads" });
-  await api.register(registerDraftRoutes);
   await api.register(registerComposeDraftRoutes);
   await api.register(registerGmailProviderRoutes);
 

@@ -263,53 +263,6 @@ export async function getGmailDraftResourceForUser(
   };
 }
 
-export async function getAiReplyDraftForGmailSave(
-  input: { userId: string; draftId: string },
-  database: Database = getDatabase(),
-) {
-  const [draft] = await database
-    .select({
-      id: drafts.id,
-      currentText: drafts.currentText,
-      updatedAt: drafts.updatedAt,
-      threadId: threads.id,
-      providerThreadId: threads.providerThreadId,
-      subject: threads.subject,
-      accountId: connectedAccounts.id,
-      accountEmail: connectedAccounts.email,
-    })
-    .from(drafts)
-    .innerJoin(threads, eq(threads.id, drafts.threadId))
-    .innerJoin(connectedAccounts, eq(connectedAccounts.id, drafts.accountId))
-    .where(
-      and(
-        eq(drafts.id, input.draftId),
-        eq(drafts.kind, "invook"),
-        eq(drafts.userId, input.userId),
-        eq(drafts.status, "editing"),
-        eq(connectedAccounts.userId, input.userId),
-        eq(connectedAccounts.status, "connected"),
-      ),
-    )
-    .limit(1);
-  if (!draft) return null;
-  const [replyTarget] = await database
-    .select({
-      sender: messages.sender,
-      headerLines: messages.headerLines,
-    })
-    .from(messages)
-    .where(
-      and(
-        eq(messages.threadId, draft.threadId),
-        eq(messages.direction, "incoming"),
-      ),
-    )
-    .orderBy(desc(messages.internalDate), desc(messages.id))
-    .limit(1);
-  return { ...draft, replyTarget: replyTarget ?? null };
-}
-
 export async function recordMailboxMessageRefresh(
   input: { userId: string; accountId: string; threadId: string },
   database: Database = getDatabase(),

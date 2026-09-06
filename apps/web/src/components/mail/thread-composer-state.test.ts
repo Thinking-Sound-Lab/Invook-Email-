@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  acceptThreadAiDraft,
   createThreadComposeSession,
   type ThreadComposeMessage,
 } from "./thread-composer-state";
 import {
-  sendThreadComposeAttempt,
-  type ThreadComposeSendAttempt,
-} from "../../lib/api/thread-compose-send";
+  sendGmailComposeAttempt,
+  type GmailComposeSendAttempt,
+} from "../../lib/api/gmail-compose-send";
 
 const message: ThreadComposeMessage = {
   id: "message-1",
@@ -38,7 +37,6 @@ test("manual Reply starts blank, honors Reply-To, and captures the selected mess
   assert.equal(session.body, "");
   assert.equal(session.subject, "Re: Question");
   assert.equal(session.message.id, message.id);
-  assert.equal(session.aiDraft, null);
 });
 
 test("Reply uses the sender when no Reply-To exists and never addresses outgoing mail to yourself", () => {
@@ -99,34 +97,7 @@ test("Forward requires a new recipient and includes only the original message an
   );
 });
 
-test("accepting an AI draft retains recipients, message identity, and feedback provenance", () => {
-  const session = createThreadComposeSession({
-    mode: "reply",
-    message,
-    accountEmail: "owner@example.com",
-  });
-  const draft = {
-    id: "draft-1",
-    threadId: "thread-1",
-    status: "editing" as const,
-    currentText: "AI reply",
-    generatedText: "AI reply",
-    usedMemoryIds: ["memory-1"],
-    updatedAt: "2026-08-28T12:00:00.000Z",
-  };
-  const accepted = acceptThreadAiDraft(
-    { ...session, ccRecipients: "copy@example.com", hasEdits: true },
-    draft,
-  );
-  assert.equal(accepted.body, draft.currentText);
-  assert.equal(accepted.aiDraft, draft);
-  assert.equal(accepted.recipients, session.recipients);
-  assert.equal(accepted.ccRecipients, "copy@example.com");
-  assert.equal(accepted.message, message);
-  assert.equal(accepted.hasEdits, true);
-});
-
-const initialAttempt: ThreadComposeSendAttempt = {
+const initialAttempt: GmailComposeSendAttempt = {
   phase: "save",
   request: {
     accountId: "account-1",
@@ -145,7 +116,7 @@ const providerDraft = {
 };
 
 test("Send saves first and retries a failed send with the same provider draft and key", async () => {
-  let attempt: ThreadComposeSendAttempt = initialAttempt;
+  let attempt: GmailComposeSendAttempt = initialAttempt;
   let creates = 0;
   let sends = 0;
   const dependencies = {
@@ -175,14 +146,14 @@ test("Send saves first and retries a failed send with the same provider draft an
       };
     },
   };
-  const onSaved = (nextAttempt: ThreadComposeSendAttempt): void => {
+  const onSaved = (nextAttempt: GmailComposeSendAttempt): void => {
     attempt = nextAttempt;
   };
   await assert.rejects(
-    sendThreadComposeAttempt(attempt, onSaved, dependencies),
+    sendGmailComposeAttempt(attempt, onSaved, dependencies),
     /ambiguous send response/,
   );
-  const result = await sendThreadComposeAttempt(attempt, onSaved, dependencies);
+  const result = await sendGmailComposeAttempt(attempt, onSaved, dependencies);
   assert.equal(result.message.providerMessageId, "sent-message");
   assert.equal(creates, 1);
   assert.equal(sends, 2);
@@ -203,7 +174,7 @@ test("an ambiguous save keeps its original request key and never sends without a
   };
   for (let retry = 0; retry < 2; retry += 1) {
     await assert.rejects(
-      sendThreadComposeAttempt(
+      sendGmailComposeAttempt(
         initialAttempt,
         () => {
           saves += 1;

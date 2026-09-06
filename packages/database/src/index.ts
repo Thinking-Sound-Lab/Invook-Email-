@@ -21,14 +21,12 @@ export * from "./recent-thread-label-recovery";
 export * from "./mail-sync-progress";
 export * from "./mailbox-change-events";
 export * from "./mailbox-resources";
-export * from "./mailbox-query";
 export * from "./gmail-watch";
 export * from "./gmail-identity";
 export * from "./repositories";
 export * from "./replica";
 export * from "./schema";
 export * from "./text";
-export * from "./versions";
 export * from "./workflows";
 export type {
   AccountSyncStage,

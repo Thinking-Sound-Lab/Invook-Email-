@@ -7,7 +7,7 @@ import type {
 import { getGmailSyncProgressPresentation } from "./gmail-sync-progress";
 
 export interface AccountPipelinePresentation {
-  phase: "mail" | "memory";
+  phase: "mail";
   title: string;
   detail: string;
   percentage: number | null;
@@ -52,9 +52,9 @@ export function parseAccountSyncStatusEvent(
 ): AccountSyncStatusEvent | null {
   try {
     const value: unknown = JSON.parse(serializedEvent);
-    if (!isRecord(value) || !isAccountSyncStage(value.memory)) return null;
+    if (!isRecord(value)) return null;
     const mailSync = parseMailSyncProgress(value.mailSync);
-    return mailSync ? { mailSync, memory: value.memory } : null;
+    return mailSync ? { mailSync } : null;
   } catch {
     return null;
   }
@@ -64,28 +64,5 @@ export function getAccountPipelinePresentation(
   progress: AccountSyncStatusEvent,
 ): AccountPipelinePresentation | null {
   const mailPresentation = getGmailSyncProgressPresentation(progress.mailSync);
-  if (mailPresentation) {
-    return { phase: "mail", ...mailPresentation };
-  }
-
-  if (progress.memory !== "complete") {
-    const isFailed = progress.memory === "failed";
-    return {
-      phase: "memory",
-      title: isFailed
-        ? "Memory needs attention"
-        : progress.memory === "running"
-          ? "Creating Memory"
-          : "Preparing Memory",
-      detail: isFailed
-        ? "Memory analysis could not finish"
-        : progress.memory === "running"
-          ? "Analyzing sent mail for reusable reply rules"
-          : "Waiting for Memory analysis to start",
-      percentage: null,
-      isFailed,
-    };
-  }
-
-  return null;
+  return mailPresentation ? { phase: "mail", ...mailPresentation } : null;
 }

@@ -44,7 +44,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: "owner@example.com",
-        memoryAcknowledgedAt: new Date(),
       });
 
       const input = {

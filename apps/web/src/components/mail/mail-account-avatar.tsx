@@ -10,14 +10,14 @@ import { cn } from "@/lib/utils";
 import { initials } from "./mail-format";
 
 const accountRingClassNames = [
-  "ring-blue-500",
-  "ring-emerald-500",
-  "ring-violet-500",
-  "ring-amber-500",
-  "ring-rose-500",
-  "ring-cyan-500",
-  "ring-fuchsia-500",
-  "ring-lime-500",
+  "ring-pill-blue-foreground",
+  "ring-pill-green-foreground",
+  "ring-pill-purple-foreground",
+  "ring-pill-yellow-foreground",
+  "ring-pill-red-foreground",
+  "ring-pill-orange-foreground",
+  "ring-pill-pink-foreground",
+  "ring-pill-brown-foreground",
 ] as const;
 
 export function accountRingClassName(

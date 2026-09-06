@@ -2,12 +2,16 @@ import OpenAI, { APIError, toFile } from "openai";
 import { getEncoding } from "js-tiktoken";
 import { z } from "zod";
 
+import {
+  DEFAULT_LABEL_MODEL,
+  readOpenAiCredentials,
+  type OpenAiCredentials,
+} from "./model";
 import type {
   InvookLabelDefinitionForAnalysis,
   StoredThreadLabelClassifierInput,
 } from "./thread-label-classifier";
 
-const DEFAULT_MODEL_ID = "gpt-5.6-luna";
 const BATCH_FILE_LIMIT_BYTES = 200_000_000;
 const DEFAULT_BATCH_INPUT_TOKEN_LIMIT = 500_000;
 const BATCH_REQUEST_TOKEN_OVERHEAD = 256;
@@ -99,20 +103,20 @@ function positiveIntegerConfiguration(
 }
 
 function configuration(): {
-  apiKey: string;
+  credentials: OpenAiCredentials;
   modelId: string;
   inputTokenLimit: number;
 } {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const credentials = readOpenAiCredentials();
   const webhookSecret = process.env.OPENAI_WEBHOOK_SECRET?.trim();
-  if (!apiKey || !webhookSecret) {
+  if (!credentials || !webhookSecret) {
     throw new ThreadLabelBatchConfigurationError(
       "OPENAI_API_KEY and OPENAI_WEBHOOK_SECRET are required for thread-label Batch analysis.",
     );
   }
   return {
-    apiKey,
-    modelId: process.env.OPENAI_LABEL_BATCH_MODEL?.trim() || DEFAULT_MODEL_ID,
+    credentials,
+    modelId: process.env.OPENAI_LABEL_BATCH_MODEL?.trim() || DEFAULT_LABEL_MODEL,
     inputTokenLimit: positiveIntegerConfiguration(
       process.env.OPENAI_LABEL_BATCH_INPUT_TOKEN_LIMIT,
       DEFAULT_BATCH_INPUT_TOKEN_LIMIT,
@@ -122,7 +126,15 @@ function configuration(): {
 }
 
 function client(): OpenAI {
-  return new OpenAI({ apiKey: configuration().apiKey });
+  return new OpenAI(configuration().credentials);
+}
+
+/**
+ * The Batch completion webhook is verified in the API process, which never
+ * builds a Batch client of its own.
+ */
+export function getBatchWebhookSecret(): string | null {
+  return process.env.OPENAI_WEBHOOK_SECRET?.trim() || null;
 }
 
 export function isThreadLabelBatchConfigured(): boolean {

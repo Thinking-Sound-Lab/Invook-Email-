@@ -3,7 +3,6 @@
 import type { MailboxThreadPage } from "@invook/contracts";
 import { useSearchParams } from "next/navigation";
 
-import { AgentPanel } from "./agent-panel";
 import { ComposeSurface } from "./compose-surface";
 import { MailList } from "./mail-list";
 import { resolveMailboxAccountSelection } from "./mail-account-scope";
@@ -80,18 +79,11 @@ export function MailWorkspace({
   }
 
   return (
-    <>
-      <div
-        data-slot="mail-workspace-content"
-        className="min-h-0 min-w-0 overflow-hidden [&>*]:h-full"
-      >
-        {centerPane}
-      </div>
-      <AgentPanel
-        key={`${accountSelection}:${threadId ?? "mailbox"}`}
-        accountSelection={accountSelection}
-        openThreadId={threadId ?? undefined}
-      />
-    </>
+    <div
+      data-slot="mail-workspace-content"
+      className="min-h-0 min-w-0 overflow-hidden [&>*]:h-full"
+    >
+      {centerPane}
+    </div>
   );
 }

@@ -52,7 +52,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
-        memoryAcknowledgedAt: new Date(),
       });
       await database.insert(gmailReplicaStates).values({
         accountId,
@@ -216,7 +215,6 @@ test(
         userId,
         providerAccountId: `provider-${accountId}`,
         email: `${accountId}@example.com`,
-        memoryAcknowledgedAt: sentAt,
       });
       await database.insert(mailSyncRuns).values({
         id: runId,
@@ -251,9 +249,7 @@ test(
         recipients: [`${accountId}@example.com`],
         bodyText: "Thread body",
         bodyHtml: null,
-        isMemoryEligible: false,
         ingestionMode: "initial" as const,
-        memoryContactEmails: ["sender@example.test"],
         attachments: [],
       });
       const invalidSecondMessage = message("message-2");

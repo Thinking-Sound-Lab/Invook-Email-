@@ -45,6 +45,10 @@ const threadSyncMigrationUrl = new URL(
   "../drizzle/0035_wandering_lockheed.sql",
   import.meta.url,
 );
+const labelOnlyMigrationUrl = new URL(
+  "../drizzle/0040_last_alex_power.sql",
+  import.meta.url,
+);
 const schemaUrl = new URL("./schema.ts", import.meta.url);
 const migrationsUrl = new URL("../drizzle/", import.meta.url);
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -57,13 +61,49 @@ function assertBefore(source: string, earlier: string, later: string): void {
   assert.ok(earlierIndex < laterIndex, `${earlier} must precede ${later}`);
 }
 
-test("the Drizzle schema has exactly the 30 owned tables without embedding storage", async () => {
+test("the Drizzle schema has exactly the 27 owned tables without embedding or Memory storage", async () => {
   const source = await readFile(schemaUrl, "utf8");
-  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 30);
+  assert.equal(source.match(/\bpgTable\s*\(/g)?.length, 27);
+  assert.doesNotMatch(source, /memoryEntries/);
+  assert.doesNotMatch(source, /memoryPendingEvidence/);
+  assert.doesNotMatch(source, /memoryDeletions/);
   assert.doesNotMatch(source, /messageEmbeddings/);
   assert.doesNotMatch(source, /embeddingBatchSubmissions/);
   assert.doesNotMatch(source, /embeddingContentHash/);
   assert.doesNotMatch(source, /\bvector\s*\(/);
+});
+
+test("the label-only migration retires Memory rows before the reduced schema rejects them", async () => {
+  const migration = await readFile(labelOnlyMigrationUrl, "utf8");
+
+  // A dispatched Memory Workflow outlives this migration, so its step is left
+  // in a terminal state for markWorkflowStepRunning to report as inactive.
+  // Deleting the row instead would make that Activity throw on every attempt.
+  assert.match(
+    migration,
+    /UPDATE "workflow_steps" SET "status" = 'failed'[^;]*"step_type" LIKE 'memory\.%'/,
+  );
+  // An undispatched command would otherwise be admitted for a step type the
+  // worker no longer maps to a Workflow.
+  assert.match(
+    migration,
+    /DELETE FROM "temporal_commands" WHERE "workflow_step_id" IN[^;]*'memory\.%'/,
+  );
+  assertBefore(
+    migration,
+    'DELETE FROM "drafts"',
+    'ADD CONSTRAINT "drafts_kind_check"',
+  );
+  assertBefore(
+    migration,
+    `UPDATE "connected_accounts" SET "sync_state" = "sync_state" - 'memory'`,
+    'DROP COLUMN "memory_acknowledged_at"',
+  );
+  assert.match(migration, /DROP TABLE "memory_entries" CASCADE/);
+  assert.match(
+    migration,
+    /ALTER TABLE "thread_label_batch_submissions" DROP COLUMN "provider"/,
+  );
 });
 
 test("the thread-sync migration preserves durable label and object work before retiring legacy storage", async () => {

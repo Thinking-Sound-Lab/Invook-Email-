@@ -6,14 +6,12 @@
 import {
   deleteExpiredLabelPreviewReceipts,
   ensureDailyGmailWatchRenewals,
-  enqueuePendingAnalysisWorkflowSteps,
   enqueueHistoricalThreadLabelBatchRecoveries,
   enqueueRecentThreadLabelRecoveries,
   enqueueMissingMailSyncRuns,
   enqueueImplausibleGmailMessageDateRepairs,
   enqueueFailedInitialGmailRepairRecoveries,
   enqueuePendingGmailHistoryCatchups,
-  enqueuePostSyncWorkflowSteps,
   listenForTemporalCommandNotifications,
   dispatchTemporalCommandBatch,
 } from "@invook/database";
@@ -144,10 +142,8 @@ async function run() {
     await enqueueFailedInitialGmailRepairRecoveries();
     await enqueuePendingGmailHistoryCatchups();
     await ensureDailyGmailWatchRenewals();
-    await enqueuePostSyncWorkflowSteps();
     await enqueueHistoricalThreadLabelBatchRecoveries();
     await enqueueRecentThreadLabelRecoveries();
-    await enqueuePendingAnalysisWorkflowSteps();
     outboxSignal.notify();
     await runTemporalCommandLoop(outboxSignal, () => stopRequested, runtime);
     if (fatalError) throw fatalError;
