@@ -833,10 +833,9 @@ test(
           confidence: 85,
         })),
       );
-      assert.equal(
-        (await finish(context, batch.submissionId, [])).alreadyFinalized,
-        true,
-      );
+      const replayed = await finish(context, batch.submissionId, []);
+      assert.equal(replayed.alreadyFinalized, true);
+      assert.deepEqual(replayed.nextScope, completion.nextScope);
       const next = await claimBatch(
         context,
         request.scan.id,
@@ -962,10 +961,16 @@ test(
         })),
       );
       assert.equal(completed.appliedCount, 0);
+      const replayed = await finish(context, batch.submissionId, []);
+      assert.equal(replayed.alreadyFinalized, true);
+      assert.deepEqual(replayed.nextScope, {
+        ...completed.nextScope,
+        retryDelayMs: 0,
+      });
       const retry = await claimBatch(
         context,
         request.scan.id,
-        nextScope(completed),
+        nextScope(replayed),
       );
       assert.deepEqual(
         retry.candidates.map((entry) => entry.threadId),

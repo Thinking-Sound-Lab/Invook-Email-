@@ -185,12 +185,27 @@ export async function finalizeHistoricalLabelBatchActivity(
   const isFinalized =
     submission.status === "complete" || submission.status === "failed";
   if (isFinalized && terminalBatchStates.has(submission.providerState ?? "")) {
+    const completion = await finalizeThreadLabelBatchSubmission({
+      submissionId: submission.id,
+      providerState: submission.providerState ?? "completed",
+      providerErrorCode: submission.lastError,
+      retryableFailure: false,
+      outputFileId: submission.outputFileId,
+      errorFileId: submission.errorFileId,
+      modelId: submission.modelId,
+      results: [],
+      failedThreadIds: [],
+    });
     await deleteThreadLabelBatchFiles({
       inputFileId: submission.inputFileId,
       outputFileId: submission.outputFileId,
       errorFileId: submission.errorFileId,
     });
-    return { status: "finalized", appliedThreadCount: 0, nextScope: null };
+    return {
+      status: "finalized",
+      appliedThreadCount: completion.appliedCount,
+      nextScope: completion.nextScope,
+    };
   }
 
   const batch = await readThreadLabelBatch({

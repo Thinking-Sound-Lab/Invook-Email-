@@ -33,7 +33,6 @@ import {
   mailSyncRuns,
   messages,
   temporalCommands,
-  threads,
   workflowSteps,
 } from "./schema";
 import {
@@ -688,29 +687,39 @@ export async function enqueuePendingGmailHistoryCatchups(
   return enqueued;
 }
 
-export async function getMailSyncRunProviderMessageIds(
+export async function getMailSyncRunDiscoveredProviderThreadIds(
   input: { runId: string; accountId: string },
   database: Database = getDatabase(),
 ): Promise<string[]> {
   const rows = await database
-    .select({ providerMessageId: messages.providerMessageId })
+    .select({ providerThreadId: gmailSyncItems.providerThreadId })
     .from(gmailSyncItems)
     .innerJoin(mailSyncRuns, eq(mailSyncRuns.id, gmailSyncItems.runId))
-    .innerJoin(
-      threads,
-      and(
-        eq(threads.accountId, mailSyncRuns.accountId),
-        eq(threads.providerThreadId, gmailSyncItems.providerThreadId),
-      ),
-    )
-    .innerJoin(messages, eq(messages.threadId, threads.id))
     .where(
       and(
         eq(gmailSyncItems.runId, input.runId),
         eq(mailSyncRuns.accountId, input.accountId),
       ),
     );
-  return rows.map((row) => row.providerMessageId);
+  return rows.map((row) => row.providerThreadId);
+}
+
+export async function listUnfinishedMailSyncProviderThreadIds(
+  input: { runId: string; accountId: string },
+  database: Database = getDatabase(),
+): Promise<string[]> {
+  const rows = await database
+    .select({ providerThreadId: gmailSyncItems.providerThreadId })
+    .from(gmailSyncItems)
+    .innerJoin(mailSyncRuns, eq(mailSyncRuns.id, gmailSyncItems.runId))
+    .where(
+      and(
+        eq(gmailSyncItems.runId, input.runId),
+        eq(mailSyncRuns.accountId, input.accountId),
+        inArray(gmailSyncItems.status, ["queued", "running"]),
+      ),
+    );
+  return rows.map((row) => row.providerThreadId);
 }
 
 /**

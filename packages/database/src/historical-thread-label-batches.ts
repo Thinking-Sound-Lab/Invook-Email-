@@ -66,6 +66,47 @@ type HistoricalScan = typeof historicalThreadLabelScans.$inferSelect;
 type Submission = typeof threadLabelBatchSubmissions.$inferSelect;
 export type ThreadLabelBatchContinuation = Submission["continuations"][number];
 
+/**
+ * Encodes the Batch the scan still owes so a retried finalization Activity can
+ * recover it. Temporal is at-least-once: the first attempt may persist
+ * `complete` and then die before the Workflow records `nextScope`.
+ */
+export function persistableHistoricalLabelScanContinuations(
+  nextScope: HistoricalLabelScanBatchScope | null,
+): ThreadLabelBatchContinuation[] {
+  if (!nextScope) return [];
+  if (nextScope.threadIds && nextScope.threadIds.length > 0) {
+    return [
+      {
+        retryAttempt: nextScope.retryAttempt,
+        threadIds: nextScope.threadIds,
+      },
+      ...nextScope.continuations,
+    ];
+  }
+  return nextScope.continuations;
+}
+
+/**
+ * Reconstructs the next Batch from the submission's persisted remaining work.
+ *
+ * `scanIsCurrent` is false when this scan is no longer the account's active
+ * one, including a retired Batch that completed after the scan moved on.
+ */
+export function remainingHistoricalLabelScanScope(input: {
+  scanIsCurrent: boolean;
+  continuations: ThreadLabelBatchContinuation[];
+}): HistoricalLabelScanBatchScope | null {
+  if (!input.scanIsCurrent) return null;
+  const [next, ...remaining] = input.continuations;
+  return {
+    retryAttempt: next?.retryAttempt ?? 0,
+    threadIds: next?.threadIds ?? null,
+    continuations: remaining,
+    retryDelayMs: 0,
+  };
+}
+
 export type ThreadLabelBatchCandidate = ThreadLabelBatchManifestEntry & {
   thread: {
     subject: string;
@@ -653,7 +694,14 @@ export async function finalizeThreadLabelBatchSubmission(
           updatedAt: new Date(),
         })
         .where(eq(threadLabelBatchSubmissions.id, submission.id));
-      return { alreadyFinalized: true, appliedCount: 0, nextScope: null };
+      return {
+        alreadyFinalized: true,
+        appliedCount: 0,
+        nextScope: remainingHistoricalLabelScanScope({
+          scanIsCurrent: Boolean(current),
+          continuations: submission.continuations,
+        }),
+      };
     }
     const appliedThreadIds: string[] = [];
     const retryThreadIds: string[] = [];
@@ -833,6 +881,13 @@ export async function finalizeThreadLabelBatchSubmission(
         retryDelayMs: 0,
       };
     }
+    await transaction
+      .update(threadLabelBatchSubmissions)
+      .set({
+        continuations: persistableHistoricalLabelScanContinuations(nextScope),
+        updatedAt: new Date(),
+      })
+      .where(eq(threadLabelBatchSubmissions.id, submission.id));
     return {
       alreadyFinalized: false,
       appliedCount: appliedThreadIds.length,
