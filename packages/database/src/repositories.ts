@@ -1448,6 +1448,27 @@ export async function getIndexedMessageIds(
   return storedMessages.map((message) => message.providerMessageId);
 }
 
+export async function listIndexedMessagesForRepairReconcile(
+  accountId: string,
+  database: Database = getDatabase(),
+): Promise<
+  Array<{
+    providerMessageId: string;
+    providerThreadId: string;
+    providerHistoryId: string | null;
+  }>
+> {
+  return database
+    .select({
+      providerMessageId: messages.providerMessageId,
+      providerThreadId: threads.providerThreadId,
+      providerHistoryId: messages.providerHistoryId,
+    })
+    .from(messages)
+    .innerJoin(threads, eq(threads.id, messages.threadId))
+    .where(eq(threads.accountId, accountId));
+}
+
 export async function getStoredProviderMessageIds(
   input: { accountId: string; providerMessageIds: string[] },
   database: Database = getDatabase(),

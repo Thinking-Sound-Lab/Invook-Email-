@@ -12,11 +12,13 @@ import {
   deleteIndexedMessage,
   enqueueDailyGmailWatchRenewal,
   failMailSyncThread,
-  getIndexedMessageIds,
   getGmailReplicaContext,
   isMailSyncThreadComplete,
   getMailSyncRunContext,
-  getMailSyncRunProviderMessageIds,
+  getMailSyncRunDiscoveredProviderThreadIds,
+  listIndexedMessagesForRepairReconcile,
+  listUnfinishedMailSyncProviderThreadIds,
+  shouldDeleteStoredMessageDuringRepair,
   InactiveMailSyncRunError,
   isActiveMailSyncRun,
   markGmailReplicaReady,
@@ -368,9 +370,9 @@ export async function runGmailMessageRefresh(job: WorkflowStepJob) {
 /**
  * Replays the history accumulated during discovery and publishes the replica.
  *
- * A repair run additionally reconciles deletions: a message absent from the
- * provider is only discoverable by differencing the run's discovered set
- * against the stored one, which incremental history can never report.
+ * A repair run additionally deletes local threads Gmail no longer lists, but
+ * keeps messages live catch-up wrote after the repair baseline so a new thread
+ * that arrived during the walk is not treated as absent.
  */
 export async function finalizeGmailSyncActivity(
   input: GmailSyncFinalizeInput,
@@ -392,20 +394,44 @@ export async function finalizeGmailSyncActivity(
     const replayState = run.runType === "repair" ? "repairing" : "replaying";
     await setGmailReplicaState({ accountId: account.id, state: replayState });
 
+    const attempt = activityInfo().attempt;
+    for (const providerThreadId of await listUnfinishedMailSyncProviderThreadIds({
+      runId: input.runId,
+      accountId: account.id,
+    })) {
+      await processInitialGmailThread({
+        attempt,
+        runId: input.runId,
+        providerThreadId,
+        account,
+        credential,
+      });
+    }
+
     if (run.runType === "repair") {
-      const [providerMessageIds, storedMessageIds] = await Promise.all([
-        getMailSyncRunProviderMessageIds({
+      const [discoveredThreadIds, storedMessages] = await Promise.all([
+        getMailSyncRunDiscoveredProviderThreadIds({
           runId: input.runId,
           accountId: account.id,
         }),
-        getIndexedMessageIds(account.id),
+        listIndexedMessagesForRepairReconcile(account.id),
       ]);
-      const providerMessageIdSet = new Set(providerMessageIds);
-      for (const providerMessageId of storedMessageIds) {
-        if (providerMessageIdSet.has(providerMessageId)) continue;
+      const discoveredThreadIdSet = new Set(discoveredThreadIds);
+      for (const storedMessage of storedMessages) {
+        if (
+          !shouldDeleteStoredMessageDuringRepair({
+            isOnDiscoveredThread: discoveredThreadIdSet.has(
+              storedMessage.providerThreadId,
+            ),
+            providerHistoryId: storedMessage.providerHistoryId,
+            repairStartingHistoryCursor: run.startingHistoryCursor,
+          })
+        ) {
+          continue;
+        }
         await deleteIndexedMessage({
           accountId: account.id,
-          providerMessageId,
+          providerMessageId: storedMessage.providerMessageId,
         });
       }
     }
