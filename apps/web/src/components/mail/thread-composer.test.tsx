@@ -19,6 +19,7 @@ for (const [name, value] of Object.entries({
   HTMLInputElement: browserWindow.HTMLInputElement,
   HTMLTextAreaElement: browserWindow.HTMLTextAreaElement,
   Event: browserWindow.Event,
+  KeyboardEvent: browserWindow.KeyboardEvent,
   MouseEvent: browserWindow.MouseEvent,
   IS_REACT_ACT_ENVIRONMENT: true,
 })) {
@@ -124,6 +125,20 @@ async function click(label: string): Promise<void> {
   });
 }
 
+async function pressEnter(selector: string): Promise<boolean> {
+  const input = document.querySelector<HTMLInputElement>(selector);
+  assert.ok(input);
+  const event = new KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    input.dispatchEvent(event);
+  });
+  return event.defaultPrevented;
+}
+
 async function enter(selector: string, value: string): Promise<void> {
   const input = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
     selector,
@@ -209,6 +224,37 @@ test("only the two action chips appear until Reply or Forward is selected", asyn
     );
   }
   assert.ok(document.querySelector('label[for$="-subject"]'));
+});
+
+test("Enter in recipient and subject fields does not send", async () => {
+  const requests: unknown[] = [];
+  axios.defaults.adapter = async (config) => {
+    requests.push(config.url);
+    return {
+      config,
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      data: { draft: { providerDraftId: "draft-1" } },
+    };
+  };
+  await renderComposer();
+  await click("Reply");
+  await click("Cc/Bcc");
+  for (const selector of [
+    'input[id$="-to"]',
+    'input[id$="-ccRecipients"]',
+    'input[id$="-bccRecipients"]',
+  ]) {
+    assert.equal(await pressEnter(selector), true);
+  }
+  assert.equal(requests.length, 0);
+
+  await click("Forward");
+  for (const selector of ['input[id$="-to"]', 'input[id$="-subject"]']) {
+    assert.equal(await pressEnter(selector), true);
+  }
+  assert.equal(requests.length, 0);
 });
 
 test("manual edits survive server refreshes and Send submits the current text once", async () => {

@@ -12,7 +12,13 @@ import {
   GMAIL_COMPOSE_MAX_BODY_LENGTH,
   GMAIL_COMPOSE_MAX_SUBJECT_LENGTH,
 } from "@invook/contracts";
-import { type ReactNode, useId, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -120,6 +126,15 @@ export function ThreadComposer({
     bodyRef.current?.focus();
   }
 
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLFormElement>): void {
+    if (
+      event.target instanceof HTMLInputElement &&
+      (event.key === "Enter" || event.key === "NumpadEnter")
+    ) {
+      event.preventDefault();
+    }
+  }
+
   return (
     <section className="mt-10" aria-label="Thread actions">
       <div className="flex flex-wrap gap-2.5">
@@ -154,6 +169,7 @@ export function ThreadComposer({
           aria-label={
             session.mode === "reply" ? "Reply composer" : "Forward composer"
           }
+          onKeyDown={handleComposerKeyDown}
           onSubmit={(event) => {
             event.preventDefault();
             void composer.send();
