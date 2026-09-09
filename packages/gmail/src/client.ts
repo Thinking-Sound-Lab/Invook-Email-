@@ -292,9 +292,12 @@ export function gmailHistoryChanges(
     changes.set(message.id, {
       messageId: message.id,
       action: nextAction,
+      // A later event without `message.labelIds` must not keep an earlier
+      // snapshot. Gmail often omits them on `labelsRemoved`, and keeping the
+      // previous set would restore INBOX after an archive that followed a star.
       providerLabelIds: message.labelIds
         ? filterGmailSystemLabelIds(message.labelIds)
-        : existing?.providerLabelIds ?? null,
+        : null,
       isDraftRelated:
         existing?.isDraftRelated === true ||
         message.labelIds?.includes("DRAFT") === true ||

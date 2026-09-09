@@ -23,6 +23,10 @@ import {
 
 import { gmailContentConcurrency } from "./concurrency";
 import {
+  mergeGmailHistoryMessageAction,
+  type GmailHistoryMessageAction,
+} from "./history-actions";
+import {
   applyGmailHistoryWithExpiredCursorRepair,
   shouldRepairNonReadyGmailReplica,
 } from "./history-recovery";
@@ -52,16 +56,7 @@ export async function applyHistoryRange(options: {
 }) {
   let pageToken: string | undefined;
   let historyId = options.startHistoryId;
-  const messageActions = new Map<
-    string,
-    {
-      action: "upsert" | "labels" | "delete";
-      providerHistoryId: string | null;
-      gmailLabels: ReturnType<typeof gmailSystemLabels> | null;
-      isDraftRelated: boolean;
-    }
-  >();
-  const actionPrecedence = { labels: 1, upsert: 2, delete: 3 } as const;
+  const messageActions = new Map<string, GmailHistoryMessageAction>();
 
   do {
     const page = await listGmailHistory(options.accessToken, {
@@ -71,18 +66,14 @@ export async function applyHistoryRange(options: {
     });
     for (const history of page.history ?? []) {
       for (const change of gmailHistoryChanges(history)) {
-        const current = messageActions.get(change.messageId);
-        messageActions.set(change.messageId, {
-          action:
-            current && actionPrecedence[current.action] > actionPrecedence[change.action]
-              ? current.action
-              : change.action,
-          providerHistoryId: history.id ?? null,
-          gmailLabels: change.providerLabelIds
-            ? gmailSystemLabels(change.providerLabelIds)
-            : current?.gmailLabels ?? null,
-          isDraftRelated: change.isDraftRelated || (current?.isDraftRelated ?? false),
-        });
+        messageActions.set(
+          change.messageId,
+          mergeGmailHistoryMessageAction(
+            messageActions.get(change.messageId),
+            change,
+            history.id ?? null,
+          ),
+        );
       }
     }
     if (page.historyId) historyId = page.historyId;
