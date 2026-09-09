@@ -186,6 +186,38 @@ test("thread label writes use Gmail's single thread mutation endpoint", async ()
   assert.deepEqual(request.data, { removeLabelIds: ["UNREAD"] });
 });
 
+test("a label removal without a snapshot does not keep earlier labels", () => {
+  assert.deepEqual(
+    gmailHistoryChanges({
+      id: "history-id",
+      labelsAdded: [
+        {
+          message: {
+            id: "message-id",
+            threadId: "thread-id",
+            labelIds: ["INBOX", "UNREAD", "STARRED"],
+          },
+          labelIds: ["STARRED"],
+        },
+      ],
+      labelsRemoved: [
+        {
+          message: { id: "message-id", threadId: "thread-id" },
+          labelIds: ["INBOX"],
+        },
+      ],
+    }),
+    [
+      {
+        messageId: "message-id",
+        action: "labels",
+        providerLabelIds: null,
+        isDraftRelated: false,
+      },
+    ],
+  );
+});
+
 test("history mapping retains only recognized Gmail system labels", () => {
   assert.deepEqual(
     gmailHistoryChanges({
